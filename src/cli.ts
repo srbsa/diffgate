@@ -404,17 +404,17 @@ fi
 }
 
 function help(): void {
-  console.log(`${c.bold("🛡  guardrail")} ${c.dim("v" + VERSION)} — diff-aware, three-tiered code review
+  console.log(`${c.bold("🛡  DiffGate")} ${c.dim("v" + VERSION)} — diff-aware, three-tiered code review
 
 ${c.bold("Usage")}
-  guardrail <command> [path] [options]
+  diffgate <command> [path] [options]
 
 ${c.bold("Commands")}
   ${c.blue("check")}        Review pending git changes; gate commits/CI    ${c.dim("(default)")}
   ${c.blue("scan")}         Analyze a file or directory in full
   ${c.blue("watch")}        Live review as you edit
   ${c.blue("explain")}      AI-explain findings for a file (needs API key)
-  ${c.blue("init")}         Write a starter .guardrails.json
+  ${c.blue("init")}         Write a starter .diffgate.json
   ${c.blue("install-hook")} Install a git pre-commit gate
   ${c.blue("mcp")}          Start the MCP stdio server (for coding agents)
 
@@ -428,9 +428,9 @@ ${c.bold("Options")}
   --json             Machine-readable output
 
 ${c.bold("Examples")}
-  guardrail check --staged
-  guardrail scan src/ --fail-on=yellow
-  guardrail watch
+  diffgate check --staged
+  diffgate scan src/ --fail-on=yellow
+  diffgate watch
 `);
 }
 
