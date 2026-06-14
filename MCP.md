@@ -31,7 +31,7 @@ Or if not globally installed, use `node` directly:
   "mcpServers": {
     "guardrail": {
       "command": "node",
-      "args": ["/absolute/path/to/guardrail_review_engine/src/cli.js", "mcp"]
+      "args": ["/absolute/path/to/guardrail_review_engine/dist/cli.js", "mcp"]
     }
   }
 }
