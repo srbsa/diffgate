@@ -27,7 +27,7 @@ npm link               # optional: makes `diffgate` available globally
 diffgate scan mock_project          # analyze files directly (no git needed)
 diffgate check                      # review your pending git changes (the gate)
 diffgate watch                      # live review as you edit
-diffgate init                       # write a starter .diffgates.json
+diffgate init                       # write a starter .diffgate.json
 diffgate install-hook               # add a git pre-commit gate
 diffgate mcp                        # start the MCP stdio server
 ```
@@ -63,9 +63,9 @@ Engine layout: [`src/core`](src/core) (shared) · [`src/cli.ts`](src/cli.ts) (CL
 
 ---
 
-## Configuration — `.diffgates.json`
+## Configuration — `.diffgate.json`
 
-Place it at your repo root (`diffgate init` generates one). See [example.diffgates.json](example.diffgates.json) for the full schema.
+Place it at your repo root (`diffgate init` generates one). See [example.diffgate.json](example.diffgate.json) for the full schema.
 
 ```jsonc
 {
@@ -138,7 +138,7 @@ The engine is **provider-agnostic**. Under the hood there are two wire adapters 
 | `debug-logging` | 🟢 | `console.log`, `fmt.Print`, `System.out.println` |
 | `todo-marker` | 🟢 | `TODO`, `FIXME`, `HACK` |
 
-Disable or re-tier any rule via the `rules` key in `.diffgates.json`.
+Disable or re-tier any rule via the `rules` key in `.diffgate.json`.
 
 ---
 

@@ -420,7 +420,7 @@ export function legacyOrangeRules(config: Partial<Config>): Rule[] {
       title: "Configured high-impact pattern",
       languages: ["*"],
       patterns,
-      message: "Matched a high-impact pattern from your .guardrails.json config.",
+      message: "Matched a high-impact pattern from your .diffgate.json config.",
     },
   ];
 }

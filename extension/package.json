@@ -21,39 +21,39 @@
     "commands": [
       {
         "command": "diffgate.analyzeWorkspace",
-        "title": "Guardrail: Review Pending Changes",
+        "title": "DiffGate: Review Pending Changes",
         "icon": "$(refresh)"
       },
       {
         "command": "diffgate.runGate",
-        "title": "Guardrail: Run Verification Gate"
+        "title": "DiffGate: Run Verification Gate"
       },
       {
         "command": "diffgate.explainWithAI",
-        "title": "Guardrail: Explain Finding with AI"
+        "title": "DiffGate: Explain Finding with AI"
       },
       {
         "command": "diffgate.toggleScanMode",
-        "title": "Guardrail: Toggle Scan Mode (Diff / Whole File)"
+        "title": "DiffGate: Toggle Scan Mode (Diff / Whole File)"
       },
       {
         "command": "diffgate.openConfig",
-        "title": "Guardrail: Open Config (.diffgates.json)"
+        "title": "DiffGate: Open Config (.diffgate.json)"
       },
       {
         "command": "diffgate.ignoreRule",
-        "title": "Guardrail: Disable Rule for Project"
+        "title": "DiffGate: Disable Rule for Project"
       },
       {
         "command": "diffgate.deepReview",
-        "title": "Guardrail: Deep Review Finding (Agentic)"
+        "title": "DiffGate: Deep Review Finding (Agentic)"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "diffgate",
-          "title": "Guardrail",
+          "title": "DiffGate",
           "icon": "media/shield.svg"
         }
       ]
@@ -108,12 +108,12 @@
           "type": "string",
           "enum": ["", "anthropic", "openai", "openrouter", "groq", "together", "lmstudio", "ollama", "custom"],
           "default": "",
-          "description": "LLM provider override (empty = use .diffgates.json). Anthropic uses the Messages API; the rest use the OpenAI-compatible API."
+          "description": "LLM provider override (empty = use .diffgate.json). Anthropic uses the Messages API; the rest use the OpenAI-compatible API."
         },
         "diffgate.ai.model": {
           "type": "string",
           "default": "",
-          "description": "Model id override (empty = use .diffgates.json or the provider default)."
+          "description": "Model id override (empty = use .diffgate.json or the provider default)."
         },
         "diffgate.runGateOnSave": {
           "type": "boolean",

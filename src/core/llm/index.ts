@@ -40,7 +40,7 @@ export async function complete({ system, prompt, config, tier = "default", model
   }
   const model = modelOverride || selectModel(config, tier, p);
   if (!model) {
-    throw new Error(`No model configured for provider "${p.id}". Set "ai.model" in .guardrails.json.`);
+    throw new Error(`No model configured for provider "${p.id}". Set "ai.model" in .diffgate.json.`);
   }
   const opts = {
     baseURL: p.baseURL,

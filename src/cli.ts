@@ -58,7 +58,7 @@ function resolveMode(flags: Record<string, string | true>, config: Config): stri
 
 async function printAiExplanations(findings: Finding[], files: AnalyzeResult[], config: Config, limit = 8): Promise<void> {
   if (!isAiAvailable(config)) {
-    console.log(c.dim(`\n  (AI explanations off — set ai.enabled in .guardrails.json and export $${aiKeyEnv(config)} to enable.)`));
+    console.log(c.dim(`\n  (AI explanations off — set ai.enabled in .diffgate.json and export $${aiKeyEnv(config)} to enable.)`));
     return;
   }
   const byFile = new Map(files.map((f) => [f.filePath, f]));
@@ -144,7 +144,7 @@ function indent(text: string, n: number): string {
 async function cmdCheck(pos: string[], flags: Record<string, string | true>): Promise<void> {
   const cwd = path.resolve(pos[0] || ".");
   if (!isGitRepo(cwd)) {
-    console.log(c.yellow("⚠ Not a git repository.") + ` ${c.dim("`guardrail check` reviews your diff. Use `guardrail scan` to analyze files directly.")}`);
+    console.log(c.yellow("⚠ Not a git repository.") + ` ${c.dim("`diffgate check` reviews your diff. Use `diffgate scan` to analyze files directly.")}`);
     process.exit(0);
   }
   const { config } = loadConfig(cwd);
@@ -305,9 +305,9 @@ function cmdWatch(pos: string[], _flags: Record<string, string | true>): void {
   const { config, path: cfgPath } = loadConfig(cwd);
   const git = isGitRepo(cwd);
 
-  console.log(c.bold("🛡  Guardrail — live review") + c.dim(`  watching ${cwd}`));
+  console.log(c.bold("🛡  DiffGate — live review") + c.dim(`  watching ${cwd}`));
   console.log(c.dim(
-    `  ${cfgPath ? "config: " + path.relative(cwd, cfgPath) : "no .guardrails.json (defaults)"} · ` +
+    `  ${cfgPath ? "config: " + path.relative(cwd, cfgPath) : "no .diffgate.json (defaults)"} · ` +
     `${git ? "diff-aware (vs HEAD)" : "whole-file (not a git repo)"} · Ctrl-C to stop`
   ));
   console.log(c.gray("  " + "─".repeat(70)));
@@ -343,10 +343,10 @@ function cmdWatch(pos: string[], _flags: Record<string, string | true>): void {
 
 async function cmdExplain(pos: string[], flags: Record<string, string | true>): Promise<void> {
   const target = path.resolve(pos[0] || "");
-  if (!pos[0] || !fs.existsSync(target)) fail("Usage: guardrail explain <file>");
+  if (!pos[0] || !fs.existsSync(target)) fail("Usage: diffgate explain <file>");
   const { config } = loadConfig(path.dirname(target));
   if (!isAiAvailable(config)) {
-    fail(`AI is not configured. Set "ai": { "enabled": true } in .guardrails.json and export $${aiKeyEnv(config)}.`);
+    fail(`AI is not configured. Set "ai": { "enabled": true } in .diffgate.json and export $${aiKeyEnv(config)}.`);
   }
   const content = fs.readFileSync(target, "utf-8");
   const res = analyze({ filePath: target, content, config });
@@ -371,9 +371,9 @@ const INIT_TEMPLATE = {
 
 function cmdInit(pos: string[], flags: Record<string, string | true>): void {
   const cwd = path.resolve(pos[0] || ".");
-  const target = path.join(cwd, ".guardrails.json");
+  const target = path.join(cwd, ".diffgate.json");
   if (fs.existsSync(target) && !flags["force"]) {
-    fail(`.guardrails.json already exists. Use --force to overwrite.`);
+    fail(`.diffgate.json already exists. Use --force to overwrite.`);
   }
   fs.writeFileSync(target, JSON.stringify(INIT_TEMPLATE, null, 2) + "\n");
   console.log(c.green(`✔ Wrote ${path.relative(process.cwd(), target)}`));
@@ -390,9 +390,9 @@ function cmdInstallHook(pos: string[], flags: Record<string, string | true>): vo
     fail(`${hookPath} already exists. Use --force to overwrite.`);
   }
   const script = `#!/bin/sh
-# Installed by guardrail-review-engine — blocks commits with high-impact findings.
-if command -v guardrail >/dev/null 2>&1; then
-  guardrail check --staged
+# Installed by diffgate — blocks commits with high-impact findings.
+if command -v diffgate >/dev/null 2>&1; then
+  diffgate check --staged
 else
   node "${CLI_PATH}" check --staged
 fi
@@ -400,7 +400,7 @@ fi
   fs.mkdirSync(hookDir, { recursive: true });
   fs.writeFileSync(hookPath, script, { mode: 0o755 });
   console.log(c.green(`✔ Installed pre-commit hook at ${path.relative(cwd, hookPath)}`));
-  console.log(c.dim("  It runs `guardrail check --staged` before every commit. Bypass with `git commit --no-verify`."));
+  console.log(c.dim("  It runs `diffgate check --staged` before every commit. Bypass with `git commit --no-verify`."));
 }
 
 function help(): void {

@@ -24,14 +24,14 @@ Diff-aware, three-tiered code review **inline in your editor**. Guardrail looks 
 
 ## Configuration
 
-Project rules live in a `.guardrails.json` at the repo root (run `guardrail init` from the CLI, or **Guardrail: Open Config**). Editor settings:
+Project rules live in a `.diffgate.json` at the repo root (run `diffgate init` from the CLI, or **DiffGate: Open Config**). Editor settings:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `guardrail.scanMode` | `diff` | `diff` = changed lines only; `file` = whole file |
-| `guardrail.diffMode` | `working` | `working` = all uncommitted changes; `staged` = staged only |
-| `guardrail.ai.enabled` | `false` | Enable AI explanations (needs provider API key, except for local models) |
-| `guardrail.ai.provider` | *(from config)* | LLM provider override |
+| `diffgate.scanMode` | `diff` | `diff` = changed lines only; `file` = whole file |
+| `diffgate.diffMode` | `working` | `working` = all uncommitted changes; `staged` = staged only |
+| `diffgate.ai.enabled` | `false` | Enable AI explanations (needs provider API key, except for local models) |
+| `diffgate.ai.provider` | *(from config)* | LLM provider override |
 | `guardrail.ai.model` | *(from config)* | Model id override |
 | `guardrail.ai.deepReview.model` | *(from config)* | Stronger model for Deep Review (e.g. `claude-opus-4-8`, `gpt-4o`) |
 | `guardrail.runGateOnSave` | `false` | Auto-run the gate on save when orange findings are present |

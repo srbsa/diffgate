@@ -157,7 +157,7 @@ export async function handleDeepReview(
   const cwd = cwdArg || process.cwd();
   const config = opts.config || loadConfig(cwd).config;
   if (!isAiAvailable(config)) {
-    throw new Error("AI is not configured. Set ai.enabled: true and provide an API key in .guardrails.json or the environment.");
+    throw new Error("AI is not configured. Set ai.enabled: true and provide an API key in .diffgate.json or the environment.");
   }
   const toolSteps: unknown[] = [];
   const res = await deepReview({
@@ -185,7 +185,7 @@ export async function handleExplain(
   const cwd = cwdArg || process.cwd();
   const config = opts.config || loadConfig(cwd).config;
   if (!isAiAvailable(config)) {
-    throw new Error("AI is not configured. Set ai.enabled: true and provide an API key in .guardrails.json or the environment.");
+    throw new Error("AI is not configured. Set ai.enabled: true and provide an API key in .diffgate.json or the environment.");
   }
   return explainFinding({
     finding,

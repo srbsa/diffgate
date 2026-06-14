@@ -146,9 +146,9 @@ const context = { subscriptions: [] };
 
 ext.activate(context);
 assert.ok(captured.open.length > 0, "should register an open handler");
-assert.ok(captured.commands.has("guardrail.explainWithAI"), "should register AI command");
-assert.ok(captured.commands.has("guardrail.toggleScanMode"), "should register toggle command");
-assert.ok(captured.commands.has("guardrail.deepReview"), "should register deepReview command");
+assert.ok(captured.commands.has("diffgate.explainWithAI"), "should register AI command");
+assert.ok(captured.commands.has("diffgate.toggleScanMode"), "should register toggle command");
+assert.ok(captured.commands.has("diffgate.deepReview"), "should register deepReview command");
 
 // Fire document open -> analysis -> diagnostics
 const doc = makeDoc();
@@ -161,7 +161,7 @@ assert.ok(codes.includes("hardcoded-secret"), "expected hardcoded-secret diagnos
 assert.ok(codes.includes("deprecated-api"), "expected deprecated-api diagnostic");
 const secret = diags.find((d) => d.code === "hardcoded-secret");
 assert.equal(secret.severity, vscode.DiagnosticSeverity.Error, "blocking secret -> Error severity");
-assert.equal(secret.source, "guardrail");
+assert.equal(secret.source, "diffgate");
 
 // Hover on the secret line (line index 1)
 const hover = captured.hoverProvider.provideHover(doc, new Position(1, 4));
@@ -184,9 +184,9 @@ const hoverOrange = captured.hoverProvider.provideHover(doc, new Position(1, 4))
 assert.ok(hoverOrange.contents.value.includes("Deep Review"), "hover on orange finding should offer Deep Review link");
 
 // Explain with AI when key absent -> warns gracefully
-captured.commands.get("guardrail.explainWithAI")(doc.uri.toString(), "hardcoded-secret", 2);
+captured.commands.get("diffgate.explainWithAI")(doc.uri.toString(), "hardcoded-secret", 2);
 // Deep Review with AI absent -> warns gracefully
-captured.commands.get("guardrail.deepReview")(doc.uri.toString(), "hardcoded-secret", 2);
+captured.commands.get("diffgate.deepReview")(doc.uri.toString(), "hardcoded-secret", 2);
 Promise.resolve().then(() => {
   assert.ok(captured.messages.warn.some((m) => /AI is off/i.test(m)), "should warn when AI unavailable");
 

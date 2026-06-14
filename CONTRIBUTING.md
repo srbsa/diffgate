@@ -11,7 +11,7 @@ Thank you for your interest in contributing. DiffGate is Apache 2.0 licensed and
 ## Setup
 
 ```bash
-git clone https://github.com/<your-org>/diffgate.git
+git clone https://github.com/srbsa/diffgate.git
 cd diffgate
 npm install
 npm install --prefix extension
