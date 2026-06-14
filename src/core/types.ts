@@ -74,13 +74,25 @@ export interface DeprecatedEntry {
   tier?: Tier;
 }
 
+export interface CustomPattern {
+  id?: string;
+  pattern?: string | RegExp;
+  patterns?: (string | RegExp)[];
+  flags?: string;
+  tier?: Tier;
+  blocking?: boolean;
+  title?: string;
+  languages?: string[];
+  message?: string;
+}
+
 export interface Config {
   gate: GateConfig;
   ai: AiConfig;
   testCommand?: string | null;
   ignore?: string[];
   rules?: Record<string, false | { enabled?: boolean; tier?: Tier; blocking?: boolean }>;
-  customPatterns?: unknown[];
+  customPatterns?: CustomPattern[];
   deprecated?: DeprecatedEntry[];
   orangePatterns?: string[];
 }

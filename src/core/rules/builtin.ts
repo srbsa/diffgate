@@ -373,15 +373,15 @@ export function deprecatedRules(config: Partial<Config>): Rule[] {
 }
 
 export function customPatternRules(config: Partial<Config>): Rule[] {
-  const list = Array.isArray(config?.customPatterns) ? (config.customPatterns as Record<string, unknown>[]) : [];
+  const list = config?.customPatterns ?? [];
   return list
     .map((c, i) => {
-      if (!c || (!c["pattern"] && !c["patterns"])) return null;
-      const raw = (c["patterns"] as unknown[] | undefined) || [c["pattern"]];
-      const patterns = (raw as unknown[])
+      if (!c.pattern && !c.patterns) return null;
+      const raw = c.patterns || (c.pattern ? [c.pattern] : []);
+      const patterns = raw
         .map((p) => {
           try {
-            return p instanceof RegExp ? p : new RegExp(p as string, (c["flags"] as string | undefined) || "i");
+            return p instanceof RegExp ? p : new RegExp(p, c.flags || "i");
           } catch {
             return new RegExp(escapeRegExp(String(p)), "i");
           }
@@ -389,13 +389,13 @@ export function customPatternRules(config: Partial<Config>): Rule[] {
         .filter(Boolean) as RegExp[];
       if (patterns.length === 0) return null;
       return {
-        id: (c["id"] as string) || `custom-${i + 1}`,
+        id: c.id || `custom-${i + 1}`,
         type: "pattern" as const,
-        tier: ((c["tier"] as string) || "yellow") as Rule["tier"],
-        blocking: !!(c["blocking"]),
-        title: (c["title"] as string) || "Custom rule",
-        languages: (c["languages"] as string[] | undefined) || ["*"],
-        message: (c["message"] as string) || "Matched a project-defined guardrail pattern.",
+        tier: (c.tier || "yellow") as Rule["tier"],
+        blocking: !!c.blocking,
+        title: c.title || "Custom rule",
+        languages: c.languages || ["*"],
+        message: c.message || "Matched a project-defined guardrail pattern.",
         patterns,
       } as Rule;
     })
@@ -403,9 +403,7 @@ export function customPatternRules(config: Partial<Config>): Rule[] {
 }
 
 export function legacyOrangeRules(config: Partial<Config>): Rule[] {
-  const list = Array.isArray((config as Record<string, unknown>)["orangePatterns"])
-    ? ((config as Record<string, unknown>)["orangePatterns"] as string[])
-    : [];
+  const list = Array.isArray(config.orangePatterns) ? config.orangePatterns : [];
   if (list.length === 0) return [];
   const patterns = list.map((p) => {
     try {

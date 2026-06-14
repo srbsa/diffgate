@@ -46,7 +46,7 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   cfg.deprecated = Array.isArray(raw.deprecated) ? raw.deprecated : DEFAULT_CONFIG.deprecated;
   cfg.customPatterns = Array.isArray(raw.customPatterns) ? raw.customPatterns : [];
   cfg.ignore = Array.isArray(raw.ignore) ? raw.ignore : DEFAULT_CONFIG.ignore;
-  (cfg as unknown as Record<string, unknown>)["orangePatterns"] = raw["orangePatterns"];
+  cfg.orangePatterns = raw.orangePatterns;
   cfg.testCommand = (raw.testCommand as string | null | undefined) ?? DEFAULT_CONFIG.testCommand;
   return cfg;
 }
