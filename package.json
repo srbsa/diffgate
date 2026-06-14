@@ -1,0 +1,46 @@
+{
+  "name": "guardrail-review-engine",
+  "version": "0.1.1",
+  "description": "Diff-aware, three-tiered code review guardrails for your IDE and CLI.",
+  "type": "module",
+  "bin": {
+    "guardrail": "dist/cli.js"
+  },
+  "main": "dist/core/index.js",
+  "exports": {
+    ".": "./dist/core/index.js"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "build:ext": "npm run build --prefix extension",
+    "package:ext": "npm run package --prefix extension",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p extension/tsconfig.json",
+    "test": "npm run build && npm run build:ext && node --test test/core.test.js test/agent.test.js test/mcp.test.js test/llm.test.js && node extension/test/smoke.cjs"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.25.0",
+    "chokidar": "^3.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.84.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "code-review",
+    "guardrails",
+    "static-analysis",
+    "diff",
+    "vscode",
+    "pre-commit"
+  ],
+  "license": "Apache-2.0"
+}

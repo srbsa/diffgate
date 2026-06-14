@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+extension/node_modules/
+
+# built artifacts
+/dist/
+extension/dist/
+*.vsix
+
+# env / secrets
+.env
+.env.*
+*.pem
+
+# editor / OS
+.DS_Store
+Thumbs.db
+*.log
+
+# test scratch
+/tmp/

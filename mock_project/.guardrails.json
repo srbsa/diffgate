@@ -1,0 +1,25 @@
+{
+  "deprecated": [
+    {
+      "pattern": "UserService.fetchUser",
+      "replacedBy": "UserService.getUser",
+      "author": "Alice (Tech Lead)",
+      "pr": "PR #389"
+    },
+    {
+      "pattern": "StripeClient.charge",
+      "replacedBy": "StripeClient.createPaymentIntent",
+      "author": "Finance Team",
+      "pr": "PR #204"
+    }
+  ],
+  "customPatterns": [
+    {
+      "id": "hardcoded-tax-rate",
+      "tier": "yellow",
+      "pattern": "0\\.0\\d{2,}",
+      "message": "Hardcoded rate — confirm against the finance source of truth before changing."
+    }
+  ],
+  "gate": { "failOn": "orange" }
+}

@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "guardrail: build extension",
+      "type": "shell",
+      "command": "npm run build --prefix extension",
+      "problemMatcher": [],
+      "group": "build"
+    }
+  ]
+}

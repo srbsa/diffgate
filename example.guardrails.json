@@ -1,0 +1,61 @@
+{
+  "//": "Drop this file (renamed to .guardrails.json) at your repo root. Run `guardrail init` to generate one.",
+
+  "testCommand": "npm test",
+  "gate": {
+    "mode": "working",
+    "failOn": "orange"
+  },
+
+  "ai": {
+    "//": "provider: anthropic | openai | openrouter | groq | together | lmstudio | ollama | custom",
+    "enabled": false,
+    "provider": "anthropic",
+    "apiKeyEnv": "ANTHROPIC_API_KEY",
+    "model": "claude-sonnet-4-6",
+    "//model-routing": "model can also be a per-tier map, e.g. { \"orange\": \"<strong>\", \"default\": \"<cheap>\" }",
+    "//openai-example": "{ provider: 'openai', apiKeyEnv: 'OPENAI_API_KEY', model: 'gpt-4o-mini' }",
+    "//openrouter-example": "{ provider: 'openrouter', apiKeyEnv: 'OPENROUTER_API_KEY', model: 'openai/gpt-4o-mini' }",
+    "//local-example": "{ provider: 'lmstudio', model: 'your-loaded-model' }  (no API key needed)",
+    "//custom-example": "{ provider: 'custom', baseURL: 'http://host:8000/v1', apiKeyEnv: 'MY_KEY', model: 'm' }",
+    "maxTokens": 700,
+    "temperature": 0
+  },
+
+  "deprecated": [
+    {
+      "pattern": "UserService.getLegacyAvatar",
+      "replacedBy": "UserService.getUser().avatarUrl",
+      "author": "Dave (Senior Codeowner)",
+      "pr": "PR #412"
+    },
+    {
+      "pattern": "UserService.fetchUser",
+      "replacedBy": "UserService.getUser",
+      "author": "Alice (Tech Lead)",
+      "pr": "PR #389"
+    },
+    {
+      "pattern": "StripeClient.charge",
+      "replacedBy": "StripeClient.createPaymentIntent",
+      "author": "Finance Team",
+      "pr": "PR #204"
+    }
+  ],
+
+  "customPatterns": [
+    {
+      "id": "no-direct-process-env",
+      "tier": "yellow",
+      "pattern": "process\\.env\\.",
+      "message": "Read config through the typed config module, not process.env directly."
+    }
+  ],
+
+  "rules": {
+    "todo-marker": false,
+    "network-call": { "tier": "green" }
+  },
+
+  "ignore": ["**/node_modules/**", "**/dist/**", "**/build/**"]
+}

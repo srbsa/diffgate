@@ -1,0 +1,141 @@
+{
+  "name": "guardrail-review",
+  "displayName": "Guardrail Review",
+  "description": "Diff-aware, three-tiered code review guardrails inline in your editor.",
+  "version": "0.1.1",
+  "publisher": "guardrail",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "SCM Providers"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "guardrail.analyzeWorkspace",
+        "title": "Guardrail: Review Pending Changes",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "guardrail.runGate",
+        "title": "Guardrail: Run Verification Gate"
+      },
+      {
+        "command": "guardrail.explainWithAI",
+        "title": "Guardrail: Explain Finding with AI"
+      },
+      {
+        "command": "guardrail.toggleScanMode",
+        "title": "Guardrail: Toggle Scan Mode (Diff / Whole File)"
+      },
+      {
+        "command": "guardrail.openConfig",
+        "title": "Guardrail: Open Config (.guardrails.json)"
+      },
+      {
+        "command": "guardrail.ignoreRule",
+        "title": "Guardrail: Disable Rule for Project"
+      },
+      {
+        "command": "guardrail.deepReview",
+        "title": "Guardrail: Deep Review Finding (Agentic)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "guardrail",
+          "title": "Guardrail",
+          "icon": "media/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "guardrail": [
+        {
+          "id": "guardrailRisk",
+          "name": "Risk Review"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "guardrail.analyzeWorkspace",
+          "when": "view == guardrailRisk",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Guardrail Review",
+      "properties": {
+        "guardrail.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline guardrail analysis."
+        },
+        "guardrail.scanMode": {
+          "type": "string",
+          "enum": ["diff", "file"],
+          "enumDescriptions": [
+            "Only flag risk on lines changed vs the committed baseline (recommended).",
+            "Flag risk across the entire file."
+          ],
+          "default": "diff",
+          "description": "Whether to analyze only changed lines or the whole file."
+        },
+        "guardrail.diffMode": {
+          "type": "string",
+          "enum": ["working", "staged"],
+          "default": "working",
+          "description": "Baseline for diff mode: all uncommitted changes (working) or staged only."
+        },
+        "guardrail.ai.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable LLM-powered explanations (requires the provider's API key in your environment, except for local providers)."
+        },
+        "guardrail.ai.provider": {
+          "type": "string",
+          "enum": ["", "anthropic", "openai", "openrouter", "groq", "together", "lmstudio", "ollama", "custom"],
+          "default": "",
+          "description": "LLM provider override (empty = use .guardrails.json). Anthropic uses the Messages API; the rest use the OpenAI-compatible API."
+        },
+        "guardrail.ai.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model id override (empty = use .guardrails.json or the provider default)."
+        },
+        "guardrail.runGateOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the project's testCommand automatically on save when high-impact (orange) findings are present."
+        },
+        "guardrail.ai.deepReview.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model override for Deep Review (agentic). Leave empty to use ai.model. Use a stronger model here (e.g. claude-opus-4-8, gpt-4o)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "npm run build && vsce package --no-dependencies --out guardrail-review-0.1.1.vsix"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.84.0",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.0"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "testCommand": "npm test",
+  "gate": { "mode": "working", "failOn": "orange" },
+  "ai": { "enabled": false, "model": "claude-sonnet-4-6", "apiKeyEnv": "ANTHROPIC_API_KEY" },
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/*.vsix",
+    "**/*.map",
+    "package-lock.json"
+  ]
+}
