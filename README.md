@@ -1,8 +1,8 @@
-# Guardrail Review Engine
+# DiffGate Review Engine
 
 **Diff-aware, three-tiered code review — in your editor and on the command line.**
 
-Most review tooling fires on the whole file and treats every line the same, so you drown in noise and the real risks hide in it. Guardrail reviews only the lines you **changed** (vs the committed baseline) and sorts each change into one of three risk tiers, so trivial edits fly through and high-impact ones get gated:
+Most review tooling fires on the whole file and treats every line the same, so you drown in noise and the real risks hide in it. DiffGate reviews only the lines you **changed** (vs the committed baseline) and sorts each change into one of three risk tiers, so trivial edits fly through and high-impact ones get gated:
 
 | Tier | Meaning | What you do | Examples |
 |------|---------|-------------|----------|
@@ -13,8 +13,8 @@ Most review tooling fires on the whole file and treats every line the same, so y
 It runs two ways from one shared engine:
 
 - **VS Code extension** — inline squiggles on changed lines, hover cards (why · who owns it · quick-fix), a Risk Review tree, a status-bar summary, a verification gate, and **Deep Review** (agentic blast-radius analysis for orange findings).
-- **CLI** — `guardrail check` reviews your diff and exits non-zero on high-impact findings: perfect as a **pre-commit hook** or **CI gate**.
-- **MCP server** — `guardrail mcp` exposes the engine as an MCP tool so coding agents (Claude Code, Cursor, etc.) can check generated code before surfacing it to you.
+- **CLI** — `diffgate check` reviews your diff and exits non-zero on high-impact findings: perfect as a **pre-commit hook** or **CI gate**.
+- **MCP server** — `diffgate mcp` exposes the engine as an MCP tool so coding agents (Claude Code, Cursor, etc.) can check generated code before surfacing it to you.
 
 ---
 
@@ -22,14 +22,14 @@ It runs two ways from one shared engine:
 
 ```bash
 npm install            # installs the engine + @babel/parser
-npm link               # optional: makes `guardrail` available globally
+npm link               # optional: makes `diffgate` available globally
 
-guardrail scan mock_project          # analyze files directly (no git needed)
-guardrail check                      # review your pending git changes (the gate)
-guardrail watch                      # live review as you edit
-guardrail init                       # write a starter .guardrails.json
-guardrail install-hook               # add a git pre-commit gate
-guardrail mcp                        # start the MCP stdio server
+diffgate scan mock_project          # analyze files directly (no git needed)
+diffgate check                      # review your pending git changes (the gate)
+diffgate watch                      # live review as you edit
+diffgate init                       # write a starter .diffgates.json
+diffgate install-hook               # add a git pre-commit gate
+diffgate mcp                        # start the MCP stdio server
 ```
 
 > No git repo? `check`/`watch` fall back gracefully; use `scan` to analyze files directly.
@@ -41,11 +41,11 @@ npm install --prefix extension
 npm run build --prefix extension
 ```
 
-Press **F5** in this repo ("Run Guardrail Extension") to launch a dev host, or build an installable package:
+Press **F5** in this repo ("Run DiffGate Extension") to launch a dev host, or build an installable package:
 
 ```bash
-npm run package --prefix extension   # produces extension/guardrail-review-*.vsix
-# then: code --install-extension extension/guardrail-review-0.1.1.vsix
+npm run package --prefix extension   # produces extension/diffgate-*.vsix
+# then: code --install-extension extension/diffgate-0.1.1.vsix
 ```
 
 ---
@@ -55,7 +55,7 @@ npm run package --prefix extension   # produces extension/guardrail-review-*.vsi
 - **Diff-aware** — uses `git diff` (CLI) or an in-memory LCS diff (editor, accurate on unsaved buffers) to find changed lines, and only reports findings on those lines.
 - **Real AST for JS/TS** — `@babel/parser` powers precise rules: deprecated calls are not matched inside comments or strings, and exported-signature changes are detected structurally.
 - **Language-agnostic pattern rules** — secrets, SQL/schema changes, auth/crypto, dynamic execution, and injection sinks are detected across Python, Go, Java, Ruby, and any text via pattern rules.
-- **Real gate** — when a change is high-impact, Guardrail runs your `testCommand` and shows the actual exit code and output.
+- **Real gate** — when a change is high-impact, DiffGate runs your `testCommand` and shows the actual exit code and output.
 - **Hybrid AI (optional, provider-agnostic)** — the deterministic engine always runs offline; when `ai.enabled` is true it adds plain-English explanations and fix suggestions. Works with **Anthropic, OpenAI, OpenRouter, Groq, Together, LM Studio, Ollama, or any OpenAI-compatible endpoint**.
 - **Deep Review** — for orange findings, an agentic loop (grep, read_file, find_references, git_blame) investigates blast radius and returns a `confirmed-risk / likely-safe / needs-human` verdict.
 
@@ -63,9 +63,9 @@ Engine layout: [`src/core`](src/core) (shared) · [`src/cli.ts`](src/cli.ts) (CL
 
 ---
 
-## Configuration — `.guardrails.json`
+## Configuration — `.diffgates.json`
 
-Place it at your repo root (`guardrail init` generates one). See [example.guardrails.json](example.guardrails.json) for the full schema.
+Place it at your repo root (`diffgate init` generates one). See [example.diffgates.json](example.diffgates.json) for the full schema.
 
 ```jsonc
 {
@@ -138,32 +138,32 @@ The engine is **provider-agnostic**. Under the hood there are two wire adapters 
 | `debug-logging` | 🟢 | `console.log`, `fmt.Print`, `System.out.println` |
 | `todo-marker` | 🟢 | `TODO`, `FIXME`, `HACK` |
 
-Disable or re-tier any rule via the `rules` key in `.guardrails.json`.
+Disable or re-tier any rule via the `rules` key in `.diffgates.json`.
 
 ---
 
 ## CI / pre-commit
 
 ```bash
-# Pre-commit hook (installed by `guardrail install-hook`)
-guardrail check --staged
+# Pre-commit hook (installed by `diffgate install-hook`)
+diffgate check --staged
 
 # CI
-guardrail check --fail-on=orange      # exit 1 blocks the build
-guardrail check --json                # machine-readable output
+diffgate check --fail-on=orange      # exit 1 blocks the build
+diffgate check --json                # machine-readable output
 ```
 
-## Guardrail for Coding Agents
+## DiffGate for Coding Agents
 
-Guardrail's MCP server enables a workflow that PR-review tools cannot address: catching security issues in **generated code before it is written to disk**.
+DiffGate's MCP server enables a workflow that PR-review tools cannot address: catching security issues in **generated code before it is written to disk**.
 
-When a coding agent (Claude Code, Cursor, Continue, etc.) is about to suggest code, it calls `guardrail_analyze` with the generated content directly — no commit, no staged file:
+When a coding agent (Claude Code, Cursor, Continue, etc.) is about to suggest code, it calls `diffgate_analyze` with the generated content directly — no commit, no staged file:
 
 ```
 Agent generates code
         │
         ▼
-guardrail_analyze(filePath, content)   ← content = the unsaved suggestion
+diffgate_analyze(filePath, content)   ← content = the unsaved suggestion
         │
   orange finding?
    ┌────┴────┐
@@ -174,21 +174,21 @@ Agent       User sees
 self-corrects  the code
 ```
 
-Example: the agent writes a function with `` db.query(`SELECT * FROM users WHERE id = ${req.query.id}`) ``. Guardrail returns an orange `sql-injection` finding. The agent revises to `db.query("SELECT * FROM users WHERE id = ?", [req.query.id])` and re-checks — clean result. The user sees only the corrected version.
+Example: the agent writes a function with `` db.query(`SELECT * FROM users WHERE id = ${req.query.id}`) ``. DiffGate returns an orange `sql-injection` finding. The agent revises to `db.query("SELECT * FROM users WHERE id = ?", [req.query.id])` and re-checks — clean result. The user sees only the corrected version.
 
-The deterministic rules cost **zero LLM tokens** — the agent gets back structured JSON findings, not prose. Token spend only occurs if the agent also calls `guardrail_deep_review` to investigate blast radius.
+The deterministic rules cost **zero LLM tokens** — the agent gets back structured JSON findings, not prose. Token spend only occurs if the agent also calls `diffgate_deep_review` to investigate blast radius.
 
 **Setup (2 lines):** Add to `~/.claude/mcp.json` (Claude Code) or your Cursor MCP settings:
 
 ```json
 {
   "mcpServers": {
-    "guardrail": { "command": "guardrail", "args": ["mcp"] }
+    "diffgate": { "command": "diffgate", "args": ["mcp"] }
   }
 }
 ```
 
-Without a global install: `{ "command": "node", "args": ["/path/to/guardrail_review_engine/dist/cli.js", "mcp"] }`
+Without a global install: `{ "command": "node", "args": ["/path/to/diffgate/dist/cli.js", "mcp"] }`
 
 See [MCP.md](MCP.md) for tool descriptions and AI configuration.
 
@@ -197,7 +197,7 @@ See [MCP.md](MCP.md) for tool descriptions and AI configuration.
 ## Try it
 
 ```bash
-guardrail scan mock_project
+diffgate scan mock_project
 ```
 
 You'll see green findings (logging), yellow findings (deprecated `StripeClient.charge`), and orange findings (the `DROP COLUMN` migration, a public export).

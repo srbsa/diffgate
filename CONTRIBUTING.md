@@ -1,6 +1,6 @@
-# Contributing to Guardrail
+# Contributing to DiffGate
 
-Thank you for your interest in contributing. Guardrail is Apache 2.0 licensed and welcomes pull requests, bug reports, and feature ideas.
+Thank you for your interest in contributing. DiffGate is Apache 2.0 licensed and welcomes pull requests, bug reports, and feature ideas.
 
 ## Prerequisites
 
@@ -11,8 +11,8 @@ Thank you for your interest in contributing. Guardrail is Apache 2.0 licensed an
 ## Setup
 
 ```bash
-git clone https://github.com/<your-org>/guardrail.git
-cd guardrail
+git clone https://github.com/<your-org>/diffgate.git
+cd diffgate
 npm install
 npm install --prefix extension
 ```
@@ -47,7 +47,7 @@ extension/
   test/smoke.cjs      Extension smoke test
 
 test/                 Core unit tests (node:test)
-mock_project/         Demo files for `guardrail scan mock_project`
+mock_project/         Demo files for `diffgate scan mock_project`
 ```
 
 ## Adding a rule
@@ -95,7 +95,7 @@ node extension/test/smoke.cjs
 ## Reporting issues
 
 Open an issue on GitHub. Include:
-- Guardrail version (`guardrail --version`)
+- DiffGate version (`diffgate --version`)
 - Node.js version (`node --version`)
 - The command or operation that failed
 - Relevant output or error messages

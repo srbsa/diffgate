@@ -1,12 +1,12 @@
-# Guardrail MCP Server
+# DiffGate MCP Server
 
-Expose the guardrail engine to any coding agent that supports MCP (Claude Code, Cursor, Continue, etc.).
+Expose the diffgate engine to any coding agent that supports MCP (Claude Code, Cursor, Continue, etc.).
 
 ## Quick start
 
 ```bash
 npm install -g .          # or: npm link
-guardrail mcp             # starts the stdio server; clients launch it for you
+diffgate mcp             # starts the stdio server; clients launch it for you
 ```
 
 ## Register with Claude Code
@@ -16,8 +16,8 @@ Add to `~/.claude/mcp.json` (global) or `.mcp.json` in your project root:
 ```json
 {
   "mcpServers": {
-    "guardrail": {
-      "command": "guardrail",
+    "diffgate": {
+      "command": "diffgate",
       "args": ["mcp"]
     }
   }
@@ -29,15 +29,15 @@ Or if not globally installed, use `node` directly:
 ```json
 {
   "mcpServers": {
-    "guardrail": {
+    "diffgate": {
       "command": "node",
-      "args": ["/absolute/path/to/guardrail_review_engine/dist/cli.js", "mcp"]
+      "args": ["/absolute/path/to/diffgate/dist/cli.js", "mcp"]
     }
   }
 }
 ```
 
-Restart Claude Code. You'll see "guardrail" in the MCP tools list.
+Restart Claude Code. You'll see "diffgate" in the MCP tools list.
 
 ## Register with Cursor
 
@@ -45,8 +45,8 @@ In Cursor Settings → MCP, add:
 
 ```json
 {
-  "guardrail": {
-    "command": "guardrail",
+  "diffgate": {
+    "command": "diffgate",
     "args": ["mcp"]
   }
 }
@@ -56,12 +56,12 @@ In Cursor Settings → MCP, add:
 
 | Tool | When to use |
 |---|---|
-| `guardrail_analyze` | After writing/modifying a file — check it for risk before suggesting it to the user |
-| `guardrail_check_staged` | Before committing — scan all pending changes across the repo |
-| `guardrail_deep_review` | When `guardrail_analyze` returns an orange finding — investigate blast radius |
-| `guardrail_explain` | Get a concise explanation of any yellow/orange finding |
+| `diffgate_analyze` | After writing/modifying a file — check it for risk before suggesting it to the user |
+| `diffgate_check_staged` | Before committing — scan all pending changes across the repo |
+| `diffgate_deep_review` | When `diffgate_analyze` returns an orange finding — investigate blast radius |
+| `diffgate_explain` | Get a concise explanation of any yellow/orange finding |
 
-### guardrail_analyze
+### diffgate_analyze
 
 ```json
 {
@@ -76,7 +76,7 @@ Returns a structured analysis result. Key fields:
 - `tier` — overall tier: `"green"` | `"yellow"` | `"orange"`
 - `blocking` — true if any finding should block a commit
 
-### guardrail_check_staged
+### diffgate_check_staged
 
 ```json
 { "cwd": "/path/to/repo", "mode": "working" }
@@ -84,9 +84,9 @@ Returns a structured analysis result. Key fields:
 
 Returns `{ files[], tier, counts, blocking }` across all changed files.
 
-### guardrail_deep_review
+### diffgate_deep_review
 
-Requires `ai.enabled: true` in `.guardrails.json` and an API key.
+Requires `ai.enabled: true` in `.diffgate.json` and an API key.
 
 ```json
 {
@@ -100,7 +100,7 @@ Requires `ai.enabled: true` in `.guardrails.json` and an API key.
 
 Returns `{ verdict, why, fix, steps, transcript, model, hitMax }`.
 
-### guardrail_explain
+### diffgate_explain
 
 ```json
 {
@@ -115,8 +115,8 @@ Returns `{ text, model }`.
 
 ## AI configuration
 
-For `guardrail_deep_review` and `guardrail_explain`, the agent uses the AI provider
-configured in `.guardrails.json`. Add to your project config:
+For `diffgate_deep_review` and `diffgate_explain`, the agent uses the AI provider
+configured in `.diffgate.json`. Add to your project config:
 
 ```json
 {
@@ -138,6 +138,6 @@ Local providers (LM Studio, Ollama) need no API key.
 No. The two model invocations have different roles:
 
 - **Outer agent (Claude Code)**: writes code, answers your questions, orchestrates tasks.
-- **Guardrail MCP tool**: runs deterministic rules (no LLM) for `guardrail_analyze` and `guardrail_check_staged`; uses a *focused* security-review system prompt and specialized git/grep tools for `guardrail_deep_review`.
+- **DiffGate MCP tool**: runs deterministic rules (no LLM) for `diffgate_analyze` and `diffgate_check_staged`; uses a *focused* security-review system prompt and specialized git/grep tools for `diffgate_deep_review`.
 
 The outer agent delegates "is this safe to ship?" to a specialist. The deterministic tools cost zero LLM tokens — the outer agent just gets structured risk findings back.

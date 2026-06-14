@@ -25,7 +25,7 @@ export const DEFAULT_CONFIG: Config = {
   testCommand: null,
 };
 
-const CONFIG_NAME = ".guardrails.json";
+const CONFIG_NAME = ".diffgate.json";
 
 export function findConfigPath(startDir: string): string | null {
   let dir = path.resolve(startDir);

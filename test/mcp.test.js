@@ -74,10 +74,10 @@ test("createWriter emits a correct Content-Length frame", () => {
 
 test("TOOL_DEFS exposes all 4 tools with required inputSchema", () => {
   const names = TOOL_DEFS.map((t) => t.name);
-  assert.ok(names.includes("guardrail_analyze"));
-  assert.ok(names.includes("guardrail_check_staged"));
-  assert.ok(names.includes("guardrail_deep_review"));
-  assert.ok(names.includes("guardrail_explain"));
+  assert.ok(names.includes("diffgate_analyze"));
+  assert.ok(names.includes("diffgate_check_staged"));
+  assert.ok(names.includes("diffgate_deep_review"));
+  assert.ok(names.includes("diffgate_explain"));
   for (const t of TOOL_DEFS) {
     assert.ok(t.inputSchema, `${t.name} must have inputSchema`);
     assert.ok(t.description, `${t.name} must have description`);

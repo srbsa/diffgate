@@ -1,10 +1,10 @@
 {
-  "name": "guardrail-review-engine",
+  "name": "diffgate",
   "version": "0.1.1",
-  "description": "Diff-aware, three-tiered code review guardrails for your IDE and CLI.",
+  "description": "Diff-aware, three-tiered code review gate — security triage for your IDE and CLI.",
   "type": "module",
   "bin": {
-    "guardrail": "dist/cli.js"
+    "diffgate": "dist/cli.js"
   },
   "main": "dist/core/index.js",
   "exports": {
@@ -37,7 +37,8 @@
   },
   "keywords": [
     "code-review",
-    "guardrails",
+    "security-gate",
+    "diff-analysis",
     "static-analysis",
     "diff",
     "vscode",

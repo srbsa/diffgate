@@ -40,7 +40,7 @@ const MAX_BYTES = 2 * 1024 * 1024;
 
 // --- helpers -----------------------------------------------------------------
 function settings(): vscode.WorkspaceConfiguration {
-  return vscode.workspace.getConfiguration("guardrail");
+  return vscode.workspace.getConfiguration("diffgate");
 }
 
 function folderForUri(uri: vscode.Uri): string {
@@ -54,7 +54,7 @@ function getConfigFor(folder: string): Config {
     try {
       cfg = loadConfig(folder).config;
     } catch (e) {
-      vscode.window.showWarningMessage(`Guardrail: ${(e as Error).message}`);
+      vscode.window.showWarningMessage(`DiffGate: ${(e as Error).message}`);
       cfg = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as Config;
     }
     configCache.set(folder, cfg);
@@ -97,7 +97,7 @@ function buildRange(finding: Finding, document: vscode.TextDocument | null): vsc
 
 function toDiagnostic(finding: Finding, document: vscode.TextDocument | null): vscode.Diagnostic {
   const d = new vscode.Diagnostic(buildRange(finding, document), `${finding.title}: ${finding.message}`, severityFor(finding));
-  d.source = "guardrail";
+  d.source = "diffgate";
   d.code = finding.ruleId;
   return d;
 }
@@ -159,7 +159,7 @@ function debouncedAnalyze(document: vscode.TextDocument, delay = 350): void {
 // --- status bar --------------------------------------------------------------
 function updateStatusBar(res: AnalyzeResult): void {
   if (!res || res.findings.length === 0) {
-    statusBar.text = "$(shield) Guardrail: clear";
+    statusBar.text = "$(shield) DiffGate: clear";
     statusBar.tooltip = "No guardrail findings on changed lines";
     statusBar.backgroundColor = undefined;
     statusBar.show();
@@ -167,7 +167,7 @@ function updateStatusBar(res: AnalyzeResult): void {
   }
   const { green, yellow, orange } = res.counts;
   statusBar.text = `$(shield) ${TIER_META[res.tier].icon} ${green}/${yellow}/${orange}`;
-  statusBar.tooltip = `Guardrail: ${orange} orange · ${yellow} yellow · ${green} green — click to review all changes`;
+  statusBar.tooltip = `DiffGate: ${orange} orange · ${yellow} yellow · ${green} green — click to review all changes`;
   statusBar.backgroundColor =
     res.tier === "orange" ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
   statusBar.show();
@@ -223,13 +223,13 @@ const codeActionProvider: vscode.CodeActionProvider = {
     const entry = findingsByUri.get(document.uri.toString());
     if (!entry) return [];
     const actions: vscode.CodeAction[] = [];
-    const diags = context.diagnostics.filter((d) => d.source === "guardrail");
+    const diags = context.diagnostics.filter((d) => d.source === "diffgate");
     for (const diag of diags) {
       const f = entry.res.findings.find((x) => x.ruleId === diag.code && x.line === diag.range.start.line + 1);
       if (!f) continue;
 
       if (f.fix) {
-        const a = new vscode.CodeAction(`Guardrail: ${f.fix.title}`, vscode.CodeActionKind.QuickFix);
+        const a = new vscode.CodeAction(`DiffGate: ${f.fix.title}`, vscode.CodeActionKind.QuickFix);
         a.edit = new vscode.WorkspaceEdit();
         a.edit.replace(document.uri, new vscode.Range(f.fix.startLine - 1, f.fix.startColumn, f.fix.endLine - 1, f.fix.endColumn), f.fix.newText);
         a.diagnostics = [diag];
@@ -237,18 +237,18 @@ const codeActionProvider: vscode.CodeActionProvider = {
         actions.push(a);
       }
 
-      const explain = new vscode.CodeAction(`Guardrail: Explain "${f.title}" with AI`, vscode.CodeActionKind.QuickFix);
-      explain.command = { command: "guardrail.explainWithAI", title: "Explain", arguments: [document.uri.toString(), f.ruleId, f.line] };
+      const explain = new vscode.CodeAction(`DiffGate: Explain "${f.title}" with AI`, vscode.CodeActionKind.QuickFix);
+      explain.command = { command: "diffgate.explainWithAI", title: "Explain", arguments: [document.uri.toString(), f.ruleId, f.line] };
       actions.push(explain);
 
       if (f.tier === "orange") {
-        const deep = new vscode.CodeAction(`Guardrail: Deep Review "${f.title}" (agentic)`, vscode.CodeActionKind.QuickFix);
-        deep.command = { command: "guardrail.deepReview", title: "Deep Review", arguments: [document.uri.toString(), f.ruleId, f.line] };
+        const deep = new vscode.CodeAction(`DiffGate: Deep Review "${f.title}" (agentic)`, vscode.CodeActionKind.QuickFix);
+        deep.command = { command: "diffgate.deepReview", title: "Deep Review", arguments: [document.uri.toString(), f.ruleId, f.line] };
         actions.push(deep);
       }
 
-      const ignore = new vscode.CodeAction(`Guardrail: Disable rule "${f.ruleId}" for this project`, vscode.CodeActionKind.QuickFix);
-      ignore.command = { command: "guardrail.ignoreRule", title: "Disable rule", arguments: [entry.folder, f.ruleId] };
+      const ignore = new vscode.CodeAction(`DiffGate: Disable rule "${f.ruleId}" for this project`, vscode.CodeActionKind.QuickFix);
+      ignore.command = { command: "diffgate.ignoreRule", title: "Disable rule", arguments: [entry.folder, f.ruleId] };
       actions.push(ignore);
     }
     return actions;
@@ -337,7 +337,7 @@ async function runGateForFolder(folder: string, config: Config, findings: Findin
   gateChannel.show(true);
   gateChannel.appendLine(`\n$ ${config.testCommand}   (cwd: ${folder})`);
   const result = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Window, title: "Guardrail: running verification gate…" },
+    { location: vscode.ProgressLocation.Window, title: "DiffGate: running verification gate…" },
     () => runGate({ cwd: folder, config, findings })
   );
   if (!result.ran) {
@@ -372,7 +372,7 @@ async function cmdExplainWithAI(uriStr: string, ruleId: string, line: number): P
   aiChannel.show(true);
   aiChannel.appendLine(`\n=== ${f.title} [${ruleId}] @ ${path.basename(uriStr)}:${line} ===`);
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Guardrail: asking Claude…" },
+    { location: vscode.ProgressLocation.Notification, title: "DiffGate: asking Claude…" },
     async () => {
       try {
         const { text, model } = await explainFinding({ finding: f, snippet, language: entry.res.language, config: entry.config });
@@ -410,7 +410,7 @@ async function cmdDeepReview(uriStr: string, ruleId: string, line: number): Prom
   deepChannel.appendLine(`${"=".repeat(label.length + 8)}`);
 
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Guardrail: Deep Review in progress…", cancellable: true },
+    { location: vscode.ProgressLocation.Notification, title: "DiffGate: Deep Review in progress…", cancellable: true },
     async (progress, token) => {
       const ctl = new AbortController();
       token.onCancellationRequested(() => ctl.abort());
@@ -456,14 +456,14 @@ function cmdIgnoreRule(folder: string, ruleId: string): void {
   try {
     if (fs.existsSync(cfgPath)) raw = JSON.parse(fs.readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;
   } catch {
-    vscode.window.showErrorMessage(`Guardrail: ${cfgPath} is not valid JSON; not modifying.`);
+    vscode.window.showErrorMessage(`DiffGate: ${cfgPath} is not valid JSON; not modifying.`);
     return;
   }
   raw["rules"] = (raw["rules"] as Record<string, unknown>) || {};
   (raw["rules"] as Record<string, unknown>)[ruleId] = false;
   fs.writeFileSync(cfgPath, JSON.stringify(raw, null, 2) + "\n");
   configCache.delete(folder);
-  vscode.window.showInformationMessage(`Guardrail: rule "${ruleId}" disabled in .guardrails.json.`);
+  vscode.window.showInformationMessage(`DiffGate: rule "${ruleId}" disabled in .guardrails.json.`);
   reanalyzeOpen();
   refreshWorkspace();
 }
@@ -493,7 +493,7 @@ async function cmdRunGate(): Promise<void> {
   if (!folder) return;
   const config = getConfigFor(folder);
   if (!config.testCommand) {
-    vscode.window.showWarningMessage('Guardrail: no "testCommand" set in .guardrails.json.');
+    vscode.window.showWarningMessage('DiffGate: no "testCommand" set in .guardrails.json.');
     return;
   }
   const review = isGitRepo(folder) ? reviewChanges(folder, { mode: settings().get("diffMode", "working") }) : { files: [] as AnalyzeResult[] };
@@ -506,31 +506,31 @@ function reanalyzeOpen(): void {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  diagnostics = vscode.languages.createDiagnosticCollection("guardrail");
+  diagnostics = vscode.languages.createDiagnosticCollection("diffgate");
   aiChannel = vscode.window.createOutputChannel("Guardrail AI");
   gateChannel = vscode.window.createOutputChannel("Guardrail Gate");
   deepChannel = vscode.window.createOutputChannel("Guardrail Deep Review");
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBar.command = "guardrail.analyzeWorkspace";
+  statusBar.command = "diffgate.analyzeWorkspace";
   statusBar.text = "$(shield) Guardrail";
   statusBar.show();
 
   riskTree = new RiskTreeProvider();
-  const treeView = vscode.window.createTreeView("guardrailRisk", { treeDataProvider: riskTree });
+  const treeView = vscode.window.createTreeView("diffgateRisk", { treeDataProvider: riskTree });
 
   const selector = { scheme: "file" };
   context.subscriptions.push(
     diagnostics, aiChannel, gateChannel, deepChannel, statusBar, treeView,
     vscode.languages.registerHoverProvider(selector, hoverProvider),
     vscode.languages.registerCodeActionsProvider(selector, codeActionProvider, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }),
-    vscode.commands.registerCommand("guardrail.analyzeWorkspace", () => { reanalyzeOpen(); refreshWorkspace(); vscode.commands.executeCommand("guardrailRisk.focus"); }),
-    vscode.commands.registerCommand("guardrail.explainWithAI", cmdExplainWithAI),
-    vscode.commands.registerCommand("guardrail.deepReview", cmdDeepReview),
-    vscode.commands.registerCommand("guardrail.ignoreRule", cmdIgnoreRule),
-    vscode.commands.registerCommand("guardrail.openConfig", cmdOpenConfig),
-    vscode.commands.registerCommand("guardrail.toggleScanMode", cmdToggleScanMode),
-    vscode.commands.registerCommand("guardrail.runGate", cmdRunGate)
+    vscode.commands.registerCommand("diffgate.analyzeWorkspace", () => { reanalyzeOpen(); refreshWorkspace(); vscode.commands.executeCommand("diffgateRisk.focus"); }),
+    vscode.commands.registerCommand("diffgate.explainWithAI", cmdExplainWithAI),
+    vscode.commands.registerCommand("diffgate.deepReview", cmdDeepReview),
+    vscode.commands.registerCommand("diffgate.ignoreRule", cmdIgnoreRule),
+    vscode.commands.registerCommand("diffgate.openConfig", cmdOpenConfig),
+    vscode.commands.registerCommand("diffgate.toggleScanMode", cmdToggleScanMode),
+    vscode.commands.registerCommand("diffgate.runGate", cmdRunGate)
   );
 
   context.subscriptions.push(
@@ -545,7 +545,7 @@ export function activate(context: vscode.ExtensionContext): void {
       else analyzeDocument(ed.document);
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("guardrail")) { configCache.clear(); reanalyzeOpen(); refreshWorkspace(); }
+      if (e.affectsConfiguration("diffgate")) { configCache.clear(); reanalyzeOpen(); refreshWorkspace(); }
     })
   );
 

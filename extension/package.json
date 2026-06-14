@@ -1,9 +1,9 @@
 {
-  "name": "guardrail-review",
-  "displayName": "Guardrail Review",
-  "description": "Diff-aware, three-tiered code review guardrails inline in your editor.",
+  "name": "diffgate-review",
+  "displayName": "DiffGate",
+  "description": "Diff-aware, three-tiered code review gate inline in your editor.",
   "version": "0.1.1",
-  "publisher": "guardrail",
+  "publisher": "diffgate",
   "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.84.0"
@@ -20,48 +20,48 @@
   "contributes": {
     "commands": [
       {
-        "command": "guardrail.analyzeWorkspace",
+        "command": "diffgate.analyzeWorkspace",
         "title": "Guardrail: Review Pending Changes",
         "icon": "$(refresh)"
       },
       {
-        "command": "guardrail.runGate",
+        "command": "diffgate.runGate",
         "title": "Guardrail: Run Verification Gate"
       },
       {
-        "command": "guardrail.explainWithAI",
+        "command": "diffgate.explainWithAI",
         "title": "Guardrail: Explain Finding with AI"
       },
       {
-        "command": "guardrail.toggleScanMode",
+        "command": "diffgate.toggleScanMode",
         "title": "Guardrail: Toggle Scan Mode (Diff / Whole File)"
       },
       {
-        "command": "guardrail.openConfig",
-        "title": "Guardrail: Open Config (.guardrails.json)"
+        "command": "diffgate.openConfig",
+        "title": "Guardrail: Open Config (.diffgates.json)"
       },
       {
-        "command": "guardrail.ignoreRule",
+        "command": "diffgate.ignoreRule",
         "title": "Guardrail: Disable Rule for Project"
       },
       {
-        "command": "guardrail.deepReview",
+        "command": "diffgate.deepReview",
         "title": "Guardrail: Deep Review Finding (Agentic)"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "guardrail",
+          "id": "diffgate",
           "title": "Guardrail",
           "icon": "media/shield.svg"
         }
       ]
     },
     "views": {
-      "guardrail": [
+      "diffgate": [
         {
-          "id": "guardrailRisk",
+          "id": "diffgateRisk",
           "name": "Risk Review"
         }
       ]
@@ -69,8 +69,8 @@
     "menus": {
       "view/title": [
         {
-          "command": "guardrail.analyzeWorkspace",
-          "when": "view == guardrailRisk",
+          "command": "diffgate.analyzeWorkspace",
+          "when": "view == diffgateRisk",
           "group": "navigation"
         }
       ]
@@ -78,12 +78,12 @@
     "configuration": {
       "title": "Guardrail Review",
       "properties": {
-        "guardrail.enable": {
+        "diffgate.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Enable inline guardrail analysis."
+          "description": "Enable inline diffgate analysis."
         },
-        "guardrail.scanMode": {
+        "diffgate.scanMode": {
           "type": "string",
           "enum": ["diff", "file"],
           "enumDescriptions": [
@@ -93,34 +93,34 @@
           "default": "diff",
           "description": "Whether to analyze only changed lines or the whole file."
         },
-        "guardrail.diffMode": {
+        "diffgate.diffMode": {
           "type": "string",
           "enum": ["working", "staged"],
           "default": "working",
           "description": "Baseline for diff mode: all uncommitted changes (working) or staged only."
         },
-        "guardrail.ai.enabled": {
+        "diffgate.ai.enabled": {
           "type": "boolean",
           "default": false,
           "description": "Enable LLM-powered explanations (requires the provider's API key in your environment, except for local providers)."
         },
-        "guardrail.ai.provider": {
+        "diffgate.ai.provider": {
           "type": "string",
           "enum": ["", "anthropic", "openai", "openrouter", "groq", "together", "lmstudio", "ollama", "custom"],
           "default": "",
-          "description": "LLM provider override (empty = use .guardrails.json). Anthropic uses the Messages API; the rest use the OpenAI-compatible API."
+          "description": "LLM provider override (empty = use .diffgates.json). Anthropic uses the Messages API; the rest use the OpenAI-compatible API."
         },
-        "guardrail.ai.model": {
+        "diffgate.ai.model": {
           "type": "string",
           "default": "",
-          "description": "Model id override (empty = use .guardrails.json or the provider default)."
+          "description": "Model id override (empty = use .diffgates.json or the provider default)."
         },
-        "guardrail.runGateOnSave": {
+        "diffgate.runGateOnSave": {
           "type": "boolean",
           "default": false,
           "description": "Run the project's testCommand automatically on save when high-impact (orange) findings are present."
         },
-        "guardrail.ai.deepReview.model": {
+        "diffgate.ai.deepReview.model": {
           "type": "string",
           "default": "",
           "description": "Model override for Deep Review (agentic). Leave empty to use ai.model. Use a stronger model here (e.g. claude-opus-4-8, gpt-4o)."
@@ -131,7 +131,7 @@
   "scripts": {
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "package": "npm run build && vsce package --no-dependencies --out guardrail-review-0.1.1.vsix"
+    "package": "npm run build && vsce package --no-dependencies --out diffgate-0.1.1.vsix"
   },
   "devDependencies": {
     "@types/vscode": "^1.84.0",

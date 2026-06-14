@@ -53,7 +53,7 @@ export function createWriter(stream: Writable): (obj: unknown) => void {
 
 export const TOOL_DEFS = [
   {
-    name: "guardrail_analyze",
+    name: "diffgate_analyze",
     description:
       "Analyze a file for code review findings. Only flags risk on lines changed vs the git baseline (diff-aware). " +
       "Pass `content` to analyze unsaved or generated code before it is written to disk.",
@@ -68,7 +68,7 @@ export const TOOL_DEFS = [
     },
   },
   {
-    name: "guardrail_check_staged",
+    name: "diffgate_check_staged",
     description:
       "Check all staged (or working-tree) changes in a git repo for guardrail findings. " +
       "Returns overall tier, counts, and per-file findings across the whole diff.",
@@ -81,14 +81,14 @@ export const TOOL_DEFS = [
     },
   },
   {
-    name: "guardrail_deep_review",
+    name: "diffgate_deep_review",
     description:
       "Run an agentic deep review on a single high-impact (orange) finding. " +
       "The model uses real repo tools (grep, read_file, find_references, git_blame) to investigate blast radius before rendering a verdict.",
     inputSchema: {
       type: "object",
       properties: {
-        finding: { type: "object", description: "A finding object from guardrail_analyze." },
+        finding: { type: "object", description: "A finding object from diffgate_analyze." },
         filePath: { type: "string", description: "Repo-relative path of the file containing the finding." },
         snippet: { type: "string", description: "Code snippet around the finding." },
         language: { type: "string", description: "Language id (javascript, python, go, etc.)." },
@@ -98,14 +98,14 @@ export const TOOL_DEFS = [
     },
   },
   {
-    name: "guardrail_explain",
+    name: "diffgate_explain",
     description:
       "Get a concise AI explanation for a guardrail finding. " +
-      "Faster than guardrail_deep_review — a single LLM call with no tool loops.",
+      "Faster than diffgate_deep_review — a single LLM call with no tool loops.",
     inputSchema: {
       type: "object",
       properties: {
-        finding: { type: "object", description: "A finding object from guardrail_analyze." },
+        finding: { type: "object", description: "A finding object from diffgate_analyze." },
         snippet: { type: "string", description: "Code snippet around the finding." },
         language: { type: "string", description: "Language id." },
         cwd: { type: "string", description: "Repo root. Defaults to process.cwd()." },
@@ -197,10 +197,10 @@ export async function handleExplain(
 }
 
 const DISPATCH: Record<string, (args: Record<string, unknown>, opts?: unknown) => Promise<unknown>> = {
-  guardrail_analyze: (args) => handleAnalyze(args as Parameters<typeof handleAnalyze>[0]),
-  guardrail_check_staged: (args) => handleCheckStaged(args as Parameters<typeof handleCheckStaged>[0]),
-  guardrail_deep_review: (args) => handleDeepReview(args as Parameters<typeof handleDeepReview>[0]),
-  guardrail_explain: (args) => handleExplain(args as Parameters<typeof handleExplain>[0]),
+  diffgate_analyze: (args) => handleAnalyze(args as Parameters<typeof handleAnalyze>[0]),
+  diffgate_check_staged: (args) => handleCheckStaged(args as Parameters<typeof handleCheckStaged>[0]),
+  diffgate_deep_review: (args) => handleDeepReview(args as Parameters<typeof handleDeepReview>[0]),
+  diffgate_explain: (args) => handleExplain(args as Parameters<typeof handleExplain>[0]),
 };
 
 export function runMcpServer(): void {
@@ -212,7 +212,7 @@ export function runMcpServer(): void {
     const { id, method, params } = msg as { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
 
     if (method === "initialize") {
-      send({ jsonrpc: "2.0", id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "guardrail", version: VERSION } } });
+      send({ jsonrpc: "2.0", id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "diffgate", version: VERSION } } });
       return;
     }
     if (method === "initialized" || method === "notifications/initialized") return;

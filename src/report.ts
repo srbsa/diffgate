@@ -65,7 +65,7 @@ export function formatReport(files: AnalyzeResult[], { counts, tier }: { counts:
   const total = files.reduce((n, f) => n + f.findings.length, 0);
   const fileWord = files.length === 1 ? "file" : "files";
   const header =
-    `${c.bold("🛡  Guardrail Review")} ${c.dim("—")} ` +
+    `${c.bold("🛡  DiffGate")} ${c.dim("—")} ` +
     `${files.length} ${fileWord}, ${total} finding${total === 1 ? "" : "s"}   ${summaryLine(counts)}`;
   if (total === 0) {
     return `${header}\n\n  ${c.green("✔ No guardrail findings on changed lines. Clear to merge.")}`;

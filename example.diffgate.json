@@ -1,5 +1,5 @@
 {
-  "//": "Drop this file (renamed to .guardrails.json) at your repo root. Run `guardrail init` to generate one.",
+  "//": "Drop this file (renamed to .diffgate.json) at your repo root. Run `diffgate init` to generate one.",
 
   "testCommand": "npm test",
   "gate": {
