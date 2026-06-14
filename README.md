@@ -45,7 +45,7 @@ Press **F5** in this repo ("Run Guardrail Extension") to launch a dev host, or b
 
 ```bash
 npm run package --prefix extension   # produces extension/guardrail-review-*.vsix
-# then: code --install-extension extension/guardrail-review-0.1.0.vsix
+# then: code --install-extension extension/guardrail-review-0.1.1.vsix
 ```
 
 ---
@@ -59,7 +59,7 @@ npm run package --prefix extension   # produces extension/guardrail-review-*.vsi
 - **Hybrid AI (optional, provider-agnostic)** — the deterministic engine always runs offline; when `ai.enabled` is true it adds plain-English explanations and fix suggestions. Works with **Anthropic, OpenAI, OpenRouter, Groq, Together, LM Studio, Ollama, or any OpenAI-compatible endpoint**.
 - **Deep Review** — for orange findings, an agentic loop (grep, read_file, find_references, git_blame) investigates blast radius and returns a `confirmed-risk / likely-safe / needs-human` verdict.
 
-Engine layout: [`src/core`](src/core) (shared) · [`src/cli.js`](src/cli.js) (CLI) · [`src/mcp.js`](src/mcp.js) (MCP server) · [`extension/`](extension) (VS Code). Tests: [`test/`](test) and [`extension/test/smoke.cjs`](extension/test/smoke.cjs).
+Engine layout: [`src/core`](src/core) (shared) · [`src/cli.ts`](src/cli.ts) (CLI) · [`src/mcp.ts`](src/mcp.ts) (MCP server) · [`extension/`](extension) (VS Code). Tests: [`test/`](test) and [`extension/test/smoke.cjs`](extension/test/smoke.cjs).
 
 ---
 
@@ -188,7 +188,7 @@ The deterministic rules cost **zero LLM tokens** — the agent gets back structu
 }
 ```
 
-Without a global install: `{ "command": "node", "args": ["/path/to/guardrail_review_engine/src/cli.js", "mcp"] }`
+Without a global install: `{ "command": "node", "args": ["/path/to/guardrail_review_engine/dist/cli.js", "mcp"] }`
 
 See [MCP.md](MCP.md) for tool descriptions and AI configuration.
 

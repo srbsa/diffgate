@@ -41,7 +41,9 @@ await esbuild.build({
   logLevel: "info",
 });
 
-// Build 3: Bundle CLI into a single executable (all deps included, no node_modules needed)
+// Build 3: Bundle CLI into a single executable. Runtime deps (chokidar, @babel/parser)
+// are marked external — they live in node_modules and npm installs them as dependencies.
+// CJS packages with dynamic require() of built-ins (chokidar) can't be inlined into ESM.
 await esbuild.build({
   entryPoints: ["src/cli.ts"],
   bundle: true,
@@ -49,7 +51,7 @@ await esbuild.build({
   format: "esm",
   target: "node18",
   outfile: "dist/cli.js",
-  external: ["fsevents"],
+  external: ["fsevents", "chokidar", "@babel/parser"],
   banner: { js: "#!/usr/bin/env node" },
   sourcemap: true,
   logLevel: "info",
