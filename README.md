@@ -109,7 +109,7 @@ The engine is **provider-agnostic**. Under the hood there are two wire adapters 
 
 ```jsonc
 "ai": { "enabled": true, "provider": "openai",
-        "model": { "orange": "gpt-4o", "default": "gpt-4o-mini" } }
+        "model": { "orange": "gpt-5.5", "default": "gpt-5.4-mini" } }
 ```
 
 ### Built-in rules

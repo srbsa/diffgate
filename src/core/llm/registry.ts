@@ -2,8 +2,8 @@ import type { ProviderPreset, ResolvedProvider, Config } from "../types.js";
 
 export const PROVIDERS: Record<string, ProviderPreset> = {
   anthropic: { wire: "anthropic", baseURL: "https://api.anthropic.com", apiKeyEnv: "ANTHROPIC_API_KEY", defaultModel: "claude-sonnet-4-6", local: false },
-  openai: { wire: "openai", baseURL: "https://api.openai.com/v1", apiKeyEnv: "OPENAI_API_KEY", defaultModel: "gpt-4o-mini", local: false },
-  openrouter: { wire: "openai", baseURL: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENROUTER_API_KEY", defaultModel: "openai/gpt-4o-mini", local: false, extraHeaders: { "X-Title": "Guardrail Review" } },
+  openai: { wire: "openai", baseURL: "https://api.openai.com/v1", apiKeyEnv: "OPENAI_API_KEY", defaultModel: "gpt-5.4-mini", local: false },
+  openrouter: { wire: "openai", baseURL: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENROUTER_API_KEY", defaultModel: "openai/gpt-5.4-mini", local: false, extraHeaders: { "X-Title": "Guardrail Review" } },
   groq: { wire: "openai", baseURL: "https://api.groq.com/openai/v1", apiKeyEnv: "GROQ_API_KEY", defaultModel: "llama-3.3-70b-versatile", local: false },
   together: { wire: "openai", baseURL: "https://api.together.xyz/v1", apiKeyEnv: "TOGETHER_API_KEY", defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo", local: false },
   lmstudio: { wire: "openai", baseURL: "http://localhost:1234/v1", apiKeyEnv: null, defaultModel: null, local: true },
@@ -25,7 +25,7 @@ function inferProvider(ai: Config["ai"] | undefined): string | null {
   if (k.includes("GROQ")) return "groq";
   const m = typeof ai.model === "string" ? ai.model : "";
   if (m.startsWith("claude")) return "anthropic";
-  if (m.startsWith("gpt") || m.startsWith("o1") || m.startsWith("o3")) return "openai";
+  if (m.startsWith("gpt") || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4")) return "openai";
   return null;
 }
 
