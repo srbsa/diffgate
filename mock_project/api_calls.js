@@ -1,5 +1,5 @@
 // Demo: Yellow-tier findings — deprecated API calls and external network calls.
-// Run `guardrail scan mock_project` to see these flagged.
+// Run `diffgate scan mock_project` to see these flagged.
 
 async function handleUserSignup(userId, paymentData) {
   const user = await UserService.getUser(userId);
@@ -7,7 +7,7 @@ async function handleUserSignup(userId, paymentData) {
 }
 
 async function handleLegacyCharge(amount, token) {
-  // Yellow: StripeClient.charge() is deprecated (see .guardrails.json → deprecated[]).
-  // Guardrail will suggest the replacement: StripeClient.createPaymentIntent.
+  // Yellow: StripeClient.charge() is deprecated (see .diffgate.json → deprecated[]).
+  // DiffGate will suggest the replacement: StripeClient.createPaymentIntent.
   return await StripeClient.charge(amount, token);
 }

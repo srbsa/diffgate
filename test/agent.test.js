@@ -71,6 +71,7 @@ test("deepReview drives an OpenAI tool loop and returns a verdict", async () => 
       fetchImpl: queuedFetch(responses, cap),
     });
     assert.match(res.verdict, /confirmed-risk/);
+    assert.equal(res.verdictClass, "confirmed-risk");
     assert.equal(res.transcript.length, 1);
     assert.equal(res.transcript[0].name, "grep");
     // the 2nd request must carry the tool result back to the model
@@ -100,6 +101,7 @@ test("deepReview drives an Anthropic tool loop and returns a verdict", async () 
       fetchImpl: queuedFetch(responses, cap),
     });
     assert.match(res.verdict, /likely-safe/);
+    assert.equal(res.verdictClass, "likely-safe");
     assert.equal(res.transcript[0].name, "read_file");
     // the 2nd request must carry a tool_result block back
     assert.ok(

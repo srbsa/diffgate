@@ -68,7 +68,7 @@ export function formatReport(files: AnalyzeResult[], { counts, tier }: { counts:
     `${c.bold("🛡  DiffGate")} ${c.dim("—")} ` +
     `${files.length} ${fileWord}, ${total} finding${total === 1 ? "" : "s"}   ${summaryLine(counts)}`;
   if (total === 0) {
-    return `${header}\n\n  ${c.green("✔ No guardrail findings on changed lines. Clear to merge.")}`;
+    return `${header}\n\n  ${c.green("✔ No DiffGate findings on changed lines. Clear to merge.")}`;
   }
   return header + "\n\n" + files.map((f) => formatFile(f, cwd)).join("\n\n");
 }

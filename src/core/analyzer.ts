@@ -59,7 +59,6 @@ export function analyze({ filePath, content, previousContent = null, changedLine
 }): AnalyzeResult {
   const language = detectLanguage(filePath);
   const lines = content.split("\n");
-  const ctx: RuleContext = { filePath, language, lines, changedLines, config: config as Config };
 
   let ast: AstNode | null = null;
   let parseError: string | null = null;
@@ -70,6 +69,8 @@ export function analyze({ filePath, content, previousContent = null, changedLine
       parseError = (e as Error).message;
     }
   }
+
+  const ctx: RuleContext = { filePath, language, lines, changedLines, config: config as Config, ast };
 
   const findings = runRules({ ast, ctx, config });
 

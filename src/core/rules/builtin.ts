@@ -1,7 +1,95 @@
-import { memberName } from "../parsers/javascript.js";
+import { memberName, walk } from "../parsers/javascript.js";
 import type { Rule, AstNode, EmitFn, RuleContext, DeprecatedEntry, Config } from "../types.js";
 
 const JS = ["javascript", "typescript"];
+
+// --- AST rule helper functions for JS/TS ------------------------------------
+
+function findDeclarationInit(idName: string, rootAst: AstNode): AstNode | null {
+  let found: AstNode | null = null;
+  walk(rootAst, (n) => {
+    const node = n as any;
+    if (node.type === "VariableDeclarator" && node.id && node.id.type === "Identifier" && node.id.name === idName) {
+      found = node.init as AstNode;
+    } else if (node.type === "AssignmentExpression" && node.left && node.left.type === "Identifier" && node.left.name === idName) {
+      found = node.right as AstNode;
+    }
+  });
+  return found;
+}
+
+function isStaticLiteral(n: AstNode | null | undefined, ctx: RuleContext): boolean {
+  if (!n) return false;
+  const node = n as any;
+  if (
+    node.type === "StringLiteral" ||
+    node.type === "NumericLiteral" ||
+    node.type === "BooleanLiteral" ||
+    node.type === "NullLiteral" ||
+    (node.type === "Literal" && typeof node.value !== "undefined")
+  ) {
+    return true;
+  }
+  if (node.type === "TemplateLiteral") {
+    return (node.expressions || []).length === 0;
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    return isStaticLiteral(node.left, ctx) && isStaticLiteral(node.right, ctx);
+  }
+  if (node.type === "Identifier" && ctx.ast) {
+    const decl = findDeclarationInit(node.name, ctx.ast);
+    if (decl) return isStaticLiteral(decl, ctx);
+  }
+  return false;
+}
+
+function isDynamicString(node: AstNode | null | undefined, ctx: RuleContext): boolean {
+  if (!node) return false;
+  return !isStaticLiteral(node, ctx);
+}
+
+function isRequestData(node: AstNode): boolean {
+  const name = memberName(node);
+  if (name && /\b(req|request|ctx|context)\.(query|body|params|headers)\b/i.test(name)) {
+    return true;
+  }
+  return false;
+}
+
+function containsRequestData(n: AstNode | null | undefined, ctx: RuleContext): boolean {
+  if (!n) return false;
+  const node = n as any;
+  if (isRequestData(node)) return true;
+  if (node.type === "TemplateLiteral") {
+    return (node.expressions || []).some((expr: any) => containsRequestData(expr, ctx));
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    return containsRequestData(node.left, ctx) || containsRequestData(node.right, ctx);
+  }
+  if (node.type === "Identifier" && ctx.ast) {
+    const decl = findDeclarationInit(node.name, ctx.ast);
+    if (decl) return containsRequestData(decl, ctx);
+  }
+  return false;
+}
+
+function getStaticText(n: AstNode): string {
+  const node = n as any;
+  if (node.type === "TemplateLiteral") {
+    return (node.quasis || []).map((q: any) => q.value.raw).join(" ");
+  }
+  if (node.type === "StringLiteral" || node.type === "Literal") {
+    return String(node.value || "");
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    return getStaticText(node.left) + " " + getStaticText(node.right);
+  }
+  return "";
+}
+
+function isSqlQuery(text: string): boolean {
+  return /\b(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)\b/i.test(text);
+}
 
 export const BUILTIN_RULES: Rule[] = [
   // ---------------------------------------------------------------- secrets
@@ -181,6 +269,7 @@ export const BUILTIN_RULES: Rule[] = [
     blocking: true,
     title: "SQL injection sink",
     languages: ["*"],
+    skipIfAst: true,
     message:
       "A SQL query is assembled via string interpolation or concatenation. " +
       "An attacker who controls any input variable can read, modify, or delete arbitrary data. " +
@@ -191,6 +280,43 @@ export const BUILTIN_RULES: Rule[] = [
       /`\s*(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b[^`]*\$\{(?:req|request|ctx|context)\./i,
       /["'](?:SELECT|INSERT|UPDATE|DELETE)\b[^"']*["']\s*\+\s*(?:req|request|ctx)\./i,
     ],
+  },
+  {
+    id: "sql-injection",
+    type: "ast",
+    tier: "orange",
+    blocking: true,
+    title: "SQL injection sink",
+    languages: JS,
+    message:
+      "A SQL query is assembled via string interpolation or concatenation. " +
+      "An attacker who controls any input variable can read, modify, or delete arbitrary data. " +
+      "Use parameterized queries (e.g. `db.query(sql, [params])`) and never build SQL from request data.",
+    visit(node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
+      if (node.type === "TemplateLiteral" || (node.type === "BinaryExpression" && node.operator === "+")) {
+        const text = getStaticText(node);
+        if (isSqlQuery(text)) {
+          if (isDynamicString(node, ctx)) {
+            emit({
+              loc: node.loc,
+              code: (ctx.lines[node.loc!.start.line - 1] || "").trim(),
+            });
+          }
+        }
+      } else if (node.type === "CallExpression") {
+        const name = memberName(node.callee as AstNode);
+        if (name && /\b(query|execute|exec|raw|\$queryRaw)\b/i.test(name)) {
+          const arg = (node as any).arguments?.[0] as AstNode | undefined;
+          if (arg && isRequestData(arg)) {
+            emit({
+              loc: node.loc,
+              code: (ctx.lines[node.loc!.start.line - 1] || "").trim(),
+              message: "Dynamic request data passed directly as SQL query.",
+            });
+          }
+        }
+      }
+    },
   },
   {
     id: "permissive-cors",
@@ -212,7 +338,7 @@ export const BUILTIN_RULES: Rule[] = [
   },
   {
     id: "xss-sink",
-    type: "pattern",
+    type: "ast",
     tier: "orange",
     blocking: false,
     title: "XSS sink",
@@ -221,12 +347,33 @@ export const BUILTIN_RULES: Rule[] = [
       "Writing to `innerHTML`, `outerHTML`, or `document.write()` injects raw HTML into the DOM. " +
       "If the value contains user-controlled data, an attacker can inject arbitrary JavaScript. " +
       "Use `textContent` for plain text, or sanitize with DOMPurify before setting innerHTML.",
-    patterns: [
-      /\.innerHTML\s*=/,
-      /\.outerHTML\s*=/,
-      /\bdocument\.write(?:ln)?\s*\(/,
-      /\.insertAdjacentHTML\s*\(/,
-    ],
+    visit(node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
+      if (node.type === "AssignmentExpression" && node.operator === "=") {
+        const left = memberName(node.left as AstNode);
+        if (left && (left.endsWith(".innerHTML") || left.endsWith(".outerHTML"))) {
+          if (isDynamicString(node.right as AstNode, ctx)) {
+            emit({
+              loc: node.loc,
+              code: (ctx.lines[node.loc!.start.line - 1] || "").trim(),
+            });
+          }
+        }
+      } else if (node.type === "CallExpression") {
+        const name = memberName(node.callee as AstNode);
+        if (name && (
+          name === "document.write" || name === "document.writeln" ||
+          name.endsWith(".insertAdjacentHTML")
+        )) {
+          const arg = (node as any).arguments?.[0] as AstNode | undefined;
+          if (arg && isDynamicString(arg, ctx)) {
+            emit({
+              loc: node.loc,
+              code: (ctx.lines[node.loc!.start.line - 1] || "").trim(),
+            });
+          }
+        }
+      }
+    },
   },
   {
     id: "path-traversal",
@@ -235,6 +382,7 @@ export const BUILTIN_RULES: Rule[] = [
     blocking: false,
     title: "Path traversal sink",
     languages: ["*"],
+    skipIfAst: true,
     message:
       "A file path is constructed from request-controlled data (`req.params`, `req.query`, `req.body`). " +
       "Without canonicalization and a root-prefix check, an attacker can read arbitrary files via `../../etc/passwd`. " +
@@ -244,6 +392,35 @@ export const BUILTIN_RULES: Rule[] = [
       /\bfs\.(?:readFile|readFileSync|createReadStream|open|openSync)\s*\([^)]*(?:req|request|ctx)\.(?:params|query|body)\b/i,
       /(?:__dirname|process\.cwd\(\))\s*,\s*(?:req|request|ctx)\.(?:params|query|body)\b/i,
     ],
+  },
+  {
+    id: "path-traversal",
+    type: "ast",
+    tier: "orange",
+    blocking: false,
+    title: "Path traversal sink",
+    languages: JS,
+    message:
+      "A file path is constructed from request-controlled data (`req.params`, `req.query`, `req.body`). " +
+      "Without canonicalization and a root-prefix check, an attacker can read arbitrary files via `../../etc/passwd`. " +
+      "Use `path.resolve()`, then assert the result starts with your allowed base directory before opening the file.",
+    visit(node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
+      if (node.type === "CallExpression") {
+        const name = memberName(node.callee as AstNode);
+        if (name && (
+          /\b(fs|fs\/promises)\.(readFile|readFileSync|createReadStream|writeFile|writeFileSync|createWriteStream|open|openSync|rm|rmSync|unlink|unlinkSync)\b/.test(name) ||
+          /\bpath\.(join|resolve|normalize)\b/.test(name)
+        )) {
+          const hasInput = ((node as any).arguments || []).some((arg: any) => containsRequestData(arg, ctx));
+          if (hasInput) {
+            emit({
+              loc: node.loc,
+              code: (ctx.lines[node.loc!.start.line - 1] || "").trim(),
+            });
+          }
+        }
+      }
+    },
   },
   {
     id: "nosql-injection",
@@ -395,7 +572,7 @@ export function customPatternRules(config: Partial<Config>): Rule[] {
         blocking: !!c.blocking,
         title: c.title || "Custom rule",
         languages: c.languages || ["*"],
-        message: c.message || "Matched a project-defined guardrail pattern.",
+        message: c.message || "Matched a project-defined DiffGate pattern.",
         patterns,
       } as Rule;
     })
@@ -424,3 +601,24 @@ export function legacyOrangeRules(config: Partial<Config>): Rule[] {
     },
   ];
 }
+
+export const RULE_PACKS: Record<string, string[]> = {
+  "web-security": [
+    "hardcoded-secret",
+    "permissive-cors",
+    "sql-injection",
+    "nosql-injection",
+    "path-traversal",
+    "prototype-pollution",
+    "xss-sink",
+  ],
+  "compatibility": [
+    "public-api-change",
+    "signature-drift",
+  ],
+  "hygiene": [
+    "leftover-debugger",
+    "debug-logging",
+    "todo-marker",
+  ],
+};

@@ -1,7 +1,7 @@
 import path from "path";
 import { walk } from "../parsers/javascript.js";
 import { hasAstSupport } from "../parsers/index.js";
-import { BUILTIN_RULES, deprecatedRules, customPatternRules, legacyOrangeRules } from "./builtin.js";
+import { BUILTIN_RULES, deprecatedRules, customPatternRules, legacyOrangeRules, RULE_PACKS } from "./builtin.js";
 import type { Rule, FileRule, PatternRule, AstRule, RuleContext, EmitFn, Finding, FindingEmitArg, AstNode, Config } from "../types.js";
 
 const DEPENDENCY_MANIFESTS = new Set([
@@ -49,8 +49,31 @@ export function getRules(config: Partial<Config>, language: string): Rule[] {
     ...legacyOrangeRules(config),
   ];
   const overrides = (config && config.rules) || {};
+
+  // Find disabled packs
+  const disabledPacks = new Set<string>();
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === false && (key === "web-security" || key === "compatibility" || key === "hygiene")) {
+      disabledPacks.add(key);
+    }
+  }
+
   const out: Rule[] = [];
   for (const rule of all) {
+    // Check if rule belongs to a disabled pack
+    let inDisabledPack = false;
+    for (const pack of disabledPacks) {
+      const packRules = RULE_PACKS[pack];
+      if (packRules && packRules.includes(rule.id)) {
+        // If the rule itself is explicitly overridden to true or an object, do not disable it
+        if (overrides[rule.id] === undefined) {
+          inDisabledPack = true;
+          break;
+        }
+      }
+    }
+    if (inDisabledPack) continue;
+
     const ov = overrides[rule.id];
     if (ov === false) continue;
     if (rule.enabledByDefault === false && !(ov && (ov as { enabled?: boolean }).enabled)) continue;

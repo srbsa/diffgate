@@ -63,6 +63,7 @@ const vscode = {
   StatusBarAlignment: { Left: 1, Right: 2 },
   ProgressLocation: { Notification: 15, Window: 10 },
   ConfigurationTarget: { Workspace: 2 },
+  OverviewRulerLane: { Left: 1, Center: 2, Right: 4, Full: 7 },
   EventEmitter: class {
     constructor() { this._fn = null; this.event = (fn) => { this._fn = fn; return { dispose() {} }; }; }
     fire(x) { if (this._fn) this._fn(x); }
@@ -70,6 +71,10 @@ const vscode = {
   Uri: {
     file: (p) => ({ scheme: "file", fsPath: p, toString: () => "file://" + p }),
     parse: (s) => ({ scheme: "file", fsPath: s.replace(/^file:\/\//, ""), toString: () => s }),
+    joinPath: (base, ...parts) => {
+      const fsPath = path.join(base.fsPath || "", ...parts);
+      return { scheme: "file", fsPath, toString: () => "file://" + fsPath };
+    },
   },
   languages: {
     createDiagnosticCollection: () => ({
@@ -79,6 +84,7 @@ const vscode = {
     }),
     registerHoverProvider: (_s, p) => { captured.hoverProvider = p; return { dispose() {} }; },
     registerCodeActionsProvider: (_s, p) => { captured.codeActionProvider = p; return { dispose() {} }; },
+    registerCodeLensProvider: () => ({ dispose() {} }),
   },
   window: {
     activeTextEditor: undefined,
@@ -91,6 +97,10 @@ const vscode = {
     showErrorMessage: (m) => { captured.messages.error.push(m); return Promise.resolve(); },
     withProgress: (_o, task) => task(),
     onDidChangeActiveTextEditor: () => ({ dispose() {} }),
+    onDidChangeVisibleTextEditors: () => ({ dispose() {} }),
+    createTextEditorDecorationType: () => ({ dispose() {} }),
+    registerWebviewViewProvider: () => ({ dispose() {} }),
+    registerFileDecorationProvider: () => ({ dispose() {} }),
   },
   workspace: {
     workspaceFolders: [],
@@ -111,6 +121,9 @@ const vscode = {
   commands: {
     registerCommand: (name, fn) => { captured.commands.set(name, fn); return { dispose() {} }; },
     executeCommand: () => Promise.resolve(),
+  },
+  chat: {
+    createChatParticipant: () => ({ iconPath: "", dispose() {} }),
   },
 };
 
@@ -142,7 +155,7 @@ function makeDoc() {
 
 // --- run ---------------------------------------------------------------------
 const ext = require(path.join(__dirname, "..", "dist", "extension.js"));
-const context = { subscriptions: [] };
+const context = { subscriptions: [], extensionUri: vscode.Uri.file(path.join(__dirname, "..")) };
 
 ext.activate(context);
 assert.ok(captured.open.length > 0, "should register an open handler");

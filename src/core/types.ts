@@ -1,4 +1,4 @@
-// Shared type definitions for the guardrail engine.
+// Shared type definitions for the DiffGate engine.
 
 export type Tier = "green" | "yellow" | "orange";
 
@@ -113,6 +113,7 @@ export interface RuleContext {
   lines: string[];
   changedLines: Set<number> | null;
   config: Config;
+  ast?: AstNode | null;
 }
 
 export interface FindingEmitArg {
@@ -215,6 +216,7 @@ export interface TranscriptEntry {
 
 export interface DeepReviewResult {
   verdict: string;
+  verdictClass: "confirmed-risk" | "likely-safe" | "needs-human";
   steps: number;
   transcript: TranscriptEntry[];
   model: string;

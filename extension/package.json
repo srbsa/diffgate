@@ -6,7 +6,7 @@
   "publisher": "diffgate",
   "license": "Apache-2.0",
   "engines": {
-    "vscode": "^1.84.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Linters",
@@ -63,9 +63,23 @@
         {
           "id": "diffgateRisk",
           "name": "Risk Review"
+        },
+        {
+          "type": "webview",
+          "id": "diffgateInspector",
+          "name": "DiffGate Inspector"
         }
       ]
     },
+    "chatParticipants": [
+      {
+        "id": "diffgate-review.diffgate",
+        "name": "diffgate",
+        "fullName": "DiffGate",
+        "description": "Ask about security findings, risk tiers, and fix explanations.",
+        "icon": "media/shield.svg"
+      }
+    ],
     "menus": {
       "view/title": [
         {
@@ -76,7 +90,7 @@
       ]
     },
     "configuration": {
-      "title": "Guardrail Review",
+      "title": "DiffGate Review",
       "properties": {
         "diffgate.enable": {
           "type": "boolean",
@@ -124,6 +138,11 @@
           "type": "string",
           "default": "",
           "description": "Model override for Deep Review (agentic). Leave empty to use ai.model. Use a stronger model here (e.g. claude-opus-4-8, gpt-4o)."
+        },
+        "diffgate.showInlineAnnotations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline GitLens-style text annotations at the end of lines with findings."
         }
       }
     }
@@ -134,7 +153,7 @@
     "package": "npm run build && vsce package --no-dependencies --out diffgate-0.1.1.vsix"
   },
   "devDependencies": {
-    "@types/vscode": "^1.84.0",
+    "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^2.24.0",
     "esbuild": "^0.28.1"
   }

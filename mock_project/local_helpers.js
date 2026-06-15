@@ -1,5 +1,5 @@
 // Demo: Green-tier findings — local utilities with no external dependencies.
-// Run `guardrail scan mock_project` to see these flagged as green (safe).
+// Run `diffgate scan mock_project` to see these flagged as green (safe).
 
 function _formatUserName(firstName, lastName) {
   console.log("Formatting user name locally...");

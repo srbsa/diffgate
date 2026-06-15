@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import chokidar from "chokidar";
+import { toSarif } from "./sarif.js";
 
 import {
   analyze,
@@ -157,6 +158,11 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
     return;
   }
 
+  if (flags["sarif"] || flags["format"] === "sarif") {
+    console.log(toSarif(review.files, cwd));
+    return;
+  }
+
   console.log(formatReport(review.files, review, cwd));
   console.log(c.dim(`\n  diff mode: ${mode}`));
 
@@ -288,7 +294,13 @@ async function cmdScan(pos: string[], flags: Record<string, string | true>): Pro
     console.log(JSON.stringify(stripForJson({ ...review, config }), null, 2));
     return;
   }
+
   const reviewCwd = stat!.isDirectory() ? target : baseDir;
+
+  if (flags["sarif"] || flags["format"] === "sarif") {
+    console.log(toSarif(files, reviewCwd));
+    return;
+  }
   console.log(formatReport(files, review, reviewCwd));
   if (flags["deep"]) await printDeepReviews(allFindings, files, config, reviewCwd);
   else if (flags["ai"]) await printAiExplanations(allFindings, files, config);

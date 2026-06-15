@@ -1,6 +1,6 @@
-# Guardrail Review (VS Code Extension)
+# DiffGate Review (VS Code Extension)
 
-Diff-aware, three-tiered code review **inline in your editor**. Guardrail looks at the lines you actually changed (vs the committed baseline) and tells you which edits are safe, which need a second look, and which are high-impact enough to gate — before you ever open a pull request.
+Diff-aware, three-tiered code review **inline in your editor**. DiffGate looks at the lines you actually changed (vs the committed baseline) and tells you which edits are safe, which need a second look, and which are high-impact enough to gate — before you ever open a pull request.
 
 ## Tiers
 
@@ -32,20 +32,20 @@ Project rules live in a `.diffgate.json` at the repo root (run `diffgate init` f
 | `diffgate.diffMode` | `working` | `working` = all uncommitted changes; `staged` = staged only |
 | `diffgate.ai.enabled` | `false` | Enable AI explanations (needs provider API key, except for local models) |
 | `diffgate.ai.provider` | *(from config)* | LLM provider override |
-| `guardrail.ai.model` | *(from config)* | Model id override |
-| `guardrail.ai.deepReview.model` | *(from config)* | Stronger model for Deep Review (e.g. `claude-opus-4-8`, `gpt-4o`) |
-| `guardrail.runGateOnSave` | `false` | Auto-run the gate on save when orange findings are present |
+| `diffgate.ai.model` | *(from config)* | Model id override |
+| `diffgate.ai.deepReview.model` | *(from config)* | Stronger model for Deep Review (e.g. `claude-opus-4-8`, `gpt-4o`) |
+| `diffgate.runGateOnSave` | `false` | Auto-run the gate on save when orange findings are present |
 
 ## Develop / run
 
-From the repo root: press **F5** ("Run Guardrail Extension") to launch an Extension Development Host. Open a file (e.g. in `mock_project/`) to see findings; open a git repo to see diff-aware mode and the Risk Review tree.
+From the repo root: press **F5** ("Run DiffGate Extension") to launch an Extension Development Host. Open a file (e.g. in `mock_project/`) to see findings; open a git repo to see diff-aware mode and the Risk Review tree.
 
 Build a `.vsix` to install permanently:
 
 ```bash
 npm install --prefix extension
-npm run package --prefix extension   # produces extension/guardrail-review-0.1.0.vsix
-code --install-extension extension/guardrail-review-0.1.0.vsix
+npm run package --prefix extension   # produces extension/diffgate-review-0.1.1.vsix
+code --install-extension extension/diffgate-review-0.1.1.vsix
 ```
 
 ## License

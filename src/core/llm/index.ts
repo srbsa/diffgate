@@ -48,7 +48,7 @@ export async function complete({ system, prompt, config, tier = "default", model
     model,
     system,
     prompt,
-    maxTokens: config.ai?.maxTokens || 700,
+    maxTokens: config.ai?.maxTokens || (p.local ? 2048 : 700),
     temperature: config.ai?.temperature ?? 0,
     tokenParam: config.ai?.tokenParam || "max_tokens",
     extraHeaders: p.extraHeaders,
@@ -58,18 +58,18 @@ export async function complete({ system, prompt, config, tier = "default", model
   return p.wire === "anthropic" ? anthropicComplete(opts) : openaiComplete(opts);
 }
 
-const SYSTEM = "You are a meticulous senior code reviewer. Be specific and terse. No preamble, no restating the question.";
+const SYSTEM = "You are a meticulous senior code reviewer. Be specific and terse. No preamble, no restating the question. If you are a reasoning model, keep your thinking process extremely brief.";
 
 function buildPrompt({ finding, snippet, language }: { finding: Pick<Finding, "tier" | "title" | "message">; snippet: string; language: string }): string {
-  return `A static code-review guardrail flagged a ${finding.tier.toUpperCase()} issue titled "${finding.title}".
-Guardrail note: ${finding.message}
+  return `A static code-review DiffGate flagged a ${finding.tier.toUpperCase()} issue titled "${finding.title}".
+DiffGate note: ${finding.message}
 
 Code under review (${language}):
 \`\`\`${language}
 ${snippet}
 \`\`\`
 
-In 2-4 sentences, explain concretely why this is risky in THIS specific code and exactly what the reviewer should verify before approving. If there is an obvious safer rewrite, include it as one short code block.`;
+Explain concretely why this is risky in this specific code and what the reviewer should verify before approving. Keep the explanation brief (ideally 2-4 sentences). If there is an obvious safer rewrite, include it as one short code block.`;
 }
 
 const cache = new Map<string, CompleteResult>();

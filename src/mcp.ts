@@ -70,7 +70,7 @@ export const TOOL_DEFS = [
   {
     name: "diffgate_check_staged",
     description:
-      "Check all staged (or working-tree) changes in a git repo for guardrail findings. " +
+      "Check all staged (or working-tree) changes in a git repo for DiffGate findings. " +
       "Returns overall tier, counts, and per-file findings across the whole diff.",
     inputSchema: {
       type: "object",
@@ -100,7 +100,7 @@ export const TOOL_DEFS = [
   {
     name: "diffgate_explain",
     description:
-      "Get a concise AI explanation for a guardrail finding. " +
+      "Get a concise AI explanation for a DiffGate finding. " +
       "Faster than diffgate_deep_review — a single LLM call with no tool loops.",
     inputSchema: {
       type: "object",
@@ -204,7 +204,7 @@ const DISPATCH: Record<string, (args: Record<string, unknown>, opts?: unknown) =
 };
 
 export function runMcpServer(): void {
-  process.stderr.write("[guardrail mcp] server started\n");
+  process.stderr.write("[diffgate mcp] server started\n");
   const send = createWriter(process.stdout as unknown as Writable);
   const reader = createReader(process.stdin as unknown as Readable);
 

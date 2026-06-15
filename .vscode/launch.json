@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Guardrail Extension",
+      "name": "Run DiffGate Extension",
       "type": "extensionHost",
       "request": "launch",
       "args": [
@@ -10,7 +10,7 @@
         "${workspaceFolder}"
       ],
       "outFiles": ["${workspaceFolder}/extension/dist/**/*.js"],
-      "preLaunchTask": "guardrail: build extension"
+      "preLaunchTask": "diffgate: build extension"
     }
   ]
 }

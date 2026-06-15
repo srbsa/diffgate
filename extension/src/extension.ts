@@ -21,6 +21,8 @@ import {
   DEFAULT_CONFIG,
   TIER_META,
   TIER_ORDER,
+  overallTier,
+  tierCounts,
 } from "../../src/core/index.js";
 import type { Finding, AnalyzeResult, Config } from "../../src/core/types.js";
 
@@ -32,9 +34,24 @@ let gateChannel: vscode.OutputChannel;
 let deepChannel: vscode.OutputChannel;
 let riskTree: RiskTreeProvider;
 const findingsByUri = new Map<string, { res: AnalyzeResult; folder: string; config: Config }>();
+const gitFindingsByUri = new Map<string, AnalyzeResult>();
+let decorationProvider: DiffGateFileDecorationProvider;
 const configCache = new Map<string, Config>();
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-export const verdictCache = new Map<string, { verdict: string; steps: number; model: string; hitMax: boolean }>();
+export const verdictCache = new Map<string, {
+  verdict: string;
+  verdictClass: "confirmed-risk" | "likely-safe" | "needs-human";
+  steps: number;
+  model: string;
+  hitMax: boolean;
+}>();
+
+let orangeDecorationType: vscode.TextEditorDecorationType;
+let yellowDecorationType: vscode.TextEditorDecorationType;
+let greenDecorationType: vscode.TextEditorDecorationType;
+let errorDecorationType: vscode.TextEditorDecorationType;
+let codeLensProvider: DiffGateCodeLensProvider;
+let inspectorProvider: DiffGateInspectorProvider;
 
 const MAX_BYTES = 2 * 1024 * 1024;
 
@@ -83,16 +100,12 @@ function severityFor(f: Finding): vscode.DiagnosticSeverity {
 
 function buildRange(finding: Finding, document: vscode.TextDocument | null): vscode.Range {
   const startLine = Math.max(0, finding.line - 1);
-  const startCol = Math.max(0, finding.column ?? 0);
-  let endLine = Math.max(0, (finding.endLine || finding.line) - 1);
-  let endCol = finding.endColumn ?? startCol;
-  if (endLine === startLine && endCol <= startCol) {
-    if (document && startLine < document.lineCount) {
-      return document.lineAt(startLine).range;
-    }
-    endCol = startCol + Math.max(1, (finding.code || "").length || 40);
+  if (document && startLine < document.lineCount) {
+    return document.lineAt(startLine).range;
   }
-  return new vscode.Range(startLine, startCol, endLine, endCol);
+  const startCol = Math.max(0, finding.column ?? 0);
+  const endCol = startCol + Math.max(1, (finding.code || "").length || 40);
+  return new vscode.Range(startLine, startCol, startLine, endCol);
 }
 
 function toDiagnostic(finding: Finding, document: vscode.TextDocument | null): vscode.Diagnostic {
@@ -115,6 +128,27 @@ function analyzeText(filePath: string, content: string, folder: string, config: 
 }
 
 // --- per-document analysis ---------------------------------------------------
+function collectAllResults(): AnalyzeResult[] {
+  const all = new Map<string, AnalyzeResult>();
+  for (const [uri, res] of gitFindingsByUri.entries()) {
+    if (res.findings.length > 0) {
+      all.set(uri, res);
+    }
+  }
+  for (const [uri, entry] of findingsByUri.entries()) {
+    if (entry.res.findings.length > 0) {
+      all.set(uri, entry.res);
+    } else {
+      all.delete(uri);
+    }
+  }
+  return Array.from(all.values());
+}
+
+function updateTreeData(): void {
+  riskTree.setData(collectAllResults());
+}
+
 function analyzeDocument(document: vscode.TextDocument): void {
   if (!settings().get("enable", true)) return;
   if (document.uri.scheme !== "file") return;
@@ -125,6 +159,11 @@ function analyzeDocument(document: vscode.TextDocument): void {
   if (isIgnored(document.uri.fsPath, config, folder)) {
     diagnostics.delete(document.uri);
     findingsByUri.delete(document.uri.toString());
+    updateTreeData();
+    updateStatusBar();
+    if (decorationProvider) {
+      decorationProvider.fire();
+    }
     return;
   }
 
@@ -136,11 +175,25 @@ function analyzeDocument(document: vscode.TextDocument): void {
   }
   diagnostics.set(document.uri, res.findings.map((f) => toDiagnostic(f, document)));
   findingsByUri.set(document.uri.toString(), { res, folder, config });
+
+  for (const editor of vscode.window.visibleTextEditors) {
+    if (editor.document === document) {
+      updateDecorations(editor);
+    }
+  }
+  if (codeLensProvider) {
+    codeLensProvider.fire();
+  }
+
   for (const key of verdictCache.keys()) {
     if (key.startsWith(document.uri.toString() + "::")) verdictCache.delete(key);
   }
 
-  if (vscode.window.activeTextEditor?.document === document) updateStatusBar(res);
+  updateTreeData();
+  updateStatusBar();
+  if (decorationProvider) {
+    decorationProvider.fire();
+  }
 
   if (settings().get("runGateOnSave", false) && res.findings.some((f) => f.tier === "orange")) {
     runGateForFolder(folder, config, res.findings);
@@ -157,19 +210,29 @@ function debouncedAnalyze(document: vscode.TextDocument, delay = 350): void {
 }
 
 // --- status bar --------------------------------------------------------------
-function updateStatusBar(res: AnalyzeResult): void {
-  if (!res || res.findings.length === 0) {
+function updateStatusBar(): void {
+  const results = collectAllResults();
+  const allFindings = results.flatMap((res) => res.findings);
+  const counts = tierCounts(allFindings);
+  const maxTier = overallTier(allFindings);
+  const totalGreen = counts.green;
+  const totalYellow = counts.yellow;
+  const totalOrange = counts.orange;
+
+  const totalFindings = totalGreen + totalYellow + totalOrange;
+
+  if (totalFindings === 0) {
     statusBar.text = "$(shield) DiffGate: clear";
-    statusBar.tooltip = "No guardrail findings on changed lines";
+    statusBar.tooltip = "No DiffGate findings across pending changes";
     statusBar.backgroundColor = undefined;
     statusBar.show();
     return;
   }
-  const { green, yellow, orange } = res.counts;
-  statusBar.text = `$(shield) ${TIER_META[res.tier].icon} ${green}/${yellow}/${orange}`;
-  statusBar.tooltip = `DiffGate: ${orange} orange · ${yellow} yellow · ${green} green — click to review all changes`;
+
+  statusBar.text = `$(shield) ${TIER_META[maxTier].icon} ${totalGreen}/${totalYellow}/${totalOrange}`;
+  statusBar.tooltip = `DiffGate Workspace Total: ${totalOrange} orange · ${totalYellow} yellow · ${totalGreen} green — click to review all changes`;
   statusBar.backgroundColor =
-    res.tier === "orange" ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+    maxTier === "orange" ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
   statusBar.show();
 }
 
@@ -190,11 +253,21 @@ const hoverProvider: vscode.HoverProvider = {
       const vKey = `${document.uri.toString()}::${f.ruleId}::${f.line}`;
       const cached = verdictCache.get(vKey);
       if (cached) {
-        const vLower = cached.verdict.toLowerCase();
+        let vc = cached.verdictClass;
+        if (!vc) {
+          const vLower = cached.verdict.toLowerCase();
+          if (/confirmed.risk|exploitable|high.risk|critical/.test(vLower)) {
+            vc = "confirmed-risk";
+          } else if (/likely.safe|low.risk|no.exploit|benign/.test(vLower)) {
+            vc = "likely-safe";
+          } else {
+            vc = "needs-human";
+          }
+        }
         let badge: string;
-        if (/confirmed.risk|exploitable|high.risk|critical/.test(vLower)) {
+        if (vc === "confirmed-risk") {
           badge = "$(error) **Confirmed risk**";
-        } else if (/likely.safe|low.risk|no.exploit|benign/.test(vLower)) {
+        } else if (vc === "likely-safe") {
           badge = "$(pass) **Likely safe**";
         } else {
           badge = "$(question) **Needs human review**";
@@ -304,11 +377,51 @@ class RiskTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 }
 
+class DiffGateFileDecorationProvider implements vscode.FileDecorationProvider {
+  private _onDidChangeFileDecorations = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
+  readonly onDidChangeFileDecorations = this._onDidChangeFileDecorations.event;
+
+  fire(uris?: vscode.Uri | vscode.Uri[]): void {
+    this._onDidChangeFileDecorations.fire(uris);
+  }
+
+  provideFileDecoration(uri: vscode.Uri): vscode.ProviderResult<vscode.FileDecoration> {
+    if (uri.scheme !== "file") return null;
+    const uriStr = uri.toString();
+    const entry = findingsByUri.get(uriStr);
+    const gitRes = gitFindingsByUri.get(uriStr);
+    const res = entry ? entry.res : gitRes;
+    if (!res || res.findings.length === 0) return null;
+
+    const tier = res.tier;
+    if (tier === "orange") {
+      return {
+        badge: "DG",
+        color: new vscode.ThemeColor("editorOverviewRuler.warningForeground"),
+        tooltip: `DiffGate: ${res.counts.orange} orange (blocking) findings`,
+      };
+    } else if (tier === "yellow") {
+      return {
+        badge: "DG",
+        color: new vscode.ThemeColor("editorOverviewRuler.infoForeground"),
+        tooltip: `DiffGate: ${res.counts.yellow} yellow findings`,
+      };
+    } else if (tier === "green") {
+      return {
+        badge: "DG",
+        color: new vscode.ThemeColor("editorOverviewRuler.addedForeground"),
+        tooltip: `DiffGate: ${res.counts.green} green findings`,
+      };
+    }
+    return null;
+  }
+}
+
 // --- workspace review --------------------------------------------------------
 function refreshWorkspace(): void {
   const folders = vscode.workspace.workspaceFolders || [];
   const diffMode = settings().get<string>("diffMode", "working");
-  const all: AnalyzeResult[] = [];
+  gitFindingsByUri.clear();
   for (const wf of folders) {
     const cwd = wf.uri.fsPath;
     if (!isGitRepo(cwd)) continue;
@@ -319,16 +432,21 @@ function refreshWorkspace(): void {
       continue;
     }
     for (const fr of review.files) {
-      all.push(fr);
       const uri = vscode.Uri.file(fr.filePath);
-      if (!findingsByUri.has(uri.toString())) {
+      const uriStr = uri.toString();
+      gitFindingsByUri.set(uriStr, fr);
+      if (!findingsByUri.has(uriStr)) {
         diagnostics.set(uri, fr.findings.map((f) => toDiagnostic(f, null)));
+        const config = getConfigFor(cwd);
+        findingsByUri.set(uriStr, { res: fr, folder: cwd, config });
       }
-      const config = getConfigFor(cwd);
-      findingsByUri.set(uri.toString(), { res: fr, folder: cwd, config });
     }
   }
-  riskTree.setData(all);
+  updateTreeData();
+  updateStatusBar();
+  if (decorationProvider) {
+    decorationProvider.fire();
+  }
 }
 
 // --- gate --------------------------------------------------------------------
@@ -347,9 +465,9 @@ async function runGateForFolder(folder: string, config: Config, findings: Findin
   const r = result as { stdout?: string; stderr?: string; success?: boolean; durationMs?: number; code?: number };
   gateChannel.appendLine(((r.stdout || "") + (r.stderr || "")).trim());
   if (r.success) {
-    vscode.window.showInformationMessage(`Guardrail gate passed (${((r.durationMs ?? 0) / 1000).toFixed(1)}s).`);
+    vscode.window.showInformationMessage(`DiffGate gate passed (${((r.durationMs ?? 0) / 1000).toFixed(1)}s).`);
   } else {
-    vscode.window.showErrorMessage(`Guardrail gate FAILED (exit ${r.code}). See "Guardrail Gate" output.`);
+    vscode.window.showErrorMessage(`DiffGate gate FAILED (exit ${r.code}). See "DiffGate Gate" output.`);
   }
 }
 
@@ -360,7 +478,7 @@ async function cmdExplainWithAI(uriStr: string, ruleId: string, line: number): P
   const f = entry.res.findings.find((x) => x.ruleId === ruleId && x.line === line);
   if (!f) return;
   if (!isAiAvailable(entry.config)) {
-    vscode.window.showWarningMessage(`Guardrail AI is off. Enable diffgate.ai.enabled and set $${aiKeyEnv(entry.config)} (provider: ${describeProvider(entry.config)}).`);
+    vscode.window.showWarningMessage(`DiffGate AI is off. Enable diffgate.ai.enabled and set $${aiKeyEnv(entry.config)} (provider: ${describeProvider(entry.config)}).`);
     return;
   }
   let snippet = f.code;
@@ -369,6 +487,19 @@ async function cmdExplainWithAI(uriStr: string, ruleId: string, line: number): P
     const lines = doc.getText().split("\n");
     snippet = lines.slice(Math.max(0, line - 5), line + 4).join("\n");
   } catch { /* fall back to f.code */ }
+  
+  if (inspectorProvider) {
+    inspectorProvider.show(true);
+    inspectorProvider.updateContent({
+      type: "explain",
+      title: f.title,
+      ruleId: f.ruleId,
+      file: path.basename(uriStr),
+      line,
+      status: "running"
+    });
+  }
+
   aiChannel.show(true);
   aiChannel.appendLine(`\n=== ${f.title} [${ruleId}] @ ${path.basename(uriStr)}:${line} ===`);
   await vscode.window.withProgress(
@@ -378,9 +509,33 @@ async function cmdExplainWithAI(uriStr: string, ruleId: string, line: number): P
         const { text, model } = await explainFinding({ finding: f, snippet, language: entry.res.language, config: entry.config });
         aiChannel.appendLine(`[${model}]`);
         aiChannel.appendLine(text);
+        if (inspectorProvider) {
+          inspectorProvider.updateContent({
+            type: "explain",
+            title: f.title,
+            ruleId: f.ruleId,
+            file: path.basename(uriStr),
+            line,
+            status: "success",
+            verdict: text,
+            model
+          });
+        }
       } catch (e) {
-        aiChannel.appendLine(`Error: ${(e as Error).message}`);
-        vscode.window.showErrorMessage(`Guardrail AI: ${(e as Error).message}`);
+        const errMsg = (e as Error).message;
+        aiChannel.appendLine(`Error: ${errMsg}`);
+        vscode.window.showErrorMessage(`DiffGate AI: ${errMsg}`);
+        if (inspectorProvider) {
+          inspectorProvider.updateContent({
+            type: "explain",
+            title: f.title,
+            ruleId: f.ruleId,
+            file: path.basename(uriStr),
+            line,
+            status: "error",
+            error: errMsg
+          });
+        }
       }
     }
   );
@@ -393,7 +548,7 @@ async function cmdDeepReview(uriStr: string, ruleId: string, line: number): Prom
   if (!f) return;
   if (!isAiAvailable(entry.config)) {
     resolveProvider(entry.config); // validate config
-    vscode.window.showWarningMessage(`Guardrail AI is off. Enable diffgate.ai.enabled and set $${aiKeyEnv(entry.config)} (provider: ${describeProvider(entry.config)}).`);
+    vscode.window.showWarningMessage(`DiffGate AI is off. Enable diffgate.ai.enabled and set $${aiKeyEnv(entry.config)} (provider: ${describeProvider(entry.config)}).`);
     return;
   }
   let snippet = f.code;
@@ -402,6 +557,20 @@ async function cmdDeepReview(uriStr: string, ruleId: string, line: number): Prom
     const lines = doc.getText().split("\n");
     snippet = lines.slice(Math.max(0, line - 5), line + 4).join("\n");
   } catch { /* fall back to f.code */ }
+
+  const steps: { name: string; detail: string; status: "running" | "success" | "error" }[] = [];
+  if (inspectorProvider) {
+    inspectorProvider.show(true);
+    inspectorProvider.updateContent({
+      type: "deepReview",
+      title: f.title,
+      ruleId: f.ruleId,
+      file: path.basename(uriStr),
+      line,
+      status: "running",
+      steps
+    });
+  }
 
   deepChannel.show(true);
   const label = `${f.title} [${ruleId}] @ ${path.basename(uriStr)}:${line}`;
@@ -424,26 +593,86 @@ async function cmdDeepReview(uriStr: string, ruleId: string, line: number): Prom
           config: entry.config,
           signal: ctl.signal,
           onStep({ name, input }) {
+            if (steps.length > 0 && steps[steps.length - 1].status === "running") {
+              steps[steps.length - 1].status = "success";
+            }
             const summary = typeof input === "object" ? JSON.stringify(input).slice(0, 120) : String(input);
+            steps.push({ name: `tool: ${name}`, detail: summary, status: "running" });
+            
+            if (inspectorProvider) {
+              inspectorProvider.updateContent({
+                type: "deepReview",
+                title: f.title,
+                ruleId: f.ruleId,
+                file: path.basename(uriStr),
+                line,
+                status: "running",
+                steps
+              });
+            }
             deepChannel.appendLine(`  [tool] ${name}(${summary})`);
             progress.report({ message: `tool: ${name}` });
           },
         });
+        if (steps.length > 0) {
+          steps[steps.length - 1].status = "success";
+        }
         const cacheKey = `${uriStr}::${ruleId}::${line}`;
-        verdictCache.set(cacheKey, { verdict: res.verdict, steps: res.steps, model: res.model, hitMax: res.hitMax });
+        verdictCache.set(cacheKey, {
+          verdict: res.verdict,
+          verdictClass: res.verdictClass,
+          steps: res.steps,
+          model: res.model,
+          hitMax: res.hitMax
+        });
         deepChannel.appendLine(`\n[model: ${res.model}  steps: ${res.steps}${res.hitMax ? " (step limit hit)" : ""}]`);
         deepChannel.appendLine(res.verdict);
+        
+        if (inspectorProvider) {
+          inspectorProvider.updateContent({
+            type: "deepReview",
+            title: f.title,
+            ruleId: f.ruleId,
+            file: path.basename(uriStr),
+            line,
+            status: "success",
+            steps,
+            verdict: res.verdict,
+            verdictClass: res.verdictClass,
+            model: res.model
+          });
+        }
+
         if (res.hitMax) {
-          vscode.window.showWarningMessage(`Guardrail Deep Review: reached step limit. See "Guardrail Deep Review" output.`);
+          vscode.window.showWarningMessage(`DiffGate Deep Review: reached step limit. See "DiffGate Deep Review" output.`);
         } else {
-          vscode.window.showInformationMessage(`Deep Review complete — see "Guardrail Deep Review" output.`);
+          vscode.window.showInformationMessage(`Deep Review complete — see "DiffGate Deep Review" output.`);
         }
       } catch (e) {
-        if ((e as Error).name === "AbortError") {
+        if (steps.length > 0) {
+          steps[steps.length - 1].status = "error";
+        }
+        const isAbort = (e as Error).name === "AbortError";
+        const errorMsg = isAbort ? "Deep Review cancelled by user." : (e as Error).message;
+        
+        if (inspectorProvider) {
+          inspectorProvider.updateContent({
+            type: "deepReview",
+            title: f.title,
+            ruleId: f.ruleId,
+            file: path.basename(uriStr),
+            line,
+            status: "error",
+            steps,
+            error: errorMsg
+          });
+        }
+
+        if (isAbort) {
           deepChannel.appendLine("(cancelled)");
         } else {
-          deepChannel.appendLine(`Error: ${(e as Error).message}`);
-          vscode.window.showErrorMessage(`Guardrail Deep Review: ${(e as Error).message}`);
+          deepChannel.appendLine(`Error: ${errorMsg}`);
+          vscode.window.showErrorMessage(`DiffGate Deep Review: ${errorMsg}`);
         }
       }
     }
@@ -500,6 +729,474 @@ async function cmdRunGate(): Promise<void> {
   await runGateForFolder(folder, config, review.files.flatMap((f) => f.findings));
 }
 
+function updateDecorations(editor: vscode.TextEditor): void {
+  if (!editor || editor.document.uri.scheme !== "file") return;
+  const entry = findingsByUri.get(editor.document.uri.toString());
+  if (!entry) {
+    editor.setDecorations(errorDecorationType, []);
+    editor.setDecorations(orangeDecorationType, []);
+    editor.setDecorations(yellowDecorationType, []);
+    editor.setDecorations(greenDecorationType, []);
+    return;
+  }
+
+  const showInline = settings().get<boolean>("showInlineAnnotations", true);
+
+  const errorDecorations: vscode.DecorationOptions[] = [];
+  const orangeDecorations: vscode.DecorationOptions[] = [];
+  const yellowDecorations: vscode.DecorationOptions[] = [];
+  const greenDecorations: vscode.DecorationOptions[] = [];
+
+  for (const f of entry.res.findings) {
+    const range = buildRange(f, editor.document);
+    const meta = TIER_META[f.tier];
+
+    const decoration: vscode.DecorationOptions = {
+      range,
+      hoverMessage: new vscode.MarkdownString(`**${meta.icon} ${f.title}**  \`${f.ruleId}\`\n\n${f.message}`),
+    };
+
+    if (showInline && (f.blocking || f.tier === "orange" || f.tier === "yellow")) {
+      decoration.renderOptions = {
+        after: {
+          contentText: `  |  ${meta.icon} DiffGate: ${f.title}`,
+          color: new vscode.ThemeColor("descriptionForeground"),
+          margin: "0 0 0 2em",
+          fontStyle: "italic",
+        }
+      };
+    }
+
+    if (f.blocking) {
+      errorDecorations.push(decoration);
+    } else if (f.tier === "orange") {
+      orangeDecorations.push(decoration);
+    } else if (f.tier === "yellow") {
+      yellowDecorations.push(decoration);
+    } else {
+      greenDecorations.push(decoration);
+    }
+  }
+
+  editor.setDecorations(errorDecorationType, errorDecorations);
+  editor.setDecorations(orangeDecorationType, orangeDecorations);
+  editor.setDecorations(yellowDecorationType, yellowDecorations);
+  editor.setDecorations(greenDecorationType, greenDecorations);
+}
+
+class DiffGateCodeLensProvider implements vscode.CodeLensProvider {
+  private _onDidChangeCodeLenses = new vscode.EventEmitter<void>();
+  readonly onDidChangeCodeLenses = this._onDidChangeCodeLenses.event;
+
+  public fire(): void {
+    this._onDidChangeCodeLenses.fire();
+  }
+
+  provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+    const entry = findingsByUri.get(document.uri.toString());
+    if (!entry) return [];
+    const lenses: vscode.CodeLens[] = [];
+    for (const f of entry.res.findings) {
+      if (f.tier !== "orange") continue;
+      const range = buildRange(f, document);
+      
+      const args = [document.uri.toString(), f.ruleId, f.line];
+      const explainLens = new vscode.CodeLens(range, {
+        title: "💡 Explain with AI",
+        command: "diffgate.explainWithAI",
+        arguments: args
+      });
+      lenses.push(explainLens);
+
+      const deepLens = new vscode.CodeLens(range, {
+        title: "🧪 Deep Review",
+        command: "diffgate.deepReview",
+        arguments: args
+      });
+      lenses.push(deepLens);
+    }
+    return lenses;
+  }
+}
+
+function getNonce(): string {
+  let text = "";
+  const possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  for (let i = 0; i < 32; i++) {
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
+  }
+  return text;
+}
+
+class DiffGateInspectorProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = "diffgateInspector";
+  private _view?: vscode.WebviewView;
+  private _isReady = false;
+  private _pendingMessage?: any;
+
+  resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    context: vscode.WebviewViewResolveContext,
+    token: vscode.CancellationToken
+  ): void {
+    this._view = webviewView;
+    this._isReady = false;
+    webviewView.webview.options = {
+      enableScripts: true
+    };
+    webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+    webviewView.webview.onDidReceiveMessage((msg) => {
+      if (msg.type === "ready") {
+        this._isReady = true;
+        if (this._pendingMessage) {
+          webviewView.webview.postMessage(this._pendingMessage);
+          this._pendingMessage = undefined;
+        }
+      }
+    });
+  }
+
+  public show(preserveFocus = true): void {
+    if (this._view) {
+      this._view.show?.(preserveFocus);
+    } else {
+      vscode.commands.executeCommand("diffgateInspector.focus", { preserveFocus });
+    }
+  }
+
+  public updateContent(data: {
+    type: "explain" | "deepReview";
+    title: string;
+    ruleId: string;
+    file: string;
+    line: number;
+    status: "idle" | "running" | "success" | "error";
+    steps?: { name: string; detail: string; status: "running" | "success" | "error" }[];
+    verdict?: string;
+    verdictClass?: "confirmed-risk" | "likely-safe" | "needs-human";
+    model?: string;
+    error?: string;
+  }): void {
+    if (this._view && this._isReady) {
+      this._view.webview.postMessage(data);
+    } else {
+      this._pendingMessage = data;
+    }
+  }
+
+  private _getHtmlForWebview(webview: vscode.Webview): string {
+    const nonce = getNonce();
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DiffGate Inspector</title>
+  <style>
+    body {
+      font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
+      font-size: var(--vscode-font-size, 13px);
+      color: var(--vscode-editor-foreground, #cccccc);
+      background-color: var(--vscode-sideBar-background, #1e1e1e);
+      padding: 12px;
+      line-height: 1.5;
+    }
+    h2, h3, h4 {
+      color: var(--vscode-titleBar-activeForeground, #ffffff);
+      margin-top: 0;
+      margin-bottom: 8px;
+    }
+    .header-card {
+      background: var(--vscode-editor-background, #1e1e1e);
+      border: 1px solid var(--vscode-widget-border, #3c3c3c);
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    .finding-title {
+      font-size: 1.1em;
+      font-weight: bold;
+      color: var(--vscode-editorWarning-foreground, #e67e22);
+    }
+    .finding-meta {
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground, #858585);
+      margin-top: 4px;
+    }
+    .section-title {
+      font-size: 0.9em;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--vscode-descriptionForeground, #858585);
+      border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+      padding-bottom: 4px;
+      margin-bottom: 12px;
+      margin-top: 16px;
+    }
+    .stepper {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .step-item {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 6px 10px;
+      border-radius: 4px;
+      background: var(--vscode-welcomePage-tileBackground, #252526);
+    }
+    .step-icon {
+      font-size: 1.2em;
+    }
+    .step-icon.running {
+      animation: spin 1s linear infinite;
+    }
+    .step-content {
+      flex: 1;
+    }
+    .step-name {
+      font-weight: bold;
+      color: var(--vscode-editor-foreground);
+    }
+    .step-detail {
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
+      margin-top: 2px;
+      word-break: break-all;
+    }
+    .verdict-box {
+      background: var(--vscode-editor-background, #1e1e1e);
+      border-left: 4px solid var(--vscode-editorWarning-foreground, #e67e22);
+      padding: 12px;
+      border-radius: 0 6px 6px 0;
+      white-space: pre-wrap;
+      overflow-x: auto;
+      font-family: var(--vscode-editor-font-family, Consolas, Monaco, monospace);
+    }
+    .verdict-box.success {
+      border-left-color: var(--vscode-editorLightBulb-foreground, #2ecc71);
+    }
+    .verdict-box.error {
+      border-left-color: var(--vscode-editorError-foreground, #e74c3c);
+    }
+    .empty-state {
+      text-align: center;
+      color: var(--vscode-descriptionForeground, #858585);
+      margin-top: 40px;
+      font-size: 1.1em;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-size: 0.85em;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    .badge.running {
+      background-color: var(--vscode-statusBar-debuggingBackground, #cc6633);
+      color: #ffffff;
+    }
+    .badge.success {
+      background-color: #28a745;
+      color: #ffffff;
+    }
+    .badge.error {
+      background-color: #dc3545;
+      color: #ffffff;
+    }
+    .badge.confirmed {
+      background-color: var(--vscode-editorError-foreground, #dc3545);
+      color: #ffffff;
+    }
+    .badge.safe {
+      background-color: var(--vscode-debugIcon-startForeground, #28a745);
+      color: #ffffff;
+    }
+    .badge.review {
+      background-color: var(--vscode-editorWarning-foreground, #e67e22);
+      color: #ffffff;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div id="welcome-view" class="empty-state">
+    <p>Select a code finding in the editor and click <b>Explain with AI</b> or <b>Deep Review</b> to view analysis here.</p>
+  </div>
+  
+  <div id="inspector-view" style="display: none;">
+    <div class="header-card">
+      <div id="finding-badge" class="badge"></div>
+      <div id="finding-title" class="finding-title"></div>
+      <div id="finding-meta" class="finding-meta"></div>
+    </div>
+
+    <div id="progress-section" style="display: none;">
+      <div class="section-title">Deep Review Steps</div>
+      <div id="stepper-list" class="stepper"></div>
+    </div>
+
+    <div id="verdict-section" style="display: none;">
+      <div id="verdict-title" class="section-title">Verdict</div>
+      <div id="verdict-box" class="verdict-box"></div>
+      <div id="verdict-footer" class="finding-meta" style="margin-top: 8px;"></div>
+    </div>
+  </div>
+
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    vscode.postMessage({ type: "ready" });
+    const welcomeView = document.getElementById("welcome-view");
+    const inspectorView = document.getElementById("inspector-view");
+    const findingBadge = document.getElementById("finding-badge");
+    const findingTitle = document.getElementById("finding-title");
+    const findingMeta = document.getElementById("finding-meta");
+    const progressSection = document.getElementById("progress-section");
+    const stepperList = document.getElementById("stepper-list");
+    const verdictSection = document.getElementById("verdict-section");
+    const verdictTitle = document.getElementById("verdict-title");
+    const verdictBox = document.getElementById("verdict-box");
+    const verdictFooter = document.getElementById("verdict-footer");
+
+    window.addEventListener("message", event => {
+      const data = event.data;
+      welcomeView.style.display = "none";
+      inspectorView.style.display = "block";
+
+      // 1. Update Header
+      findingTitle.textContent = data.title;
+      findingMeta.textContent = data.ruleId + " · " + data.file + ":" + data.line;
+
+      // 2. Badge status
+      findingBadge.className = "badge " + data.status;
+      if (data.status === "running") {
+        findingBadge.innerHTML = "⏳ Scanning...";
+      } else if (data.status === "error") {
+        findingBadge.innerHTML = "❌ Failed";
+      } else {
+        findingBadge.innerHTML = "✨ Complete";
+      }
+
+      // 3. Handle Explain vs Deep Review
+      if (data.type === "explain") {
+        progressSection.style.display = "none";
+        if (data.status === "success") {
+          verdictSection.style.display = "block";
+          verdictTitle.textContent = "AI Explanation";
+          verdictBox.className = "verdict-box success";
+          verdictBox.textContent = data.verdict;
+          verdictFooter.textContent = "Model: " + (data.model || "Unknown");
+        } else if (data.status === "error") {
+          verdictSection.style.display = "block";
+          verdictTitle.textContent = "Error";
+          verdictBox.className = "verdict-box error";
+          verdictBox.textContent = data.error;
+          verdictFooter.textContent = "";
+        } else {
+          verdictSection.style.display = "none";
+        }
+      } else if (data.type === "deepReview") {
+        // Stepper progress
+        progressSection.style.display = "block";
+        stepperList.innerHTML = "";
+        if (data.steps && data.steps.length > 0) {
+          data.steps.forEach(step => {
+            const item = document.createElement("div");
+            item.className = "step-item";
+            
+            const icon = document.createElement("div");
+            if (step.status === "running") {
+              icon.className = "step-icon running";
+              icon.textContent = "🔄";
+            } else if (step.status === "error") {
+              icon.className = "step-icon";
+              icon.textContent = "❌";
+            } else {
+              icon.className = "step-icon";
+              icon.textContent = "✅";
+            }
+            
+            const content = document.createElement("div");
+            content.className = "step-content";
+            
+            const name = document.createElement("div");
+            name.className = "step-name";
+            name.textContent = step.name;
+            
+            const detail = document.createElement("div");
+            detail.className = "step-detail";
+            detail.textContent = step.detail;
+            
+            content.appendChild(name);
+            content.appendChild(detail);
+            item.appendChild(icon);
+            item.appendChild(content);
+            stepperList.appendChild(item);
+          });
+        } else if (data.status === "running") {
+          const item = document.createElement("div");
+          item.className = "step-item";
+          item.innerHTML = "<div class='step-icon running'>🔄</div><div class='step-content'><div class='step-name'>Starting Deep Review Agent...</div></div>";
+          stepperList.appendChild(item);
+        }
+
+        // Final Verdict
+        if (data.status === "success") {
+          verdictSection.style.display = "block";
+          verdictTitle.textContent = "Agent Critique & Verdict";
+          verdictBox.textContent = data.verdict;
+          verdictFooter.textContent = "Model: " + (data.model || "Unknown");
+
+          // Visual verdict badge based on structured classification
+          let vc = data.verdictClass;
+          if (!vc) {
+            const lowerV = (data.verdict || "").toLowerCase();
+            if (/confirmed.risk|exploitable|high.risk|critical/.test(lowerV)) {
+              vc = "confirmed-risk";
+            } else if (/likely.safe|low.risk|no.exploit|benign/.test(lowerV)) {
+              vc = "likely-safe";
+            } else {
+              vc = "needs-human";
+            }
+          }
+          if (vc === "confirmed-risk") {
+            findingBadge.className = "badge confirmed";
+            findingBadge.innerHTML = "🔴 Confirmed Risk";
+            verdictBox.className = "verdict-box error";
+          } else if (vc === "likely-safe") {
+            findingBadge.className = "badge safe";
+            findingBadge.innerHTML = "🟢 Likely Safe";
+            verdictBox.className = "verdict-box success";
+          } else {
+            findingBadge.className = "badge review";
+            findingBadge.innerHTML = "🟡 Needs Review";
+            verdictBox.className = "verdict-box";
+          }
+        } else if (data.status === "error") {
+          verdictSection.style.display = "block";
+          verdictTitle.textContent = "Agent Error";
+          verdictBox.className = "verdict-box error";
+          verdictBox.textContent = data.error;
+          verdictFooter.textContent = "";
+        } else {
+          verdictSection.style.display = "none";
+        }
+      }
+    });
+  </script>
+</body>
+</html>`;
+  }
+}
+
 // --- lifecycle ---------------------------------------------------------------
 function reanalyzeOpen(): void {
   for (const editor of vscode.window.visibleTextEditors) analyzeDocument(editor.document);
@@ -511,6 +1208,29 @@ export function activate(context: vscode.ExtensionContext): void {
   gateChannel = vscode.window.createOutputChannel("DiffGate Gate");
   deepChannel = vscode.window.createOutputChannel("DiffGate Deep Review");
 
+  errorDecorationType = vscode.window.createTextEditorDecorationType({
+    overviewRulerColor: new vscode.ThemeColor("editorOverviewRuler.errorForeground"),
+    overviewRulerLane: vscode.OverviewRulerLane.Right,
+    gutterIconPath: vscode.Uri.parse("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNC41IiBmaWxsPSIjZTc0YzNjIi8+PC9zdmc+"),
+    gutterIconSize: "contain"
+  });
+  orangeDecorationType = vscode.window.createTextEditorDecorationType({
+    overviewRulerColor: new vscode.ThemeColor("editorOverviewRuler.warningForeground"),
+    overviewRulerLane: vscode.OverviewRulerLane.Right,
+    gutterIconPath: vscode.Uri.parse("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNC41IiBmaWxsPSIjZDM1NDAwIi8+PC9zdmc+"),
+    gutterIconSize: "contain"
+  });
+  yellowDecorationType = vscode.window.createTextEditorDecorationType({
+    overviewRulerColor: new vscode.ThemeColor("editorOverviewRuler.infoForeground"),
+    overviewRulerLane: vscode.OverviewRulerLane.Right,
+    gutterIconPath: vscode.Uri.parse("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNC41IiBmaWxsPSIjZjFjNDBmIi8+PC9zdmc+"),
+    gutterIconSize: "contain"
+  });
+  greenDecorationType = vscode.window.createTextEditorDecorationType({});
+
+  decorationProvider = new DiffGateFileDecorationProvider();
+  const fileDecReg = vscode.window.registerFileDecorationProvider(decorationProvider);
+
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBar.command = "diffgate.analyzeWorkspace";
   statusBar.text = "$(shield) DiffGate";
@@ -519,9 +1239,20 @@ export function activate(context: vscode.ExtensionContext): void {
   riskTree = new RiskTreeProvider();
   const treeView = vscode.window.createTreeView("diffgateRisk", { treeDataProvider: riskTree });
 
+  inspectorProvider = new DiffGateInspectorProvider();
+  const webviewViewReg = vscode.window.registerWebviewViewProvider(
+    DiffGateInspectorProvider.viewType,
+    inspectorProvider
+  );
+
+  codeLensProvider = new DiffGateCodeLensProvider();
+
   const selector = { scheme: "file" };
   context.subscriptions.push(
     diagnostics, aiChannel, gateChannel, deepChannel, statusBar, treeView,
+    errorDecorationType, orangeDecorationType, yellowDecorationType, greenDecorationType,
+    webviewViewReg, fileDecReg,
+    vscode.languages.registerCodeLensProvider(selector, codeLensProvider),
     vscode.languages.registerHoverProvider(selector, hoverProvider),
     vscode.languages.registerCodeActionsProvider(selector, codeActionProvider, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }),
     vscode.commands.registerCommand("diffgate.analyzeWorkspace", () => { reanalyzeOpen(); refreshWorkspace(); vscode.commands.executeCommand("diffgateRisk.focus"); }),
@@ -533,6 +1264,78 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("diffgate.runGate", cmdRunGate)
   );
 
+  // Chat Participant registration
+  if (typeof vscode.chat !== "undefined" && typeof vscode.chat.createChatParticipant === "function") {
+    const handler: vscode.ChatRequestHandler = async (request, context, stream, token) => {
+      const activeEditor = vscode.window.activeTextEditor;
+      const userPrompt = request.prompt.trim().toLowerCase();
+
+      if (userPrompt === "help" || userPrompt === "?") {
+        stream.markdown("I am **DiffGate**, your diff-aware code review assistant. You can ask me:\n\n");
+        stream.markdown("- **findings** or **scan**: to list all findings in the active file.\n");
+        stream.markdown("- **summary**: to see a summary of risk counts in the active file.\n");
+        stream.markdown("- **explain**: to explain any findings in the active file.\n");
+        stream.markdown("- **rules**: to see information about DiffGate's rules.\n");
+        return { metadata: { command: "help" } };
+      }
+
+      if (!activeEditor || activeEditor.document.uri.scheme !== "file") {
+        stream.markdown("Please open a file in the editor first so I can inspect it for risk findings.");
+        return;
+      }
+
+      const uriStr = activeEditor.document.uri.toString();
+      const entry = findingsByUri.get(uriStr);
+
+      if (userPrompt.includes("rule")) {
+        stream.markdown("### DiffGate Built-in Rules\n\nDiffGate uses static AST analysis and pattern matching to classify risks into three tiers:\n\n");
+        stream.markdown("- 🟠 **Orange (High-Impact/Gate)**: Hardcoded secrets, SQL injection, prototype pollution, CORS wildcards, public API signature changes, dangerous eval/execution.\n");
+        stream.markdown("- 🟡 **Yellow (Review/Soft Dependency)**: Network calls, raw database queries, deprecated API usages, dynamic manifest dependency additions.\n");
+        stream.markdown("- 🟢 **Green (Safe/Self-Contained)**: TODO markers, comments, logging statements.\n\n");
+        stream.markdown("You can configure these rules in `.diffgate.json` at your project root.");
+        return;
+      }
+
+      if (!entry || entry.res.findings.length === 0) {
+        stream.markdown(`No findings found in **${path.basename(activeEditor.document.uri.fsPath)}** on changed lines. ✨ Everything looks clear!`);
+        return;
+      }
+
+      const findings = entry.res.findings;
+      const { green, yellow, orange } = entry.res.counts;
+
+      if (userPrompt.includes("summary") || userPrompt.includes("count")) {
+        stream.markdown(`### Findings Summary for \`${path.basename(activeEditor.document.uri.fsPath)}\`\n\n`);
+        stream.markdown(`- 🟠 **Orange (High Risk):** ${orange}\n`);
+        stream.markdown(`- 🟡 **Yellow (Medium Risk):** ${yellow}\n`);
+        stream.markdown(`- 🟢 **Green (Safe/Info):** ${green}\n\n`);
+        if (orange > 0) {
+          stream.markdown(`⚠️ **Orange findings are blocking.** You must fix these before merging, or they will fail the verification gate.`);
+        }
+        return;
+      }
+
+      // Default: List findings and explain
+      stream.markdown(`### 🛡️ DiffGate Findings in \`${path.basename(activeEditor.document.uri.fsPath)}\`:\n\n`);
+      for (const f of findings) {
+        const meta = TIER_META[f.tier];
+        stream.markdown(`#### ${meta.icon} **L${f.line}**: ${f.title} (\`${f.ruleId}\`)\n`);
+        stream.markdown(`> ${f.message}\n\n`);
+        if (f.code) {
+          stream.markdown(`\`\`\`${entry.res.language || ""}\n${f.code.trim()}\n\`\`\`\n\n`);
+        }
+        if (f.fix) {
+          stream.markdown(`*Quick fix suggestion:* Replace with \`${f.fix.newText.trim()}\`\n\n`);
+        }
+      }
+      return { metadata: { command: "list" } };
+    };
+
+    const participant = vscode.chat.createChatParticipant("diffgate-review.diffgate", handler);
+    participant.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "shield.svg");
+    context.subscriptions.push(participant);
+  }
+
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((d) => analyzeDocument(d)),
     vscode.workspace.onDidChangeTextDocument((e) => debouncedAnalyze(e.document)),
@@ -540,9 +1343,15 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidCloseTextDocument((_d) => { /* keep diagnostics for tree */ }),
     vscode.window.onDidChangeActiveTextEditor((ed) => {
       if (!ed) return;
+      updateDecorations(ed);
       const entry = findingsByUri.get(ed.document.uri.toString());
-      if (entry) updateStatusBar(entry.res);
-      else analyzeDocument(ed.document);
+      if (!entry) analyzeDocument(ed.document);
+      updateStatusBar();
+    }),
+    vscode.window.onDidChangeVisibleTextEditors((editors) => {
+      for (const editor of editors) {
+        updateDecorations(editor);
+      }
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("diffgate")) { configCache.clear(); reanalyzeOpen(); refreshWorkspace(); }
@@ -558,6 +1367,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   reanalyzeOpen();
   refreshWorkspace();
+
+  if (vscode.window.activeTextEditor) {
+    updateDecorations(vscode.window.activeTextEditor);
+  }
 }
 
 export function deactivate(): void {
