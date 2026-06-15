@@ -7,6 +7,23 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.2] — 2026-06-15
+
+### Added
+
+- **Inspector webview** — risk-aware VS Code webview panel for explaining and performing agentic Deep Review. Includes live agent stepper showing tool calls and final verdict.
+- **SARIF export** — `--sarif` flag on CLI emits valid SARIF 2.1.0 output for CI/CD integration.
+- **Rule packs toggling** — config options to enable/disable whole groups of rules (e.g. `web-security`).
+- **Structured verdict** — Deep Review agent now returns structured `verdictClass` (`confirmed-risk`, `likely-safe`, or `needs-human`) parsed from the model output.
+
+### Changed
+
+- **AST rewrites** — `sql-injection`, `xss-sink`, and `path-traversal` rules rewritten with Babel AST matching to identify true security risks while eliminating false positives on parameterized/safe patterns.
+- **Smart annotations** — inline diagnostics, gutter icons, and CodeLenses are now displayed on high-impact lines, with CodeLens gated to orange-tier findings.
+- **VS Code Engine** — bumped requirement to `^1.90.0` for webview and chat support.
+
+---
+
 ## [0.1.1] — 2026-06-14
 
 ### Changed

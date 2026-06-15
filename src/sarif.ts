@@ -48,7 +48,7 @@ export function toSarif(files: AnalyzeResult[], cwd: string): string {
         tool: {
           driver: {
             name: "DiffGate",
-            version: "0.1.1",
+            version: "0.1.2",
             rules: Array.from(rulesMap.values()),
           },
         },

@@ -45,7 +45,7 @@ Press **F5** in this repo ("Run DiffGate Extension") to launch a dev host, or bu
 
 ```bash
 npm run package --prefix extension   # produces extension/diffgate-*.vsix
-# then: code --install-extension extension/diffgate-0.1.1.vsix
+# then: code --install-extension extension/diffgate-0.1.2.vsix
 ```
 
 ---

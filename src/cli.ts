@@ -28,7 +28,7 @@ import { runMcpServer } from "./mcp.js";
 import type { Finding, AnalyzeResult, Config } from "./core/types.js";
 
 const CLI_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 function parseArgs(argv: string[]): { pos: string[]; flags: Record<string, string | true> } {
   const flags: Record<string, string | true> = {};

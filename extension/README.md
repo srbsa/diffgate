@@ -44,8 +44,8 @@ Build a `.vsix` to install permanently:
 
 ```bash
 npm install --prefix extension
-npm run package --prefix extension   # produces extension/diffgate-review-0.1.1.vsix
-code --install-extension extension/diffgate-review-0.1.1.vsix
+npm run package --prefix extension   # produces extension/diffgate-0.1.2.vsix
+code --install-extension extension/diffgate-0.1.2.vsix
 ```
 
 ## License

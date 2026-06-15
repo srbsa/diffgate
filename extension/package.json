@@ -2,7 +2,7 @@
   "name": "diffgate-review",
   "displayName": "DiffGate",
   "description": "Diff-aware, three-tiered code review gate inline in your editor.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "diffgate",
   "license": "Apache-2.0",
   "engines": {
@@ -99,7 +99,10 @@
         },
         "diffgate.scanMode": {
           "type": "string",
-          "enum": ["diff", "file"],
+          "enum": [
+            "diff",
+            "file"
+          ],
           "enumDescriptions": [
             "Only flag risk on lines changed vs the committed baseline (recommended).",
             "Flag risk across the entire file."
@@ -109,7 +112,10 @@
         },
         "diffgate.diffMode": {
           "type": "string",
-          "enum": ["working", "staged"],
+          "enum": [
+            "working",
+            "staged"
+          ],
           "default": "working",
           "description": "Baseline for diff mode: all uncommitted changes (working) or staged only."
         },
@@ -120,7 +126,17 @@
         },
         "diffgate.ai.provider": {
           "type": "string",
-          "enum": ["", "anthropic", "openai", "openrouter", "groq", "together", "lmstudio", "ollama", "custom"],
+          "enum": [
+            "",
+            "anthropic",
+            "openai",
+            "openrouter",
+            "groq",
+            "together",
+            "lmstudio",
+            "ollama",
+            "custom"
+          ],
           "default": "",
           "description": "LLM provider override (empty = use .diffgate.json). Anthropic uses the Messages API; the rest use the OpenAI-compatible API."
         },
@@ -150,7 +166,7 @@
   "scripts": {
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "package": "npm run build && vsce package --no-dependencies --out diffgate-0.1.1.vsix"
+    "package": "npm run build && vsce package --no-dependencies --out diffgate-0.1.2.vsix"
   },
   "devDependencies": {
     "@types/vscode": "^1.90.0",
