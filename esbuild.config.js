@@ -12,6 +12,10 @@ function findTs(dir) {
   return result;
 }
 
+// Single source of truth for the version: package.json, injected at build time.
+const VERSION = JSON.parse(fs.readFileSync("package.json", "utf-8")).version;
+const define = { __DIFFGATE_VERSION__: JSON.stringify(VERSION) };
+
 // Clean dist/
 fs.rmSync("dist", { recursive: true, force: true });
 
@@ -25,6 +29,7 @@ await esbuild.build({
   outdir: "dist",
   outbase: "src",
   sourcemap: true,
+  define,
   logLevel: "info",
 });
 
@@ -38,6 +43,7 @@ await esbuild.build({
   outdir: "dist",
   outbase: "src",
   sourcemap: true,
+  define,
   logLevel: "info",
 });
 
@@ -54,6 +60,7 @@ await esbuild.build({
   external: ["fsevents", "chokidar", "@babel/parser"],
   banner: { js: "#!/usr/bin/env node" },
   sourcemap: true,
+  define,
   logLevel: "info",
 });
 

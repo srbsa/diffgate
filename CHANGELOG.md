@@ -7,6 +7,19 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.5] — 2026-06-16
+
+### Added
+
+- **Feedback → learnings** — `diffgate feedback <ruleId> <file> <line>` (and the `diffgate_feedback` MCP tool) records a verdict on a finding. `dismiss` suppresses that exact flagged code (ruleId + code hash) in all future reviews (noise reduction); `confirm` marks it a real catch. Stored in `.diffgate/learnings.json` (commit it to share across the team). Applied automatically by `check`, `scan`, and the MCP `analyze`.
+- **GitHub PR annotations** — `diffgate check --github` emits Actions workflow-command annotations that render inline on the PR "Files changed" tab (orange → error, yellow → warning, green → notice). Ships with a ready-to-use `.github/workflows/diffgate.yml`.
+
+### Fixed
+
+- **Version drift** — the CLI and MCP server version strings are now injected from `package.json` at build time (single source of truth) instead of being hand-maintained.
+
+---
+
 ## [0.1.4] — 2026-06-16
 
 ### Added

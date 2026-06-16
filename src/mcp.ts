@@ -13,10 +13,15 @@ import {
   isAiAvailable,
   deepReview,
   reviewGuidelines,
+  repoRoot,
+  loadLearnings,
+  applyLearnings,
+  recordLearning,
 } from "./core/index.js";
 import type { Finding, Config, FetchFn } from "./core/types.js";
 
-const VERSION = "0.1.0";
+declare const __DIFFGATE_VERSION__: string;
+const VERSION = typeof __DIFFGATE_VERSION__ !== "undefined" ? __DIFFGATE_VERSION__ : "0.0.0";
 
 const SEP = Buffer.from("\r\n\r\n");
 
@@ -130,6 +135,25 @@ export const TOOL_DEFS = [
       },
     },
   },
+  {
+    name: "diffgate_feedback",
+    description:
+      "Record a reviewer's verdict on a finding so DiffGate learns. verdict 'dismiss' suppresses that same flagged " +
+      "code (ruleId + code) in future reviews (noise reduction); 'confirm' marks it as a real, valued catch. " +
+      "Stored in .diffgate/learnings.json at the repo root.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ruleId: { type: "string", description: "The finding's ruleId." },
+        code: { type: "string", description: "The flagged code (finding.code)." },
+        verdict: { type: "string", enum: ["dismiss", "confirm"], description: "dismiss = noise/false-positive; confirm = real issue." },
+        note: { type: "string", description: "Optional reviewer note (why)." },
+        file: { type: "string", description: "Optional repo-relative file path for context." },
+        cwd: { type: "string", description: "Repo root. Defaults to process.cwd()." },
+      },
+      required: ["ruleId", "code", "verdict"],
+    },
+  },
 ];
 
 export async function handleAnalyze({ filePath, content, cwd: cwdArg }: { filePath: string; content?: string; cwd?: string }) {
@@ -153,7 +177,8 @@ export async function handleAnalyze({ filePath, content, cwd: cwdArg }: { filePa
     }
   }
 
-  return analyze({ filePath: absPath, content: actualContent, previousContent, changedLines, config });
+  const result = analyze({ filePath: absPath, content: actualContent, previousContent, changedLines, config });
+  return applyLearnings(result, loadLearnings(repoRoot(cwd) || cwd));
 }
 
 export async function handleCheckStaged({ cwd: cwdArg, mode = "working" }: { cwd?: string; mode?: string } = {}) {
@@ -218,12 +243,23 @@ export async function handleGuidelines({ cwd: cwdArg, mode = "working" }: { cwd?
   return reviewGuidelines(cwd, { mode });
 }
 
+export async function handleFeedback(
+  { ruleId, code, verdict, note, file, cwd: cwdArg }: {
+    ruleId: string; code: string; verdict: "dismiss" | "confirm"; note?: string; file?: string; cwd?: string;
+  }
+) {
+  const cwd = cwdArg || process.cwd();
+  const entry = recordLearning(repoRoot(cwd) || cwd, { ruleId, code, verdict, note, file });
+  return { recorded: entry };
+}
+
 const DISPATCH: Record<string, (args: Record<string, unknown>, opts?: unknown) => Promise<unknown>> = {
   diffgate_analyze: (args) => handleAnalyze(args as Parameters<typeof handleAnalyze>[0]),
   diffgate_check_staged: (args) => handleCheckStaged(args as Parameters<typeof handleCheckStaged>[0]),
   diffgate_deep_review: (args) => handleDeepReview(args as Parameters<typeof handleDeepReview>[0]),
   diffgate_explain: (args) => handleExplain(args as Parameters<typeof handleExplain>[0]),
   diffgate_guidelines: (args) => handleGuidelines(args as Parameters<typeof handleGuidelines>[0]),
+  diffgate_feedback: (args) => handleFeedback(args as Parameters<typeof handleFeedback>[0]),
 };
 
 export function runMcpServer(): void {

@@ -23,13 +23,17 @@ import {
   TIER_ORDER,
   reviewChanges,
   reviewGuidelines,
+  recordLearning,
+  loadLearnings,
+  applyLearnings,
 } from "./core/index.js";
 import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
 import type { Finding, AnalyzeResult, Config } from "./core/types.js";
 
+declare const __DIFFGATE_VERSION__: string;
 const CLI_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.1.2";
+const VERSION = typeof __DIFFGATE_VERSION__ !== "undefined" ? __DIFFGATE_VERSION__ : "0.0.0";
 
 function parseArgs(argv: string[]): { pos: string[]; flags: Record<string, string | true> } {
   const flags: Record<string, string | true> = {};
@@ -164,6 +168,14 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
     return;
   }
 
+  if (flags["github"] || flags["format"] === "github") {
+    printGithubAnnotations(review.files, cwd);
+    const failOn = (flags["fail-on"] as string) || config.gate.failOn || "orange";
+    const failRank = TIER_ORDER[failOn] ?? 2;
+    const blocked = allFindings.some((f) => f.blocking || (TIER_ORDER[f.tier] ?? 0) >= failRank);
+    process.exit(blocked && !flags["no-fail"] ? 1 : 0);
+  }
+
   console.log(formatReport(review.files, review, cwd));
   console.log(c.dim(`\n  diff mode: ${mode}`));
 
@@ -276,6 +288,7 @@ async function cmdScan(pos: string[], flags: Record<string, string | true>): Pro
     ? [...walkFiles(target, config, target)]
     : [target];
 
+  const learnings = loadLearnings(repoRoot(baseDir) || baseDir);
   const files: AnalyzeResult[] = [];
   for (const fp of filePaths) {
     let content: string;
@@ -284,7 +297,7 @@ async function cmdScan(pos: string[], flags: Record<string, string | true>): Pro
     } catch {
       continue;
     }
-    const res = analyze({ filePath: fp, content, config });
+    const res = applyLearnings(analyze({ filePath: fp, content, config }), learnings);
     if (res.findings.length > 0) files.push(res);
   }
 
@@ -372,6 +385,29 @@ async function cmdExplain(pos: string[], flags: Record<string, string | true>): 
   else await printAiExplanations(res.findings, [res], config, 20);
 }
 
+// GitHub Actions workflow-command annotations — render inline on the PR "Files changed" tab.
+function ghEscapeData(s: string): string {
+  return s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}
+function ghEscapeProp(s: string): string {
+  return ghEscapeData(s).replace(/,/g, "%2C").replace(/:/g, "%3A");
+}
+function printGithubAnnotations(files: AnalyzeResult[], cwd: string): void {
+  const level: Record<string, string> = { orange: "error", yellow: "warning", green: "notice" };
+  for (const file of files) {
+    const rel = path.relative(cwd, file.filePath);
+    for (const f of file.findings) {
+      const props = [
+        `file=${ghEscapeProp(rel)}`,
+        `line=${f.line}`,
+        f.endLine ? `endLine=${f.endLine}` : "",
+        `title=${ghEscapeProp("DiffGate: " + f.title)}`,
+      ].filter(Boolean).join(",");
+      console.log(`::${level[f.tier] || "warning"} ${props}::${ghEscapeData(f.message)}`);
+    }
+  }
+}
+
 async function cmdGuidelines(pos: string[], flags: Record<string, string | true>): Promise<void> {
   const cwd = path.resolve(pos[0] || ".");
   const mode = flags["staged"] ? "staged" : "working";
@@ -391,6 +427,26 @@ async function cmdGuidelines(pos: string[], flags: Record<string, string | true>
     console.log(`  ${f.message}`);
     if (f.code) console.log(c.dim(`  ${f.line}: ${f.code}`));
   }
+}
+
+function cmdFeedback(pos: string[], flags: Record<string, string | true>): void {
+  const ruleId = pos[0];
+  const fileArg = pos[1];
+  const lineArg = pos[2];
+  if (!ruleId || !fileArg || !lineArg) {
+    fail('Usage: diffgate feedback <ruleId> <file> <line> [--confirm] [--note=...]   (default: dismiss as noise)');
+  }
+  const abs = path.resolve(fileArg);
+  if (!fs.existsSync(abs)) fail(`No such file: ${abs}`);
+  const line = parseInt(lineArg, 10);
+  if (!Number.isInteger(line) || line < 1) fail(`Invalid line number: ${lineArg}`);
+  const code = (fs.readFileSync(abs, "utf-8").split("\n")[line - 1] ?? "").trim();
+  if (!code) fail(`Line ${line} of ${fileArg} is empty — nothing to record.`);
+  const verdict = flags["confirm"] ? "confirm" : "dismiss";
+  const root = repoRoot(path.dirname(abs)) || path.dirname(abs);
+  const entry = recordLearning(root, { ruleId, code, verdict, file: path.relative(root, abs), note: flags["note"] as string });
+  console.log(c.green(`✔ Recorded ${verdict} for ${c.bold(ruleId)} on ${path.relative(root, abs)}:${line}`));
+  if (verdict === "dismiss") console.log(c.dim(`  This exact flagged code won't be reported again. Stored in .diffgate/learnings.json (${entry.id}).`));
 }
 
 const INIT_TEMPLATE = {
@@ -450,6 +506,7 @@ ${c.bold("Commands")}
   ${c.blue("watch")}        Live review as you edit
   ${c.blue("explain")}      AI-explain findings for a file (needs API key)
   ${c.blue("guidelines")}   Review diff against AGENTS.md/CLAUDE.md/.cursorrules etc.
+  ${c.blue("feedback")}     <ruleId> <file> <line> — dismiss as noise / --confirm (learns)
   ${c.blue("init")}         Write a starter .diffgate.json
   ${c.blue("install-hook")} Install a git pre-commit gate
   ${c.blue("mcp")}          Start the MCP stdio server (for coding agents)
@@ -462,6 +519,8 @@ ${c.bold("Options")}
   --no-fail          Always exit 0 (report only)
   --ai               Add Claude explanations for orange findings
   --json             Machine-readable output
+  --sarif            SARIF 2.1.0 output (GitHub code scanning)
+  --github           GitHub Actions inline PR annotations
 
 ${c.bold("Examples")}
   diffgate check --staged
@@ -472,7 +531,7 @@ ${c.bold("Examples")}
 
 async function main(): Promise<void> {
   const [, , maybeCmd, ...rest] = process.argv;
-  const known = ["check", "scan", "watch", "explain", "guidelines", "init", "install-hook", "mcp"];
+  const known = ["check", "scan", "watch", "explain", "guidelines", "feedback", "init", "install-hook", "mcp"];
   let cmd = maybeCmd;
   let argv = rest;
   if (!cmd || cmd.startsWith("-")) {
@@ -494,6 +553,7 @@ async function main(): Promise<void> {
       case "watch": return cmdWatch(pos, flags);
       case "explain": return await cmdExplain(pos, flags);
       case "guidelines": return await cmdGuidelines(pos, flags);
+      case "feedback": return cmdFeedback(pos, flags);
       case "init": return cmdInit(pos, flags);
       case "install-hook": return cmdInstallHook(pos, flags);
       case "mcp": return runMcpServer();

@@ -1,6 +1,6 @@
 {
   "name": "diffgate-review",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Diff-aware, three-tiered code review gate — security triage for your IDE and CLI.",
   "type": "module",
   "repository": {
@@ -31,7 +31,7 @@
     "build:ext": "npm run build --prefix extension",
     "package:ext": "npm run package --prefix extension",
     "typecheck": "tsc --noEmit && tsc --noEmit -p extension/tsconfig.json",
-    "test": "npm run build && npm run build:ext && node --test test/core.test.js test/agent.test.js test/mcp.test.js test/llm.test.js test/guidelines.test.js test/benchmark.test.js && node extension/test/smoke.cjs",
+    "test": "npm run build && npm run build:ext && node --test test/core.test.js test/agent.test.js test/mcp.test.js test/llm.test.js test/guidelines.test.js test/learnings.test.js test/benchmark.test.js && node extension/test/smoke.cjs",
     "prepublishOnly": "npm run typecheck && npm test"
   },
   "dependencies": {

@@ -1,0 +1,39 @@
+name: DiffGate
+
+# Diff-aware code review on every pull request. Findings render as inline
+# annotations on the "Files changed" tab; orange findings fail the check.
+#
+# DiffGate's `check` reviews the working tree vs HEAD. In CI the PR is already
+# committed, so we reset HEAD to the base branch — that re-exposes the PR's
+# changes as working-tree modifications for `--working` to pick up.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the base branch for the diff
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Re-expose PR changes as a working-tree diff
+        run: git reset --mixed "origin/${{ github.base_ref }}"
+
+      - name: DiffGate review
+        run: npx diffgate-review@latest check --working --github
+
+      # Optional: also review against AGENTS.md/CLAUDE.md with a hosted model.
+      # Requires an API key secret; advisory (non-blocking) by default.
+      # - name: DiffGate guideline review
+      #   env:
+      #     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      #   run: npx diffgate-review@latest guidelines --working

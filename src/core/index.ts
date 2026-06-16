@@ -24,14 +24,16 @@ export {
 } from "./llm/index.js";
 export { deepReview, deepModel } from "./agent/index.js";
 export { reviewGuidelines, evaluateGuidelines, resolveGuidelinesForFile, applyDepthCap, STANDARD_GUIDELINE_FILES } from "./guidelines/index.js";
+export { loadLearnings, recordLearning, applyLearnings, isDismissed, codeHash } from "./learnings.js";
 export { TOOLS as agentTools } from "./agent/tools.js";
 export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier } from "./tiers.js";
 
 import fs from "fs";
 import { analyze } from "./analyzer.js";
 import { loadConfig as _loadConfig, isIgnored as _isIgnored } from "./config.js";
-import { getChangedFiles as _getChangedFiles, getPreviousContent as _getPreviousContent } from "./git.js";
+import { getChangedFiles as _getChangedFiles, getPreviousContent as _getPreviousContent, repoRoot as _repoRoot } from "./git.js";
 import { overallTier as _overallTier, tierCounts as _tierCounts } from "./tiers.js";
+import { loadLearnings as _loadLearnings, applyLearnings as _applyLearnings } from "./learnings.js";
 import type { Config, AnalyzeResult } from "./types.js";
 
 export interface ReviewResult {
@@ -46,6 +48,7 @@ export function reviewChanges(cwd: string, opts: { mode?: string } = {}): Review
   const { config } = _loadConfig(cwd);
   const mode = opts.mode || config.gate.mode || "working";
   const changed = _getChangedFiles(cwd, { mode });
+  const learnings = _loadLearnings(_repoRoot(cwd) || cwd);
   const files: AnalyzeResult[] = [];
 
   for (const [filePath, changedLines] of changed) {
@@ -57,7 +60,7 @@ export function reviewChanges(cwd: string, opts: { mode?: string } = {}): Review
       continue;
     }
     const previousContent = _getPreviousContent(cwd, filePath, { mode });
-    const result = analyze({ filePath, content, previousContent, changedLines, config });
+    const result = _applyLearnings(analyze({ filePath, content, previousContent, changedLines, config }), learnings);
     if (result.findings.length > 0) files.push(result);
   }
 
