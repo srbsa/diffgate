@@ -22,6 +22,7 @@ import {
   overallTier,
   TIER_ORDER,
   reviewChanges,
+  reviewGuidelines,
 } from "./core/index.js";
 import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
@@ -371,6 +372,27 @@ async function cmdExplain(pos: string[], flags: Record<string, string | true>): 
   else await printAiExplanations(res.findings, [res], config, 20);
 }
 
+async function cmdGuidelines(pos: string[], flags: Record<string, string | true>): Promise<void> {
+  const cwd = path.resolve(pos[0] || ".");
+  const mode = flags["staged"] ? "staged" : "working";
+  const res = await reviewGuidelines(cwd, { mode, log: (m) => console.log(c.dim(m)) });
+  if (flags["json"]) { console.log(JSON.stringify(res, null, 2)); return; }
+  if (res.mode === "host") {
+    // No model configured — guideline review needs either a provider or an agent host.
+    if (res.payload.groups.length === 0) { console.log(c.green("✔ No coding-guideline files apply to the changed files.")); return; }
+    console.log(c.yellow("No AI model configured for guideline review."));
+    console.log(c.dim(`Found guidelines in: ${res.payload.groups.flatMap((g) => g.sources).join(", ")}`));
+    console.log(c.dim("Configure ai.* in .diffgate.json, or run DiffGate via an MCP agent (diffgate_guidelines) to evaluate with the agent's own model."));
+    return;
+  }
+  if (res.findings.length === 0) { console.log(c.green("✔ No coding-guideline violations in the changed lines.")); return; }
+  for (const f of res.findings) {
+    console.log(`${badge(f.tier)} ${c.bold(f.title)} ${c.dim(f.ruleId)}`);
+    console.log(`  ${f.message}`);
+    if (f.code) console.log(c.dim(`  ${f.line}: ${f.code}`));
+  }
+}
+
 const INIT_TEMPLATE = {
   testCommand: null,
   gate: { mode: "working", failOn: "orange" },
@@ -378,6 +400,7 @@ const INIT_TEMPLATE = {
   deprecated: [{ pattern: "OldService.legacyMethod", replacedBy: "NewService.method", author: "Your Team", pr: "PR #000" }],
   customPatterns: [{ id: "no-direct-process-env", tier: "yellow", pattern: "process\\.env\\.", message: "Read config through the typed config module, not process.env directly." }],
   rules: {},
+  guidelines: { enabled: true, autoDetect: true, maxDepth: 3, tier: "yellow", blocking: false, evaluator: "auto" },
   ignore: ["**/node_modules/**", "**/dist/**", "**/build/**"],
 };
 
@@ -426,6 +449,7 @@ ${c.bold("Commands")}
   ${c.blue("scan")}         Analyze a file or directory in full
   ${c.blue("watch")}        Live review as you edit
   ${c.blue("explain")}      AI-explain findings for a file (needs API key)
+  ${c.blue("guidelines")}   Review diff against AGENTS.md/CLAUDE.md/.cursorrules etc.
   ${c.blue("init")}         Write a starter .diffgate.json
   ${c.blue("install-hook")} Install a git pre-commit gate
   ${c.blue("mcp")}          Start the MCP stdio server (for coding agents)
@@ -448,7 +472,7 @@ ${c.bold("Examples")}
 
 async function main(): Promise<void> {
   const [, , maybeCmd, ...rest] = process.argv;
-  const known = ["check", "scan", "watch", "explain", "init", "install-hook", "mcp"];
+  const known = ["check", "scan", "watch", "explain", "guidelines", "init", "install-hook", "mcp"];
   let cmd = maybeCmd;
   let argv = rest;
   if (!cmd || cmd.startsWith("-")) {
@@ -469,6 +493,7 @@ async function main(): Promise<void> {
       case "scan": return await cmdScan(pos, flags);
       case "watch": return cmdWatch(pos, flags);
       case "explain": return await cmdExplain(pos, flags);
+      case "guidelines": return await cmdGuidelines(pos, flags);
       case "init": return cmdInit(pos, flags);
       case "install-hook": return cmdInstallHook(pos, flags);
       case "mcp": return runMcpServer();

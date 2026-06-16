@@ -12,6 +12,7 @@ import {
   explainFinding,
   isAiAvailable,
   deepReview,
+  reviewGuidelines,
 } from "./core/index.js";
 import type { Finding, Config, FetchFn } from "./core/types.js";
 
@@ -113,6 +114,22 @@ export const TOOL_DEFS = [
       required: ["finding", "cwd"],
     },
   },
+  {
+    name: "diffgate_guidelines",
+    description:
+      "Review the diff against the repo's own coding guideline files (AGENTS.md, CLAUDE.md, .cursorrules, etc.), " +
+      "scoped per directory (nearest file wins). " +
+      "IMPORTANT: if the result has mode='host', NO external model was used — YOU (the calling agent) must evaluate each " +
+      "group's `hunks` against its `guidelines` text and report violations as findings matching `schema`, using your own model. " +
+      "If mode='model', findings were produced by the configured provider and are returned directly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: { type: "string", description: "Repo root. Defaults to process.cwd()." },
+        mode: { type: "string", enum: ["staged", "working"], description: "Diff scope. Default: working." },
+      },
+    },
+  },
 ];
 
 export async function handleAnalyze({ filePath, content, cwd: cwdArg }: { filePath: string; content?: string; cwd?: string }) {
@@ -196,11 +213,17 @@ export async function handleExplain(
   });
 }
 
+export async function handleGuidelines({ cwd: cwdArg, mode = "working" }: { cwd?: string; mode?: string } = {}) {
+  const cwd = cwdArg || process.cwd();
+  return reviewGuidelines(cwd, { mode });
+}
+
 const DISPATCH: Record<string, (args: Record<string, unknown>, opts?: unknown) => Promise<unknown>> = {
   diffgate_analyze: (args) => handleAnalyze(args as Parameters<typeof handleAnalyze>[0]),
   diffgate_check_staged: (args) => handleCheckStaged(args as Parameters<typeof handleCheckStaged>[0]),
   diffgate_deep_review: (args) => handleDeepReview(args as Parameters<typeof handleDeepReview>[0]),
   diffgate_explain: (args) => handleExplain(args as Parameters<typeof handleExplain>[0]),
+  diffgate_guidelines: (args) => handleGuidelines(args as Parameters<typeof handleGuidelines>[0]),
 };
 
 export function runMcpServer(): void {

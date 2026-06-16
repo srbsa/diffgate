@@ -88,6 +88,34 @@ export interface CustomPattern {
   message?: string;
 }
 
+export interface GuidelinesConfig {
+  /** Ingest natural-language coding guidelines from AGENTS.md/CLAUDE.md/etc. and enforce them at review time. */
+  enabled?: boolean;
+  /** Auto-detect the standard guideline filenames (AGENTS.md, CLAUDE.md, .cursorrules, ...). Default true. */
+  autoDetect?: boolean;
+  /** Extra guideline file globs/names beyond the auto-detected set (e.g. "docs/STANDARDS.md"). */
+  files?: string[];
+  /** Max guideline files merged per changed file (nearest-wins + repo-root kept; middle dropped). Default 3. */
+  maxDepth?: number;
+  /** Per-file byte budget; oversized files are section-extracted then truncated. Default 8000. */
+  maxBytesPerFile?: number;
+  /** Tier assigned to guideline findings (severity is capped to this). Default "yellow". */
+  tier?: Tier;
+  /** Whether guideline findings gate the build. Default false (advisory — they are non-deterministic). */
+  blocking?: boolean;
+  /** "auto" = host-delegate when no model is configured, else model. "model" forces the configured provider. "host" forces caller delegation. */
+  evaluator?: "auto" | "model" | "host";
+}
+
+export interface GuidelineRuleSet {
+  /** Guideline files that apply, nearest-first. */
+  sources: string[];
+  /** Extracted, budget-trimmed guideline text. */
+  text: string;
+  /** Guideline files found but dropped by the depth cap, for transparency. */
+  dropped: string[];
+}
+
 export interface Config {
   gate: GateConfig;
   ai: AiConfig;
@@ -97,6 +125,7 @@ export interface Config {
   customPatterns?: CustomPattern[];
   deprecated?: DeprecatedEntry[];
   orangePatterns?: string[];
+  guidelines?: GuidelinesConfig;
 }
 
 // Minimal Babel-compatible AST node type

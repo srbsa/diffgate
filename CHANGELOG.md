@@ -7,6 +7,16 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.4] — 2026-06-16
+
+### Added
+
+- **Coding-guideline review** — DiffGate now reviews the diff against your repo's own guideline files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`) — the same files your coding agents already read. New `diffgate guidelines` CLI command and `diffgate_guidelines` MCP tool. Configurable via the `guidelines` block.
+- **Per-directory scoping** — a guideline file applies to its own directory and all subdirectories; the nearest file wins. Deep nesting is capped (`maxDepth`, default 3): the nearest files plus the repo-root file are kept and the middle is dropped, with a logged note (no silent truncation).
+- **Agent-credit (host) evaluation** — `guidelines.evaluator: "auto"` delegates the natural-language judgment to the calling agent's own model when no provider is configured (zero API-key setup), and uses the configured provider otherwise. Guideline findings are advisory (`yellow`, non-blocking) by default since they are non-deterministic.
+
+---
+
 ## [0.1.3] — 2026-06-16
 
 ### Changed

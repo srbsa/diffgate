@@ -57,5 +57,17 @@
     "network-call": { "tier": "green" }
   },
 
+  "//guidelines": "Review the diff against your repo's own AGENTS.md/CLAUDE.md/.cursorrules (nearest file wins per directory). evaluator 'auto' = use the calling agent's model when none is configured (no API key), else the configured provider.",
+  "guidelines": {
+    "enabled": true,
+    "autoDetect": true,
+    "files": [],
+    "maxDepth": 3,
+    "maxBytesPerFile": 8000,
+    "tier": "yellow",
+    "blocking": false,
+    "evaluator": "auto"
+  },
+
   "ignore": ["**/node_modules/**", "**/dist/**", "**/build/**"]
 }

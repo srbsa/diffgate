@@ -23,6 +23,7 @@ export {
   PROVIDERS,
 } from "./llm/index.js";
 export { deepReview, deepModel } from "./agent/index.js";
+export { reviewGuidelines, evaluateGuidelines, resolveGuidelinesForFile, applyDepthCap, STANDARD_GUIDELINE_FILES } from "./guidelines/index.js";
 export { TOOLS as agentTools } from "./agent/tools.js";
 export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier } from "./tiers.js";
 

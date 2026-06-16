@@ -23,6 +23,7 @@ export const DEFAULT_CONFIG: Config = {
     deepReview: { maxSteps: 6 },
   },
   testCommand: null,
+  guidelines: { enabled: true, autoDetect: true, files: [], maxDepth: 3, maxBytesPerFile: 8000, tier: "yellow", blocking: false, evaluator: "auto" },
 };
 
 const CONFIG_NAME = ".diffgate.json";
@@ -48,6 +49,7 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   cfg.ignore = Array.isArray(raw.ignore) ? raw.ignore : DEFAULT_CONFIG.ignore;
   cfg.orangePatterns = raw.orangePatterns;
   cfg.testCommand = (raw.testCommand as string | null | undefined) ?? DEFAULT_CONFIG.testCommand;
+  cfg.guidelines = { ...DEFAULT_CONFIG.guidelines, ...(raw.guidelines || {}) };
   return cfg;
 }
 
