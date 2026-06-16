@@ -63,6 +63,8 @@ export interface AiConfig {
   deepReview?: AiDeepReviewConfig;
   wire?: "anthropic" | "openai";
   local?: boolean;
+  /** Disable model "thinking" for quick tasks (explain). Defaults to true for local providers, off for hosted APIs that reject non-standard params. */
+  noThink?: boolean;
   extraHeaders?: Record<string, string>;
 }
 
@@ -192,6 +194,7 @@ export interface CompleteOptions {
   temperature?: number;
   tokenParam?: string;
   extraHeaders?: Record<string, string>;
+  noThink?: boolean;
   signal?: AbortSignal;
   fetchImpl?: FetchFn;
 }

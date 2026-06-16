@@ -75,6 +75,74 @@ test("openai adapter posts the right shape and parses choices", async () => {
   assert.equal(out.text, "hello");
 });
 
+test("openai adapter disables thinking and strips <think> when noThink is set", async () => {
+  const cap = {};
+  const out = await openaiComplete({
+    baseURL: "https://api.example.com/v1",
+    apiKey: "sk-x",
+    model: "qwen-test",
+    system: "sys",
+    prompt: "hi",
+    noThink: true,
+    fetchImpl: fakeFetch(cap, { model: "qwen-test", choices: [{ message: { content: "<think>\n\n</think>\n answer " } }] }),
+  });
+  assert.match(cap.body.messages[0].content, /\/no_think$/, "system gets the /no_think soft switch");
+  assert.deepEqual(cap.body.chat_template_kwargs, { enable_thinking: false });
+  assert.equal(out.text, "answer", "empty think block stripped");
+});
+
+test("openai adapter leaves thinking on by default", async () => {
+  const cap = {};
+  await openaiComplete({
+    baseURL: "https://api.example.com/v1",
+    apiKey: "sk-x",
+    model: "qwen-test",
+    system: "sys",
+    prompt: "hi",
+    fetchImpl: fakeFetch(cap, { model: "qwen-test", choices: [{ message: { content: "x" } }] }),
+  });
+  assert.equal(cap.body.messages[0].content, "sys");
+  assert.equal(cap.body.chat_template_kwargs, undefined);
+});
+
+test("explainFinding realizes noThink for local providers (templated runtimes)", async () => {
+  const cap = {};
+  const config = { ai: { enabled: true, provider: "lmstudio", model: "qwen" } };
+  const finding = { tier: "yellow", ruleId: "r", title: "T", message: "msg", code: "c-unique-2" };
+  await explainFinding({
+    finding, snippet: "snip-unique-2", language: "javascript", config,
+    fetchImpl: fakeFetch(cap, { model: "qwen", choices: [{ message: { content: "ok" } }] }),
+  });
+  assert.deepEqual(cap.body.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("explainFinding does NOT send non-standard noThink params to hosted APIs", async () => {
+  process.env.OPENAI_API_KEY = "sk-test";
+  const cap = {};
+  const config = { ai: { enabled: true, provider: "openai", model: "m" } };
+  const finding = { tier: "yellow", ruleId: "r", title: "T", message: "msg", code: "c-unique-3" };
+  await explainFinding({
+    finding, snippet: "snip-unique-3", language: "javascript", config,
+    fetchImpl: fakeFetch(cap, { model: "m", choices: [{ message: { content: "ok" } }] }),
+  });
+  assert.equal(cap.body.chat_template_kwargs, undefined, "hosted API must not get template kwargs (would 400)");
+  assert.equal(cap.body.messages[0].content.includes("/no_think"), false);
+  delete process.env.OPENAI_API_KEY;
+});
+
+test("explainFinding honors explicit ai.noThink override on a hosted gateway", async () => {
+  process.env.OPENAI_API_KEY = "sk-test";
+  const cap = {};
+  const config = { ai: { enabled: true, provider: "openai", model: "m", noThink: true } };
+  const finding = { tier: "yellow", ruleId: "r", title: "T", message: "msg", code: "c-unique-4" };
+  await explainFinding({
+    finding, snippet: "snip-unique-4", language: "javascript", config,
+    fetchImpl: fakeFetch(cap, { model: "m", choices: [{ message: { content: "ok" } }] }),
+  });
+  assert.deepEqual(cap.body.chat_template_kwargs, { enable_thinking: false });
+  delete process.env.OPENAI_API_KEY;
+});
+
 test("anthropic adapter posts the right shape and parses content", async () => {
   const cap = {};
   const out = await anthropicComplete({

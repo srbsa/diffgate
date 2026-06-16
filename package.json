@@ -1,6 +1,6 @@
 {
   "name": "diffgate-review",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Diff-aware, three-tiered code review gate — security triage for your IDE and CLI.",
   "type": "module",
   "repository": {

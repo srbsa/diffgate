@@ -7,6 +7,18 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.3] — 2026-06-16
+
+### Changed
+
+- **Explain with AI is now thinking-free** — the single-shot explain path suppresses model "thinking" so reasoning models (e.g. Qwen on LM Studio) answer directly instead of burning the budget deliberating. Deep Review still reasons + sweeps.
+
+### Fixed
+
+- **Model-agnostic thinking suppression** — non-standard params (`chat_template_kwargs`, `/no_think`) are only sent to local templated runtimes (LM Studio/Ollama) by default, so hosted APIs (OpenAI, Groq, etc.) no longer 400. Opt in on a custom gateway via `ai.noThink: true`. Residual empty `<think>` blocks are stripped from output.
+
+---
+
 ## [0.1.2] — 2026-06-15
 
 ### Added

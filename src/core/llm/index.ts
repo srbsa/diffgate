@@ -28,11 +28,12 @@ export interface CompleteCallOptions {
   config: Partial<Config>;
   tier?: string;
   modelOverride?: string;
+  noThink?: boolean;
   signal?: AbortSignal;
   fetchImpl?: FetchFn;
 }
 
-export async function complete({ system, prompt, config, tier = "default", modelOverride, signal, fetchImpl }: CompleteCallOptions): Promise<CompleteResult> {
+export async function complete({ system, prompt, config, tier = "default", modelOverride, noThink, signal, fetchImpl }: CompleteCallOptions): Promise<CompleteResult> {
   const p = resolveProvider(config);
   const apiKey = p.apiKeyEnv ? process.env[p.apiKeyEnv] ?? null : null;
   if (!p.local && p.apiKeyEnv && !apiKey) {
@@ -52,6 +53,10 @@ export async function complete({ system, prompt, config, tier = "default", model
     temperature: config.ai?.temperature ?? 0,
     tokenParam: config.ai?.tokenParam || "max_tokens",
     extraHeaders: p.extraHeaders,
+    // Thinking-suppression uses non-standard params (chat_template_kwargs, /no_think)
+    // that strict hosted APIs reject. Realize it only for local templated runtimes
+    // unless the user explicitly opts in via ai.noThink (e.g. a self-hosted gateway).
+    noThink: noThink && (config.ai?.noThink ?? p.local),
     signal,
     fetchImpl,
   };
@@ -92,6 +97,7 @@ export async function explainFinding({ finding, snippet, language, config, signa
     prompt: buildPrompt({ finding, snippet, language }),
     config,
     tier: finding.tier,
+    noThink: true,
     signal,
     fetchImpl,
   });
