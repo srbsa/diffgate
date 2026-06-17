@@ -26,7 +26,10 @@ npm link               # optional: makes `diffgate` available globally
 
 diffgate scan mock_project          # analyze files directly (no git needed)
 diffgate check                      # review your pending git changes (the gate)
+diffgate check --github             # same + emit GitHub Actions inline annotations
 diffgate watch                      # live review as you edit
+diffgate guidelines                 # review diff against your repo's AGENTS.md/CLAUDE.md etc.
+diffgate feedback <ruleId> <f> <l>  # record a dismiss/confirm verdict on a finding
 diffgate init                       # write a starter .diffgate.json
 diffgate install-hook               # add a git pre-commit gate
 diffgate mcp                        # start the MCP stdio server
@@ -58,6 +61,8 @@ npm run package --prefix extension   # produces extension/diffgate-*.vsix
 - **Real gate** — when a change is high-impact, DiffGate runs your `testCommand` and shows the actual exit code and output.
 - **Hybrid AI (optional, provider-agnostic)** — the deterministic engine always runs offline; when `ai.enabled` is true it adds plain-English explanations and fix suggestions. Works with **Anthropic, OpenAI, OpenRouter, Groq, Together, LM Studio, Ollama, or any OpenAI-compatible endpoint**.
 - **Deep Review** — for orange findings, an agentic loop (grep, read_file, find_references, git_blame) investigates blast radius and returns a `confirmed-risk / likely-safe / needs-human` verdict.
+- **Guideline review** — reviews the diff against your repo's own `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, and similar files. Per-directory scoping; the nearest file wins. No extra API key needed in host mode — the calling agent does the judgment.
+- **Learnings** — `diffgate feedback` records dismiss/confirm verdicts. Dismissed findings (same rule + same code) are suppressed in all future reviews. Stored in `.diffgate/learnings.json` — commit it to share across the team.
 
 Engine layout: [`src/core`](src/core) (shared) · [`src/cli.ts`](src/cli.ts) (CLI) · [`src/mcp.ts`](src/mcp.ts) (MCP server) · [`extension/`](extension) (VS Code). Tests: [`test/`](test) and [`extension/test/smoke.cjs`](extension/test/smoke.cjs).
 
@@ -72,6 +77,15 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
   "testCommand": "npm test",                 // run for orange changes (the gate)
   "gate": { "mode": "working", "failOn": "orange" },
   "ai": { "enabled": false, "model": "claude-sonnet-4-6", "apiKeyEnv": "ANTHROPIC_API_KEY" },
+
+  "guidelines": {                            // review diff against AGENTS.md/CLAUDE.md etc.
+    "enabled": true,
+    "autoDetect": true,                      // walk up to find AGENTS.md, CLAUDE.md, GEMINI.md, .cursorrules, etc.
+    "maxDepth": 3,                           // keep nearest 2 + repo-root; drop middle (logged)
+    "tier": "yellow",                        // cap guideline findings here (non-blocking by default)
+    "blocking": false,
+    "evaluator": "auto"                      // "host" = calling agent judges (no API key); "model" = configured provider
+  },
 
   "deprecated": [                            // drives the deprecated-api rule + quick-fix
     { "pattern": "StripeClient.charge", "replacedBy": "StripeClient.createPaymentIntent",
@@ -142,6 +156,35 @@ Disable or re-tier any rule via the `rules` key in `.diffgate.json`.
 
 ---
 
+## Guideline review (AGENTS.md / CLAUDE.md)
+
+Checks the diff against your repo's coding-agent instruction files.
+
+**Detected automatically:** `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`
+
+**Per-directory scoping** — nearest file wins; deep nesting is capped at `maxDepth` (default 3), keeping the closest files + repo-root. Drops logged.
+
+**`evaluator`** — `"auto"` (default): uses configured provider when available, otherwise returns the guideline text + diff hunks for the calling agent to evaluate with its own model (no API key needed). `"model"`: always uses the configured provider.
+
+```bash
+diffgate guidelines            # run manually
+```
+
+Findings are `yellow` / non-blocking by default (configurable).
+
+---
+
+## Feedback and learnings
+
+```bash
+diffgate feedback <ruleId> <file> <line> --confirm     # real catch — mark it
+diffgate feedback <ruleId> <file> <line> --dismiss     # noise — suppress it in future reviews
+```
+
+Matched by `ruleId` + code hash. Latest verdict wins. Stored in `.diffgate/learnings.json` — commit it to share across the team.
+
+---
+
 ## CI / pre-commit
 
 ```bash
@@ -151,6 +194,26 @@ diffgate check --staged
 # CI
 diffgate check --fail-on=orange      # exit 1 blocks the build
 diffgate check --json                # machine-readable output
+diffgate check --github              # emit GitHub Actions inline PR annotations
+```
+
+### GitHub Actions
+
+Drop this file into `.github/workflows/diffgate.yml` (also ships ready-made with the package):
+
+```yaml
+on: [pull_request]
+jobs:
+  diffgate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: git reset --mixed "origin/${{ github.base_ref }}"
+      - run: npx diffgate-review@latest check --working --github
 ```
 
 ## DiffGate for Coding Agents
@@ -205,7 +268,7 @@ You'll see green findings (logging), yellow findings (deprecated `StripeClient.c
 ## Tests
 
 ```bash
-npm test    # builds the extension, runs 47 unit/integration tests + the extension smoke test
+npm test    # builds the extension, runs 71 unit/integration tests + the extension smoke test
 ```
 
 ## Contributing

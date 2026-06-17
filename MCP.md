@@ -60,6 +60,8 @@ In Cursor Settings → MCP, add:
 | `diffgate_check_staged` | Before committing — scan all pending changes across the repo |
 | `diffgate_deep_review` | When `diffgate_analyze` returns an orange finding — investigate blast radius |
 | `diffgate_explain` | Get a concise explanation of any yellow/orange finding |
+| `diffgate_guidelines` | Check the diff against the repo's AGENTS.md/CLAUDE.md coding guidelines |
+| `diffgate_feedback` | Record a dismiss or confirm verdict on a finding (updates learnings) |
 
 ### diffgate_analyze
 
@@ -113,6 +115,37 @@ Returns `{ verdict, why, fix, steps, transcript, model, hitMax }`.
 
 Returns `{ text, model }`.
 
+### diffgate_guidelines
+
+Reviews the diff against the repo's own coding-guideline files (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, etc.).
+
+```json
+{ "cwd": "/path/to/repo", "mode": "working" }
+```
+
+**Host mode (default when no provider is configured):** returns `{ mode: "host", groups: [...] }` where each group contains the guideline text and the relevant diff hunks. **When you receive this, evaluate the hunks against the guidelines yourself and surface any violations as findings.** This costs zero tokens on DiffGate's side — you use your own model and credits.
+
+**Model mode:** DiffGate calls the configured provider and returns `{ mode: "model", findings: [...] }` directly.
+
+Findings are `{ ruleId, tier, title, message, file, line }` at most `yellow` tier by default (configurable via `guidelines.tier` and `guidelines.blocking` in `.diffgate.json`).
+
+### diffgate_feedback
+
+Records a dismiss or confirm verdict on a finding. Dismissed findings (same `ruleId` + same code, matched by hash) are suppressed in all future `analyze`, `check_staged`, and `guidelines` calls.
+
+```json
+{
+  "ruleId": "no-process-env",
+  "file": "src/config.ts",
+  "line": 42,
+  "code": "const key = process.env.STRIPE_KEY",
+  "verdict": "dismiss",    // "dismiss" | "confirm"
+  "note": "This module is the approved escape hatch."
+}
+```
+
+Returns `{ ok: true }`. Stored in `.diffgate/learnings.json` in the repo — commit it to share across the team. Latest verdict wins; calling feedback again with `"confirm"` un-dismisses a previously dismissed finding.
+
 ## AI configuration
 
 For `diffgate_deep_review` and `diffgate_explain`, the agent uses the AI provider
@@ -138,6 +171,6 @@ Local providers (LM Studio, Ollama) need no API key.
 No. The two model invocations have different roles:
 
 - **Outer agent (Claude Code)**: writes code, answers your questions, orchestrates tasks.
-- **DiffGate MCP tool**: runs deterministic rules (no LLM) for `diffgate_analyze` and `diffgate_check_staged`; uses a *focused* security-review system prompt and specialized git/grep tools for `diffgate_deep_review`.
+- **DiffGate MCP tool**: runs deterministic rules (no LLM) for `diffgate_analyze` and `diffgate_check_staged`; uses a focused security-review system prompt and specialized git/grep tools for `diffgate_deep_review`; returns structured guideline payloads for `diffgate_guidelines` in host mode (you judge, zero DiffGate LLM spend).
 
 The outer agent delegates "is this safe to ship?" to a specialist. The deterministic tools cost zero LLM tokens — the outer agent just gets structured risk findings back.
