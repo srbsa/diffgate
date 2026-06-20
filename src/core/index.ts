@@ -6,6 +6,7 @@ export {
   getPreviousContent,
   isGitRepo,
   repoRoot,
+  headSha,
   blameLine,
 } from "./git.js";
 export { detectLanguage, hasAstSupport } from "./parsers/index.js";
@@ -24,7 +25,7 @@ export {
 } from "./llm/index.js";
 export { deepReview, deepModel } from "./agent/index.js";
 export { reviewGuidelines, evaluateGuidelines, resolveGuidelinesForFile, applyDepthCap, STANDARD_GUIDELINE_FILES } from "./guidelines/index.js";
-export { loadLearnings, recordLearning, applyLearnings, isDismissed, codeHash } from "./learnings.js";
+export { loadLearnings, loadMergedLearnings, recordLearning, applyLearnings, isDismissed, codeHash } from "./learnings.js";
 export { TOOLS as agentTools } from "./agent/tools.js";
 export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier } from "./tiers.js";
 
@@ -33,7 +34,7 @@ import { analyze } from "./analyzer.js";
 import { loadConfig as _loadConfig, isIgnored as _isIgnored } from "./config.js";
 import { getChangedFiles as _getChangedFiles, getPreviousContent as _getPreviousContent, repoRoot as _repoRoot } from "./git.js";
 import { overallTier as _overallTier, tierCounts as _tierCounts } from "./tiers.js";
-import { loadLearnings as _loadLearnings, applyLearnings as _applyLearnings } from "./learnings.js";
+import { loadMergedLearnings as _loadMergedLearnings, applyLearnings as _applyLearnings } from "./learnings.js";
 import type { Config, AnalyzeResult } from "./types.js";
 
 export interface ReviewResult {
@@ -44,11 +45,13 @@ export interface ReviewResult {
   config: Config;
 }
 
-export function reviewChanges(cwd: string, opts: { mode?: string } = {}): ReviewResult {
+export function reviewChanges(cwd: string, opts: { mode?: string; base?: string } = {}): ReviewResult {
   const { config } = _loadConfig(cwd);
   const mode = opts.mode || config.gate.mode || "working";
-  const changed = _getChangedFiles(cwd, { mode });
-  const learnings = _loadLearnings(_repoRoot(cwd) || cwd);
+  const base = opts.base;
+  const changed = _getChangedFiles(cwd, { mode, base });
+  const root = _repoRoot(cwd) || cwd;
+  const learnings = _loadMergedLearnings(root, config.learnings?.shared || [], root);
   const files: AnalyzeResult[] = [];
 
   for (const [filePath, changedLines] of changed) {
@@ -59,7 +62,7 @@ export function reviewChanges(cwd: string, opts: { mode?: string } = {}): Review
     } catch {
       continue;
     }
-    const previousContent = _getPreviousContent(cwd, filePath, { mode });
+    const previousContent = _getPreviousContent(cwd, filePath, { mode, base });
     const result = _applyLearnings(analyze({ filePath, content, previousContent, changedLines, config }), learnings);
     if (result.findings.length > 0) files.push(result);
   }

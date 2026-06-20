@@ -19,9 +19,11 @@ const define = { __DIFFGATE_VERSION__: JSON.stringify(VERSION) };
 // Clean dist/
 fs.rmSync("dist", { recursive: true, force: true });
 
-// Build 1: Compile core library files individually (preserves module structure for library consumers)
+// Build 1: Compile all source files individually (preserves module structure for library
+// consumers and lets tests import top-level modules like dist/bench.js, dist/github.js).
+// dist/cli.js produced here is overwritten by the bundled build below.
 await esbuild.build({
-  entryPoints: findTs("src/core"),
+  entryPoints: findTs("src"),
   bundle: false,
   platform: "node",
   format: "esm",

@@ -1,6 +1,9 @@
 {
   "//": "Drop this file (renamed to .diffgate.json) at your repo root. Run `diffgate init` to generate one.",
 
+  "//extends": "Inherit org-wide policy packs (base-first; this file wins on conflicts). Entries are paths (./team.diffgate.json) or package names resolved under node_modules (@acme/diffgate-policy). Arrays (deprecated/customPatterns/ignore) concat; objects (rules/ai/gate) merge.",
+  "extends": [],
+
   "testCommand": "npm test",
   "gate": {
     "mode": "working",
@@ -67,6 +70,11 @@
     "tier": "yellow",
     "blocking": false,
     "evaluator": "auto"
+  },
+
+  "//learnings": "Merge shared dismiss/confirm verdicts across repos so noise suppression is org-wide. Each entry is a repo root, a .diffgate dir, or a learnings.json path. Local verdicts override shared ones.",
+  "learnings": {
+    "shared": []
   },
 
   "ignore": ["**/node_modules/**", "**/dist/**", "**/build/**"]

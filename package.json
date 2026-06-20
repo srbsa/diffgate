@@ -31,7 +31,7 @@
     "build:ext": "npm run build --prefix extension",
     "package:ext": "npm run package --prefix extension",
     "typecheck": "tsc --noEmit && tsc --noEmit -p extension/tsconfig.json",
-    "test": "npm run build && npm run build:ext && node --test test/core.test.js test/agent.test.js test/mcp.test.js test/llm.test.js test/guidelines.test.js test/learnings.test.js test/benchmark.test.js && node extension/test/smoke.cjs",
+    "test": "npm run build && npm run build:ext && node --test test/core.test.js test/agent.test.js test/mcp.test.js test/llm.test.js test/guidelines.test.js test/learnings.test.js test/benchmark.test.js test/github.test.js test/bench.test.js test/compliance.test.js test/metrics.test.js test/policy.test.js test/scaffold.test.js && node extension/test/smoke.cjs",
     "prepublishOnly": "npm run typecheck && npm test"
   },
   "dependencies": {

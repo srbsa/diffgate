@@ -50,14 +50,80 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   cfg.orangePatterns = raw.orangePatterns;
   cfg.testCommand = (raw.testCommand as string | null | undefined) ?? DEFAULT_CONFIG.testCommand;
   cfg.guidelines = { ...DEFAULT_CONFIG.guidelines, ...(raw.guidelines || {}) };
+  if (raw.learnings) cfg.learnings = raw.learnings as Config["learnings"];
+  delete cfg.extends;
   return cfg;
+}
+
+type RawConfig = Partial<Config> & Record<string, unknown>;
+
+/** Resolve a single `extends` entry to a config file path. */
+function resolveExtendsPath(entry: string, baseDir: string): string | null {
+  // Explicit relative/absolute path.
+  if (entry.startsWith(".") || path.isAbsolute(entry)) {
+    let p = path.resolve(baseDir, entry);
+    if (fs.existsSync(p) && fs.statSync(p).isDirectory()) p = path.join(p, CONFIG_NAME);
+    return fs.existsSync(p) ? p : null;
+  }
+  // Bare name → resolve as a package providing a policy pack.
+  for (const cand of [
+    path.join(baseDir, "node_modules", entry, CONFIG_NAME),
+    path.join(baseDir, "node_modules", entry, "diffgate.json"),
+    path.join(baseDir, entry),
+  ]) {
+    if (fs.existsSync(cand)) return cand;
+  }
+  return null;
+}
+
+/** base-first deep merge: arrays concat (ignore deduped), plain objects shallow-merge, scalars override. */
+function mergeRaw(base: RawConfig, over: RawConfig): RawConfig {
+  const out: RawConfig = { ...base };
+  for (const [k, v] of Object.entries(over)) {
+    if (k === "extends") continue;
+    const prev = out[k];
+    if (Array.isArray(v) && Array.isArray(prev)) {
+      out[k] = k === "ignore" ? [...new Set([...prev, ...v])] : [...prev, ...v];
+    } else if (isPlainObject(v) && isPlainObject(prev)) {
+      out[k] = { ...(prev as object), ...(v as object) };
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Read a config file and recursively fold in everything it `extends` (base-first). */
+function loadRawWithExtends(filePath: string, seen: Set<string>): RawConfig {
+  const real = fs.realpathSync(filePath);
+  if (seen.has(real)) throw new Error(`Circular extends detected at ${filePath}`);
+  if (seen.size > 10) throw new Error(`extends chain too deep (>10) at ${filePath}`);
+  seen.add(real);
+
+  const self = JSON.parse(fs.readFileSync(filePath, "utf-8")) as RawConfig;
+  const ext = self.extends;
+  if (!ext) return self;
+
+  const entries = Array.isArray(ext) ? ext : [ext];
+  const baseDir = path.dirname(filePath);
+  let merged: RawConfig = {};
+  for (const entry of entries) {
+    const resolved = resolveExtendsPath(String(entry), baseDir);
+    if (!resolved) throw new Error(`extends target not found: "${entry}" (from ${filePath})`);
+    merged = mergeRaw(merged, loadRawWithExtends(resolved, new Set(seen)));
+  }
+  return mergeRaw(merged, self);
 }
 
 export function loadConfig(startDir: string): { config: Config; path: string | null } {
   const found = findConfigPath(startDir);
   if (!found) return { config: normalize({}), path: null };
   try {
-    const raw = JSON.parse(fs.readFileSync(found, "utf-8")) as Partial<Config> & Record<string, unknown>;
+    const raw = loadRawWithExtends(found, new Set());
     return { config: normalize(raw), path: found };
   } catch (e) {
     const err = new Error(`Failed to parse ${found}: ${(e as Error).message}`);

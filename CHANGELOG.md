@@ -7,6 +7,19 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] — team-adoption suite
+
+### Added
+
+- **PR-native review** — `diffgate check --pr[=<n>]` posts an inline PR review + a `diffgate` commit status via the GitHub API (uses `GITHUB_TOKEN` and the Actions env); orange findings fail the check so they gate merge. `--pr-dry-run` previews the payload offline. `--base=<ref>` reviews the whole PR/branch against a base branch (needed in CI, where the working tree is clean). Updated [`.github/workflows/diffgate.yml`](.github/workflows/diffgate.yml) + GitHub App scaffold ([docs/github-app.md](docs/github-app.md), [docs/app-manifest.json](docs/app-manifest.json)).
+- **Noise benchmark** — `diffgate bench` scores precision/recall/F1 per rule on a versioned, offline corpus and reports the headline trust metric: **false blocks per clean change** (0 on the shipped corpus). Methodology in [BENCHMARK.md](BENCHMARK.md).
+- **Org-wide policy packs** — config `extends` (path or npm package; base-first, local wins; arrays concat, objects merge, with circular/depth guards) and `learnings.shared` (merge dismiss/confirm verdicts across repos; local overrides shared).
+- **Review metrics** — `diffgate report` summarizes tiers, hotspot files, top rules, and the learnings loop. `diffgate report --compliance` emits SOC 2 control evidence (rule→control mapping in [src/compliance.ts](src/compliance.ts); narrative in [COMPLIANCE.md](COMPLIANCE.md)).
+- **Agent gate** — `diffgate check --agent` emits a compact pass/blocked JSON verdict for coding-agent harnesses (exit 1 when blocked). Positioning in [docs/ai-agents.md](docs/ai-agents.md).
+- **Smarter onboarding** — `diffgate init` now auto-detects the test command (npm/pytest/go/cargo/make), languages, and guideline files, and writes a tailored config (`--minimal` for the old static template).
+
+---
+
 ## [0.1.5] — 2026-06-16
 
 ### Added
