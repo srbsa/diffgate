@@ -41,6 +41,37 @@ export function loadLearnings(root: string): LearningStore {
   return { version: 1, entries: [] };
 }
 
+/** Resolve a shared-learnings entry (repo root, .diffgate dir, or direct file) to a store path. */
+function resolveSharedPath(entry: string, baseDir: string): string {
+  const p = path.isAbsolute(entry) ? entry : path.resolve(baseDir, entry);
+  try {
+    if (fs.statSync(p).isDirectory()) {
+      const inDir = path.join(p, DIR, FILE);
+      if (fs.existsSync(inDir)) return inDir;
+      return path.join(p, FILE); // e.g. pointed straight at a .diffgate dir
+    }
+  } catch {
+    /* not a dir / missing */
+  }
+  return p;
+}
+
+/** Merge the repo's own learnings with org-wide shared stores. Later (local) entries win per id. */
+export function loadMergedLearnings(root: string, shared: string[] = [], baseDir = root): LearningStore {
+  const byId = new Map<string, Learning>();
+  for (const entry of shared) {
+    const sp = resolveSharedPath(entry, baseDir);
+    try {
+      const raw = JSON.parse(fs.readFileSync(sp, "utf-8"));
+      if (raw && Array.isArray(raw.entries)) for (const e of raw.entries as Learning[]) byId.set(e.id, e);
+    } catch {
+      /* missing shared store is fine */
+    }
+  }
+  for (const e of loadLearnings(root).entries) byId.set(e.id, e); // local overrides shared
+  return { version: 1, entries: [...byId.values()] };
+}
+
 export function recordLearning(
   root: string,
   input: { ruleId: string; code: string; verdict: "dismiss" | "confirm"; file?: string; note?: string; now?: string }

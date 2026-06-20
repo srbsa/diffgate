@@ -221,7 +221,16 @@ export interface GraphConfig {
   securityDeescalate?: boolean;
 }
 
+export interface LearningsConfig {
+  /** Extra learning stores to merge in (org-wide noise suppression). Each is a repo root,
+   *  a `.diffgate` dir, or a direct learnings.json path. Resolved relative to the config file. */
+  shared?: string[];
+}
+
 export interface Config {
+  /** Org-wide policy packs to inherit from, base-first. Local config wins on conflicts.
+   *  Each entry is a path (./team.diffgate.json), or a package name resolved under node_modules. */
+  extends?: string | string[];
   gate: GateConfig;
   ai: AiConfig;
   testCommand?: string | null;
@@ -232,6 +241,7 @@ export interface Config {
   orangePatterns?: string[];
   guidelines?: GuidelinesConfig;
   graph?: GraphConfig;
+  learnings?: LearningsConfig;
 }
 
 // Minimal Babel-compatible AST node type

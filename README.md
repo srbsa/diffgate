@@ -27,13 +27,18 @@ npm link               # optional: makes `diffgate` available globally
 diffgate scan mock_project          # analyze files directly (no git needed)
 diffgate check                      # review your pending git changes (the gate)
 diffgate check --github             # same + emit GitHub Actions inline annotations
+diffgate check --pr                 # CI: post a PR review + commit status (gates merge)
+diffgate check --agent              # compact JSON verdict for coding agents (pass/blocked)
 diffgate watch                      # live review as you edit
+diffgate report                     # review metrics: tiers, hotspots, learnings
+diffgate report --compliance        # SOC 2 control evidence for the diff
+diffgate bench                      # noise benchmark (precision/recall/false-blocks)
 diffgate guidelines                 # review diff against your repo's AGENTS.md/CLAUDE.md etc.
 diffgate feedback <ruleId> <f> <l>  # record a dismiss/confirm verdict on a finding
 diffgate stats                      # signal-vs-noise report (realized verdicts + predicted diff)
 diffgate graph status               # is the code graph enabled / installed / indexed?
 diffgate graph index                # build the cross-file index (or print install help)
-diffgate init                       # write a starter .diffgate.json
+diffgate init                       # write a tailored .diffgate.json (auto-detects test cmd/langs)
 diffgate install-hook               # add a git pre-commit gate
 diffgate mcp                        # start the MCP stdio server
 ```
@@ -72,14 +77,39 @@ Engine layout: [`src/core`](src/core) (shared) · [`src/cli.ts`](src/cli.ts) (CL
 
 ---
 
+## Team adoption
+
+DiffGate is built around one thesis: a reviewer earns trust by being **quiet and
+deterministic**, then spreads by living where review actually happens — the pull request.
+
+- **PR-native review** — `diffgate check --pr` posts inline review comments + a `diffgate`
+  commit status on the PR; orange findings fail the check. Make it a required check and
+  it's a merge gate, not another comment to scroll past. Drop-in
+  [GitHub Action](.github/workflows/diffgate.yml) + [App scaffold](docs/github-app.md).
+- **Provable low noise** — `diffgate bench` scores precision/recall and, the metric that
+  predicts adoption, **false blocks per clean change** (target: 0). Corpus is versioned and
+  offline so anyone can reproduce it. See [BENCHMARK.md](BENCHMARK.md).
+- **Org-wide policy packs** — `extends` lets repos inherit a shared `.diffgate.json` (a
+  path or an npm package); `learnings.shared` merges dismiss/confirm verdicts across repos
+  so noise suppression is org-wide. Local config/verdicts always win.
+- **Metrics for leaders** — `diffgate report` summarizes tiers, hotspot files, and the
+  noise-reduction loop; `--compliance` emits SOC 2 control evidence ([COMPLIANCE.md](COMPLIANCE.md)).
+- **Guardrail for AI agents** — the deterministic core is the trustable checkpoint between
+  agent-written code and a human. Use the MCP server or `check --agent`. See
+  [docs/ai-agents.md](docs/ai-agents.md).
+
+---
+
 ## Configuration — `.diffgate.json`
 
 Place it at your repo root (`diffgate init` generates one). See [example.diffgate.json](example.diffgate.json) for the full schema.
 
 ```jsonc
 {
+  "extends": ["@acme/diffgate-policy"],       // inherit org-wide policy packs (base-first; local wins)
   "testCommand": "npm test",                 // run for orange changes (the gate)
   "gate": { "mode": "working", "failOn": "orange" },
+  "learnings": { "shared": ["../shared-policy"] }, // merge dismiss/confirm verdicts across repos
   "ai": { "enabled": false, "model": "claude-sonnet-4-6", "apiKeyEnv": "ANTHROPIC_API_KEY" },
 
   "guidelines": {                            // review diff against AGENTS.md/CLAUDE.md etc.

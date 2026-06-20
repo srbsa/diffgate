@@ -37,6 +37,11 @@ export function repoRoot(cwd: string): string | null {
   return out ? out.trim() : null;
 }
 
+export function headSha(cwd: string): string | null {
+  const out = tryGit(["rev-parse", "HEAD"], cwd);
+  return out ? out.trim() : null;
+}
+
 function hasHead(cwd: string): boolean {
   return tryGit(["rev-parse", "--verify", "HEAD"], cwd) !== null;
 }
@@ -66,22 +71,27 @@ function parseChangedLines(diff: string | null): Set<number> {
   return changed;
 }
 
-function diffArgsForMode(mode: string): string[] {
+// `base` (a git ref) diffs the whole PR/branch against that ref — used in CI, where the
+// working tree is clean so `git diff HEAD` would be empty. Otherwise diff staged/working.
+function diffArgsForMode(mode: string, base?: string): string[] {
+  if (base) return ["diff", base];
   return mode === "staged" ? ["diff", "--cached"] : ["diff", "HEAD"];
 }
 
-export function getChangedLinesForFile(cwd: string, filePath: string, opts: { mode?: string } = {}): Set<number> | null {
+export function getChangedLinesForFile(cwd: string, filePath: string, opts: { mode?: string; base?: string } = {}): Set<number> | null {
   const mode = opts.mode || "working";
   if (!isGitRepo(cwd) || !hasHead(cwd)) return null;
   const { root, rel } = resolveRel(cwd, filePath);
-  const untracked = tryGit(["ls-files", "--others", "--exclude-standard", "--", rel], root);
-  if (untracked && untracked.trim() === rel) return null;
-  const diff = tryGit([...diffArgsForMode(mode), "--unified=0", "--no-color", "--", rel], root);
+  if (!opts.base) {
+    const untracked = tryGit(["ls-files", "--others", "--exclude-standard", "--", rel], root);
+    if (untracked && untracked.trim() === rel) return null;
+  }
+  const diff = tryGit([...diffArgsForMode(mode, opts.base), "--unified=0", "--no-color", "--", rel], root);
   if (diff === null) return null;
   return parseChangedLines(diff);
 }
 
-export function getChangedFiles(cwd: string, opts: { mode?: string } = {}): Map<string, Set<number> | null> {
+export function getChangedFiles(cwd: string, opts: { mode?: string; base?: string } = {}): Map<string, Set<number> | null> {
   const mode = opts.mode || "working";
   const result = new Map<string, Set<number> | null>();
   if (!isGitRepo(cwd)) return result;
@@ -93,11 +103,11 @@ export function getChangedFiles(cwd: string, opts: { mode?: string } = {}): Map<
     }
     return result;
   }
-  const nameStatus = tryGit([...diffArgsForMode(mode), "--name-only", "--no-color"], root) || "";
+  const nameStatus = tryGit([...diffArgsForMode(mode, opts.base), "--name-only", "--no-color"], root) || "";
   for (const rel of nameStatus.split("\n").filter(Boolean)) {
-    result.set(path.join(root, rel), getChangedLinesForFile(root, rel, { mode }));
+    result.set(path.join(root, rel), getChangedLinesForFile(root, rel, { mode, base: opts.base }));
   }
-  if (mode !== "staged") {
+  if (mode !== "staged" && !opts.base) {
     const untracked = tryGit(["ls-files", "--others", "--exclude-standard"], root) || "";
     for (const rel of untracked.split("\n").filter(Boolean)) {
       result.set(path.join(root, rel), null);
@@ -106,10 +116,10 @@ export function getChangedFiles(cwd: string, opts: { mode?: string } = {}): Map<
   return result;
 }
 
-export function getPreviousContent(cwd: string, filePath: string, opts: { mode?: string } = {}): string | null {
+export function getPreviousContent(cwd: string, filePath: string, opts: { mode?: string; base?: string } = {}): string | null {
   if (!isGitRepo(cwd) || !hasHead(cwd)) return null;
   const { root, rel } = resolveRel(cwd, filePath);
-  const refSpec = opts.mode === "staged" ? `:${rel}` : `HEAD:${rel}`;
+  const refSpec = opts.base ? `${opts.base}:${rel}` : opts.mode === "staged" ? `:${rel}` : `HEAD:${rel}`;
   return tryGit(["show", refSpec], root);
 }
 

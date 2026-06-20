@@ -12,6 +12,7 @@ import {
   getPreviousContent,
   isGitRepo,
   repoRoot,
+  headSha,
   runGate,
   explainFinding,
   deepReview,
@@ -25,6 +26,7 @@ import {
   reviewGuidelines,
   recordLearning,
   loadLearnings,
+  loadMergedLearnings,
   applyLearnings,
   predictedSignal,
   realizedSignal,
@@ -37,7 +39,12 @@ import {
 } from "./core/index.js";
 import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
-import type { Finding, AnalyzeResult, Config } from "./core/types.js";
+import { buildPrReview, resolveGithubContext, postPrReview } from "./github.js";
+import { runBench, CORPUS } from "./bench.js";
+import { complianceReport } from "./compliance.js";
+import { buildMetrics, agentVerdict } from "./metrics.js";
+import { detectProjectDefaults, tailorConfig } from "./scaffold.js";
+import type { Finding, AnalyzeResult, Config, Tier } from "./core/types.js";
 
 declare const __DIFFGATE_VERSION__: string;
 const CLI_PATH = fileURLToPath(import.meta.url);
@@ -163,7 +170,8 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
   }
   const { config } = loadConfig(cwd);
   const mode = resolveMode(flags, config);
-  const review = reviewChanges(cwd, { mode });
+  const base = typeof flags["base"] === "string" ? (flags["base"] as string) : undefined;
+  const review = reviewChanges(cwd, { mode, base });
   const allFindings = review.files.flatMap((f) => f.findings);
 
   if (flags["json"]) {
@@ -182,6 +190,17 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
     const failRank = TIER_ORDER[failOn] ?? 2;
     const blocked = allFindings.some((f) => f.blocking || (TIER_ORDER[f.tier] ?? 0) >= failRank);
     process.exit(blocked && !flags["no-fail"] ? 1 : 0);
+  }
+
+  if (flags["agent"]) {
+    const v = agentVerdict(review.files);
+    console.log(JSON.stringify(v, null, 2));
+    process.exit(v.verdict === "blocked" && !flags["no-fail"] ? 1 : 0);
+  }
+
+  if (flags["pr"] || flags["pr-dry-run"]) {
+    await runPrReview(review.files, cwd, config, flags);
+    return;
   }
 
   console.log(formatReport(review.files, review, cwd));
@@ -418,6 +437,100 @@ function printGithubAnnotations(files: AnalyzeResult[], cwd: string): void {
   }
 }
 
+async function runPrReview(files: AnalyzeResult[], cwd: string, config: Config, flags: Record<string, string | true>): Promise<void> {
+  const failOn = ((flags["fail-on"] as string) || config.gate.failOn || "orange") as Tier;
+  const payload = buildPrReview(files, cwd, { failOn });
+  const prFlag = typeof flags["pr"] === "string" ? (flags["pr"] as string) : undefined;
+  const ctx = resolveGithubContext(process.env, prFlag, (p) => {
+    try { return fs.readFileSync(p, "utf-8"); } catch { return null; }
+  });
+  if (!ctx.sha) ctx.sha = headSha(cwd);
+
+  if (flags["pr-dry-run"] || !ctx.token) {
+    if (!flags["pr-dry-run"] && !ctx.token) console.error(c.dim("(no GITHUB_TOKEN — dry-run; showing the payload that would be posted)"));
+    console.log(JSON.stringify({ context: { repo: ctx.repo, prNumber: ctx.prNumber, sha: ctx.sha, hasToken: !!ctx.token }, ...payload }, null, 2));
+  } else {
+    const r = await postPrReview(payload, ctx, fetch as unknown as Parameters<typeof postPrReview>[2]);
+    if (r.posted) console.log(c.green(`✔ Posted DiffGate review to ${ctx.repo}${ctx.prNumber ? ` PR #${ctx.prNumber}` : ""} (${payload.event})`));
+    else console.log(c.yellow(`⚠ Did not post: ${r.reason}`));
+  }
+  process.exit(payload.blocked && !flags["no-fail"] ? 1 : 0);
+}
+
+async function cmdReport(pos: string[], flags: Record<string, string | true>): Promise<void> {
+  const cwd = path.resolve(pos[0] || ".");
+  if (!isGitRepo(cwd)) fail("`diffgate report` needs a git repo (it summarizes your diff). Use `diffgate scan` for whole-file analysis.");
+  const { config } = loadConfig(cwd);
+  const mode = resolveMode(flags, config);
+  const base = typeof flags["base"] === "string" ? (flags["base"] as string) : undefined;
+  const review = reviewChanges(cwd, { mode, base });
+  const root = repoRoot(cwd) || cwd;
+
+  if (flags["compliance"]) {
+    const rep = complianceReport(review.files);
+    if (flags["json"]) { console.log(JSON.stringify(rep, null, 2)); return; }
+    console.log(c.bold("🛡  DiffGate — SOC 2 control evidence") + c.dim(`  (diff mode: ${mode})\n`));
+    if (rep.evidence.length === 0) {
+      console.log(c.dim("  No control-relevant findings in the changed lines."));
+    } else {
+      for (const e of rep.evidence) {
+        console.log(`  ${c.bold(e.control.id)}  ${e.control.title}`);
+        console.log(`     ${c.dim(`${e.findings} finding(s) · ${e.rules.join(", ")}`)}`);
+      }
+    }
+    console.log("");
+    console.log(c.dim(`  The orange gate enforces CC8.1 (changes reviewed before deploy). ${rep.blocked ? c.orange("Gate would block this change.") : "No blocking findings."}`));
+    if (rep.unmapped.length) console.log(c.dim(`  Unmapped findings: ${rep.unmapped.join(", ")}`));
+    return;
+  }
+
+  const learnings = loadMergedLearnings(root, config.learnings?.shared || [], root);
+  const m = buildMetrics(review.files, learnings, root);
+  if (flags["json"]) { console.log(JSON.stringify(m, null, 2)); return; }
+
+  console.log(c.bold("🛡  DiffGate — review metrics") + c.dim(`  (diff mode: ${mode})\n`));
+  console.log(`  ${summaryLine(m.counts)}   ${c.dim(`${m.total} findings across ${m.filesWithFindings} file(s)`)}`);
+  console.log(`  ${m.blocked ? c.red("✖ would block merge") : c.green("✔ clear to merge")}\n`);
+  if (m.topRules.length) {
+    console.log(c.bold("  Top rules"));
+    for (const r of m.topRules) console.log(`     ${String(r.count).padStart(3)} × ${r.rule}`);
+    console.log("");
+  }
+  if (m.topFiles.some((f) => f.total > 0)) {
+    console.log(c.bold("  Hotspot files"));
+    for (const f of m.topFiles.filter((f) => f.total > 0)) console.log(`     ${c.dim(`🟠${f.orange} / ${f.total}`)}  ${f.file}`);
+    console.log("");
+  }
+  console.log(c.bold("  Learnings (noise-reduction loop)"));
+  console.log(`     ${m.learnings.dismissed} dismissed · ${m.learnings.confirmed} confirmed · ${m.learnings.total} total`);
+  if (m.learnings.noisiestRules.length) {
+    console.log(c.dim(`     noisiest: ${m.learnings.noisiestRules.map((r) => `${r.rule}(${r.count})`).join(", ")}`));
+  }
+}
+
+function cmdBench(pos: string[], flags: Record<string, string | true>): void {
+  const result = runBench(analyze, CORPUS);
+  if (flags["json"]) { console.log(JSON.stringify(result, null, 2)); return; }
+  console.log(c.bold("🛡  DiffGate — noise benchmark") + c.dim(`  ${result.cases} cases (${result.positives} positive, ${result.cleanCases} clean)\n`));
+  console.log(c.bold("  rule".padEnd(26) + "prec   rec    f1    tp/fp/fn"));
+  for (const r of result.rules) {
+    console.log(
+      "  " + r.rule.padEnd(24) +
+      `${pct(r.precision)}  ${pct(r.recall)}  ${pct(r.f1)}  ${c.dim(`${r.tp}/${r.fp}/${r.fn}`)}`
+    );
+  }
+  const o = result.overall;
+  console.log(c.bold("\n  overall".padEnd(26) + `${pct(o.precision)}  ${pct(o.recall)}  ${pct(o.f1)}  ${c.dim(`${o.tp}/${o.fp}/${o.fn}`)}`));
+  const blocks = result.falseBlocksPerCleanCase;
+  const blocksStr = `${blocks.toFixed(2)} false BLOCK(s) per clean change`;
+  console.log(`  ${c.bold("Gate noise:")} ${blocks === 0 ? c.green(blocksStr) : c.red(blocksStr)}  ${c.dim(`(${result.advisoriesPerCleanCase.toFixed(2)} advisory/clean change)`)}`);
+  console.log(c.dim("\n  Methodology: BENCHMARK.md. Corpus is versioned in src/bench.ts — reproduce with `diffgate bench --json`."));
+}
+
+function pct(n: number): string {
+  return (n * 100).toFixed(0).padStart(3) + "%";
+}
+
 async function cmdGuidelines(pos: string[], flags: Record<string, string | true>): Promise<void> {
   const cwd = path.resolve(pos[0] || ".");
   const mode = flags["staged"] ? "staged" : "working";
@@ -458,11 +571,6 @@ function cmdFeedback(pos: string[], flags: Record<string, string | true>): void 
   console.log(c.green(`✔ Recorded ${verdict} for ${c.bold(ruleId)} on ${path.relative(root, abs)}:${line}`));
   if (verdict === "dismiss") console.log(c.dim(`  This exact flagged code won't be reported again. Stored in .diffgate/learnings.json (${entry.id}).`));
 }
-
-function pct(n: number): string {
-  return `${Math.round(n * 100)}%`;
-}
-
 function cmdStats(pos: string[], flags: Record<string, string | true>): void {
   const cwd = path.resolve(pos[0] || ".");
   const root = repoRoot(cwd) || cwd;
@@ -586,9 +694,17 @@ function cmdInit(pos: string[], flags: Record<string, string | true>): void {
   if (fs.existsSync(target) && !flags["force"]) {
     fail(`.diffgate.json already exists. Use --force to overwrite.`);
   }
-  fs.writeFileSync(target, JSON.stringify(INIT_TEMPLATE, null, 2) + "\n");
+  let template: Record<string, unknown> = INIT_TEMPLATE;
+  if (!flags["minimal"]) {
+    const detected = detectProjectDefaults(cwd);
+    template = tailorConfig(INIT_TEMPLATE, detected);
+    console.log(c.bold("🛡  DiffGate — analyzing project…"));
+    for (const r of detected.reasons) console.log(c.dim(`  • ${r}`));
+    console.log("");
+  }
+  fs.writeFileSync(target, JSON.stringify(template, null, 2) + "\n");
   console.log(c.green(`✔ Wrote ${path.relative(process.cwd(), target)}`));
-  console.log(c.dim("  Edit it to add deprecated APIs, custom rules, and your testCommand."));
+  console.log(c.dim("  Next: `diffgate check` to review your diff, or `diffgate install-hook` for a pre-commit gate."));
 }
 
 function cmdInstallHook(pos: string[], flags: Record<string, string | true>): void {
@@ -624,18 +740,21 @@ ${c.bold("Commands")}
   ${c.blue("check")}        Review pending git changes; gate commits/CI    ${c.dim("(default)")}
   ${c.blue("scan")}         Analyze a file or directory in full
   ${c.blue("watch")}        Live review as you edit
+  ${c.blue("report")}       Review metrics (tiers, hotspots, learnings) · --compliance for SOC 2
+  ${c.blue("bench")}        Run the noise benchmark (precision/recall/FP-per-clean-change)
   ${c.blue("explain")}      AI-explain findings for a file (needs API key)
   ${c.blue("guidelines")}   Review diff against AGENTS.md/CLAUDE.md/.cursorrules etc.
   ${c.blue("feedback")}     <ruleId> <file> <line> — dismiss as noise / --confirm (learns)
   ${c.blue("stats")}        Signal-vs-noise report (realized verdicts + predicted diff)
   ${c.blue("graph")}        Code-graph status / index (cross-file blast radius)
-  ${c.blue("init")}         Write a starter .diffgate.json
+  ${c.blue("init")}         Write a tailored .diffgate.json (auto-detects test cmd/langs)
   ${c.blue("install-hook")} Install a git pre-commit gate
   ${c.blue("mcp")}          Start the MCP stdio server (for coding agents)
 
 ${c.bold("Options")}
   --staged           Review staged changes only (good for pre-commit)
   --working          Review all uncommitted changes (default)
+  --base=<ref>       Review the whole branch/PR against a base ref (for CI, e.g. origin/main)
   --fail-on=<tier>   green|yellow|orange — exit 1 at/above this tier (default orange)
   --no-gate          Skip running the configured testCommand
   --no-fail          Always exit 0 (report only)
@@ -643,17 +762,21 @@ ${c.bold("Options")}
   --json             Machine-readable output
   --sarif            SARIF 2.1.0 output (GitHub code scanning)
   --github           GitHub Actions inline PR annotations
+  --pr[=<n>]         Post a PR review + commit status (needs GITHUB_TOKEN); --pr-dry-run to preview
+  --agent            Compact JSON verdict for coding agents (pass/blocked)
 
 ${c.bold("Examples")}
   diffgate check --staged
   diffgate scan src/ --fail-on=yellow
-  diffgate watch
+  diffgate check --pr             ${c.dim("# in CI: post review to the PR")}
+  diffgate report --compliance    ${c.dim("# SOC 2 control evidence")}
+  diffgate bench                  ${c.dim("# noise benchmark")}
 `);
 }
 
 async function main(): Promise<void> {
   const [, , maybeCmd, ...rest] = process.argv;
-  const known = ["check", "scan", "watch", "explain", "guidelines", "feedback", "stats", "graph", "init", "install-hook", "mcp"];
+  const known = ["check", "scan", "watch", "report", "bench", "explain", "guidelines", "feedback", "stats", "graph", "init", "install-hook", "mcp"];
   let cmd = maybeCmd;
   let argv = rest;
   if (!cmd || cmd.startsWith("-")) {
@@ -673,6 +796,8 @@ async function main(): Promise<void> {
       case "check": return await cmdCheck(pos, flags);
       case "scan": return await cmdScan(pos, flags);
       case "watch": return cmdWatch(pos, flags);
+      case "report": return await cmdReport(pos, flags);
+      case "bench": return cmdBench(pos, flags);
       case "explain": return await cmdExplain(pos, flags);
       case "guidelines": return await cmdGuidelines(pos, flags);
       case "feedback": return cmdFeedback(pos, flags);
