@@ -7,6 +7,24 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.0] — 2026-06-20
+
+### Added
+
+- **Cross-file blast radius (code graph)** — public-surface findings (`public-api-change`, `signature-drift`, `deprecated-api`) are enriched with deterministic impact from an optional code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph)): caller count, suggested reviewers, and test gaps. The pass uses that impact to **route human attention rather than emit more comments**:
+  - a changed public surface with **callers stays orange**, names the reviewers, and flags untested call sites (`tierAdjusted: "escalated"`);
+  - a changed public surface the graph says **nobody calls de-escalates to yellow** and stops blocking the gate (`tierAdjusted: "deescalated"`) — cutting the largest false-positive class for compatibility rules.
+  - Pin a rule's tier in config (e.g. `"signature-drift": { "tier": "orange" }`) to opt out of de-escalation.
+- **Optional, graceful dependency** — configured via the new `graph` block. `enabled: "auto"` (default) uses the graph when an index exists and is otherwise a complete no-op (zero subprocess cost, no errors). Talks to CodeGraph via one-shot `codegraph-server --run-tool analyze_impact` queries; a host can also inject its own provider.
+- **Impact on every surface** — CLI report blast-radius line, GitHub PR annotations, SARIF `properties` (caller count, reviewers, test gaps, `tierAdjusted`), the MCP `diffgate_analyze` output (so a coding agent sees blast radius before code hits disk), and the VS Code hover card (on saved files).
+- **`diffgate stats`** — a signal-vs-noise report. *Realized* signal from reviewer verdicts in `.diffgate/learnings.json` (confirm vs dismiss), including a list of chronically-noisy rules to consider disabling; *predicted* signal from the current diff's tier mix.
+
+### Fixed
+
+- **SARIF** now emits a per-result `level` (orange → error, yellow → warning, green → note) and the real package version (was hard-coded `0.1.2`).
+
+---
+
 ## [0.1.5] — 2026-06-16
 
 ### Added

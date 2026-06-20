@@ -23,6 +23,8 @@ import {
   TIER_ORDER,
   overallTier,
   tierCounts,
+  getGraph,
+  attachImpact,
 } from "../../src/core/index.js";
 import type { Finding, AnalyzeResult, Config } from "../../src/core/types.js";
 
@@ -173,6 +175,16 @@ function analyzeDocument(document: vscode.TextDocument): void {
   } catch {
     return;
   }
+  // Cross-file blast radius: only on saved files (never mid-edit — the graph indexes disk state),
+  // and only when a code graph is present. No-op + zero subprocess cost otherwise.
+  if (!document.isDirty) {
+    try {
+      const graph = getGraph(folder, config);
+      if (graph) res = attachImpact([res], { cwd: folder, config, graph })[0];
+    } catch {
+      /* impact is best-effort */
+    }
+  }
   diagnostics.set(document.uri, res.findings.map((f) => toDiagnostic(f, document)));
   findingsByUri.set(document.uri.toString(), { res, folder, config });
 
@@ -250,6 +262,20 @@ const hoverProvider: vscode.HoverProvider = {
       const meta = TIER_META[f.tier];
       md.appendMarkdown(`**${meta.icon} ${f.title}**  \`${f.ruleId}\`\n\n`);
       md.appendMarkdown(`${f.message}\n\n`);
+      const im = f.impact;
+      if (im) {
+        if (f.tierAdjusted === "deescalated") {
+          md.appendMarkdown(`> $(arrow-down) **Blast radius:** no callers in the code graph — exported but unused _(down-tiered to review)_.\n\n`);
+        } else if (im.callerCount > 0 || im.testGaps.length) {
+          const fileCount = new Set(im.callers.map((r) => r.file).filter(Boolean)).size;
+          const bits: string[] = [`**${im.callerCount}${im.truncated ? "+" : ""}** call site${im.callerCount === 1 ? "" : "s"}${fileCount ? ` across ${fileCount} file${fileCount === 1 ? "" : "s"}` : ""}`];
+          if (im.reachable === true) bits.push("reachable from an entry point");
+          if (im.reviewers.length) bits.push(`route: ${im.reviewers.slice(0, 3).map((r) => "@" + r).join(", ")}`);
+          if (im.testGaps.length) bits.push(`$(warning) untested: ${im.testGaps.slice(0, 3).map((t) => t.symbol || t.file).join(", ")}`);
+          const icon = f.tierAdjusted === "escalated" ? "$(flame)" : "$(zap)";
+          md.appendMarkdown(`> ${icon} **Blast radius:** ${bits.join(" · ")}\n\n`);
+        }
+      }
       const vKey = `${document.uri.toString()}::${f.ruleId}::${f.line}`;
       const cached = verdictCache.get(vKey);
       if (cached) {

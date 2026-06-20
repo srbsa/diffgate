@@ -44,6 +44,23 @@ function firstSentence(text: string): string {
   return (m ? m[0] : text).trim();
 }
 
+function impactLine(f: AnalyzeResult["findings"][number]): string | null {
+  const im = f.impact;
+  if (!im) return null;
+  if (f.tierAdjusted === "deescalated") {
+    return c.gray("⚡ no callers in the code graph — exported but unused (down-tiered)");
+  }
+  if (im.callerCount === 0 && im.testGaps.length === 0) return null;
+  const fileCount = new Set(im.callers.map((r) => r.file).filter(Boolean)).size;
+  const count = im.truncated ? `${im.callerCount}+` : String(im.callerCount);
+  const bits = [`⚡ ${count} call site${im.callerCount === 1 ? "" : "s"}${fileCount ? ` · ${fileCount} file${fileCount === 1 ? "" : "s"}` : ""}`];
+  if (im.reachable === true) bits.push("reachable");
+  if (im.reviewers.length) bits.push("route " + im.reviewers.slice(0, 3).map((r) => "@" + r).join(", "));
+  if (im.testGaps.length) bits.push("⚠ untested: " + im.testGaps.slice(0, 3).map((t) => t.symbol || t.file).join(", "));
+  const colored = f.tierAdjusted === "escalated" ? c.orange : c.gray;
+  return colored(bits.join(" · "));
+}
+
 export function formatFile(fileResult: AnalyzeResult, cwd: string): string {
   const rel = path.relative(cwd, fileResult.filePath) || fileResult.filePath;
   const lines = [`  ${c.bold(c.blue(rel))}`];
@@ -52,6 +69,8 @@ export function formatFile(fileResult: AnalyzeResult, cwd: string): string {
     const fixHint = f.fix ? c.green("  ↪ fix available") : "";
     lines.push(`   ${badge(f.tier)}  ${c.dim(loc)} ${f.title}${fixHint}`);
     lines.push(`        ${c.gray("└ " + firstSentence(f.message))}  ${c.dim("[" + f.ruleId + "]")}`);
+    const im = impactLine(f);
+    if (im) lines.push(`        ${im}`);
     if (f.code) lines.push(`        ${c.dim(c.gray(truncate(f.code, 78)))}`);
   }
   return lines.join("\n");

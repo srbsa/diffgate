@@ -91,6 +91,37 @@ function isSqlQuery(text: string): boolean {
   return /\b(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)\b/i.test(text);
 }
 
+/** Best-effort name of the symbol an export/assignment node exposes (for blast-radius lookup). */
+function exportedSymbolName(node: AstNode): string | null {
+  const n = node as any;
+  if (n.type === "ExportDefaultDeclaration") {
+    return n.declaration?.id?.name || "default";
+  }
+  if (n.type === "ExportAllDeclaration") {
+    return n.exported?.name || "*";
+  }
+  if (n.type === "ExportNamedDeclaration") {
+    const decl = n.declaration;
+    if (decl) {
+      if (decl.id?.name) return decl.id.name;
+      if (decl.type === "VariableDeclaration") {
+        const first = (decl.declarations || [])[0];
+        if (first?.id?.type === "Identifier") return first.id.name;
+      }
+      return null;
+    }
+    const spec = (n.specifiers || [])[0];
+    return spec?.exported?.name || spec?.local?.name || null;
+  }
+  if (n.type === "AssignmentExpression") {
+    const name = memberName(n.left);
+    if (!name) return null;
+    if (name.startsWith("exports.")) return name.slice("exports.".length);
+    return name; // e.g. "module.exports"
+  }
+  return null;
+}
+
 export const BUILTIN_RULES: Rule[] = [
   // ---------------------------------------------------------------- secrets
   {
@@ -249,13 +280,13 @@ export const BUILTIN_RULES: Rule[] = [
         node.type === "ExportDefaultDeclaration" ||
         node.type === "ExportAllDeclaration"
       ) {
-        emit(node as Parameters<EmitFn>[0]);
+        emit({ loc: node.loc, symbol: exportedSymbolName(node) });
         return;
       }
       if (node.type === "AssignmentExpression") {
         const left = memberName(node.left as AstNode);
         if (left && (left === "module.exports" || left.startsWith("exports."))) {
-          emit(node as Parameters<EmitFn>[0]);
+          emit({ loc: node.loc, symbol: exportedSymbolName(node) });
         }
       }
     },
@@ -506,6 +537,7 @@ export function deprecatedRules(config: Partial<Config>): Rule[] {
             loc: node.loc,
             message: describe(meta),
             tier: meta.tier,
+            symbol: name,
             fix:
               newCallee && newCallee !== name && calleeLoc
                 ? {
@@ -524,7 +556,7 @@ export function deprecatedRules(config: Partial<Config>): Rule[] {
       if (node.type === "MemberExpression" && !(parent && parent.type === "CallExpression" && parent.callee === node)) {
         const name = memberName(node);
         const meta = name && byName.get(name);
-        if (meta) emit({ loc: node.loc, message: describe(meta), tier: meta.tier });
+        if (meta) emit({ loc: node.loc, message: describe(meta), tier: meta.tier, symbol: name });
       }
     },
   };

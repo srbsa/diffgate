@@ -106,6 +106,7 @@ function makeFinding(rule: Rule, fields: FindingEmitArg & { line: number }): Fin
     endColumn: fields.endColumn ?? fields.column ?? 0,
     code: fields.code || "",
     fix: fields.fix || null,
+    symbol: fields.symbol ?? null,
   };
 }
 
@@ -182,6 +183,7 @@ function runAst(rule: AstRule, ast: AstNode, ctx: RuleContext, findings: Finding
           message: arg.message,
           tier: arg.tier,
           fix: arg.fix,
+          symbol: arg.symbol,
         })
       );
     });

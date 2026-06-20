@@ -26,6 +26,8 @@ import {
   recordLearning,
   loadLearnings,
   applyLearnings,
+  predictedSignal,
+  realizedSignal,
 } from "./core/index.js";
 import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
@@ -164,7 +166,7 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
   }
 
   if (flags["sarif"] || flags["format"] === "sarif") {
-    console.log(toSarif(review.files, cwd));
+    console.log(toSarif(review.files, cwd, VERSION));
     return;
   }
 
@@ -403,6 +405,7 @@ function printGithubAnnotations(files: AnalyzeResult[], cwd: string): void {
         f.endLine ? `endLine=${f.endLine}` : "",
         `title=${ghEscapeProp("DiffGate: " + f.title)}`,
       ].filter(Boolean).join(",");
+      // f.message already carries the blast-radius summary when the impact pass enriched it.
       console.log(`::${level[f.tier] || "warning"} ${props}::${ghEscapeData(f.message)}`);
     }
   }
@@ -449,6 +452,55 @@ function cmdFeedback(pos: string[], flags: Record<string, string | true>): void 
   if (verdict === "dismiss") console.log(c.dim(`  This exact flagged code won't be reported again. Stored in .diffgate/learnings.json (${entry.id}).`));
 }
 
+function pct(n: number): string {
+  return `${Math.round(n * 100)}%`;
+}
+
+function cmdStats(pos: string[], flags: Record<string, string | true>): void {
+  const cwd = path.resolve(pos[0] || ".");
+  const root = repoRoot(cwd) || cwd;
+  const realized = realizedSignal(loadLearnings(root));
+
+  let predicted: ReturnType<typeof predictedSignal> | null = null;
+  if (isGitRepo(cwd)) {
+    try {
+      predicted = predictedSignal(reviewChanges(cwd, { mode: resolveMode(flags, loadConfig(cwd).config) }).counts);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  if (flags["json"]) {
+    console.log(JSON.stringify({ realized, predicted }, null, 2));
+    return;
+  }
+
+  console.log(`${c.bold("🛡  DiffGate")} ${c.dim("— signal report")}\n`);
+
+  console.log(c.bold("Realized") + c.dim("  (from reviewer verdicts in .diffgate/learnings.json)"));
+  if (realized.total === 0) {
+    console.log(c.dim("  No verdicts recorded yet. Run `diffgate feedback <ruleId> <file> <line>` to start measuring.\n"));
+  } else {
+    const ratioStr = realized.signalRatio >= 0.6 ? c.green(pct(realized.signalRatio)) : c.orange(pct(realized.signalRatio));
+    console.log(`  ${c.green(realized.confirmed + " confirmed")} · ${c.dim(realized.dismissed + " dismissed")} · signal ratio ${ratioStr}`);
+    if (realized.chronicNoise.length) {
+      console.log("\n  " + c.bold("Chronically noisy rules") + c.dim(" (high dismiss rate)"));
+      for (const r of realized.chronicNoise) {
+        console.log(
+          `   ${c.orange(r.ruleId.padEnd(22))} ${r.dismissed}/${r.total} dismissed ${c.dim("(" + pct(r.dismissRate) + " noise)")} ` +
+            c.dim(`→ "rules": { "${r.ruleId}": false }`)
+        );
+      }
+    }
+    console.log("");
+  }
+
+  if (predicted) {
+    console.log(c.bold("Predicted") + c.dim("  (current diff: 🟠/🟡 = signal, 🟢 = low-signal)"));
+    console.log(`  ${summaryLine({ green: predicted.t3, yellow: predicted.t2, orange: predicted.t1 })}   signal ratio ${c.bold(pct(predicted.ratio))}`);
+  }
+}
+
 const INIT_TEMPLATE = {
   testCommand: null,
   gate: { mode: "working", failOn: "orange" },
@@ -457,6 +509,7 @@ const INIT_TEMPLATE = {
   customPatterns: [{ id: "no-direct-process-env", tier: "yellow", pattern: "process\\.env\\.", message: "Read config through the typed config module, not process.env directly." }],
   rules: {},
   guidelines: { enabled: true, autoDetect: true, maxDepth: 3, tier: "yellow", blocking: false, evaluator: "auto" },
+  graph: { enabled: "auto", provider: "codegraph", command: "codegraph-server", mode: "cli", escalateThreshold: 1 },
   ignore: ["**/node_modules/**", "**/dist/**", "**/build/**"],
 };
 
@@ -507,6 +560,7 @@ ${c.bold("Commands")}
   ${c.blue("explain")}      AI-explain findings for a file (needs API key)
   ${c.blue("guidelines")}   Review diff against AGENTS.md/CLAUDE.md/.cursorrules etc.
   ${c.blue("feedback")}     <ruleId> <file> <line> — dismiss as noise / --confirm (learns)
+  ${c.blue("stats")}        Signal-vs-noise report (realized verdicts + predicted diff)
   ${c.blue("init")}         Write a starter .diffgate.json
   ${c.blue("install-hook")} Install a git pre-commit gate
   ${c.blue("mcp")}          Start the MCP stdio server (for coding agents)
@@ -531,7 +585,7 @@ ${c.bold("Examples")}
 
 async function main(): Promise<void> {
   const [, , maybeCmd, ...rest] = process.argv;
-  const known = ["check", "scan", "watch", "explain", "guidelines", "feedback", "init", "install-hook", "mcp"];
+  const known = ["check", "scan", "watch", "explain", "guidelines", "feedback", "stats", "init", "install-hook", "mcp"];
   let cmd = maybeCmd;
   let argv = rest;
   if (!cmd || cmd.startsWith("-")) {
@@ -554,6 +608,7 @@ async function main(): Promise<void> {
       case "explain": return await cmdExplain(pos, flags);
       case "guidelines": return await cmdGuidelines(pos, flags);
       case "feedback": return cmdFeedback(pos, flags);
+      case "stats": return cmdStats(pos, flags);
       case "init": return cmdInit(pos, flags);
       case "install-hook": return cmdInstallHook(pos, flags);
       case "mcp": return runMcpServer();

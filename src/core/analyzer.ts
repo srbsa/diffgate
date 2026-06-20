@@ -34,6 +34,7 @@ function detectSignatureDrift(prevContent: string, language: string, currentAst:
       endColumn: curSig.loc.end ? curSig.loc.end.column : curSig.loc.start.column,
       code: (ctx.lines[line - 1] || "").trim(),
       fix: null,
+      symbol: name,
     });
   }
 }

@@ -29,6 +29,38 @@ export interface Finding {
   endColumn: number;
   code: string;
   fix: Fix | null;
+  /** The code symbol this finding concerns (used for cross-file blast-radius lookup). */
+  symbol?: string | null;
+  /** Cross-file blast-radius data, attached post-analysis when a code graph is available. */
+  impact?: ImpactInfo | null;
+  /** Set when a tier was raised/lowered from the rule default by the impact pass. */
+  tierAdjusted?: "escalated" | "deescalated" | null;
+}
+
+/** A single location in the codebase (a call site, a missing-test target, etc.). */
+export interface ImpactRef {
+  file?: string;
+  line?: number;
+  symbol?: string;
+}
+
+/** Cross-file blast radius for a changed symbol, sourced from a code graph (or a grep fallback). */
+export interface ImpactInfo {
+  symbol: string;
+  /** Number of distinct call sites that depend on the changed symbol. */
+  callerCount: number;
+  /** A capped sample of those call sites. */
+  callers: ImpactRef[];
+  /** Whether the symbol is reachable from an entry point / user input. null = the graph did not say. */
+  reachable: boolean | null;
+  /** Changed/affected symbols with no covering test. */
+  testGaps: ImpactRef[];
+  /** Suggested reviewers (owners of the top callers), most-relevant first. */
+  reviewers: string[];
+  /** Where this impact came from: "codegraph", "grep", etc. */
+  source: string;
+  /** True if callers/testGaps were truncated to the cap. */
+  truncated?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -116,6 +148,23 @@ export interface GuidelineRuleSet {
   dropped: string[];
 }
 
+export interface GraphConfig {
+  /** Use a code graph for cross-file blast radius. "auto" (default) = use it when available, silent when not. */
+  enabled?: boolean | "auto";
+  /** Graph backend. Currently only "codegraph" (github.com/codegraph-ai/CodeGraph). */
+  provider?: string;
+  /** Binary to invoke for one-shot CLI queries. Default "codegraph-server". */
+  command?: string;
+  /** How to reach the graph: "cli" one-shot per query (default), or "off" to disable. */
+  mode?: "cli" | "off";
+  /** Max call sites / test gaps to keep per finding. Default 20. */
+  maxCallers?: number;
+  /** callerCount at/above this keeps a public-surface finding orange; below it de-escalates. Default 1. */
+  escalateThreshold?: number;
+  /** Per-query budget in ms before the graph call is abandoned (degrades to no impact). Default 4000. */
+  timeoutMs?: number;
+}
+
 export interface Config {
   gate: GateConfig;
   ai: AiConfig;
@@ -126,6 +175,7 @@ export interface Config {
   deprecated?: DeprecatedEntry[];
   orangePatterns?: string[];
   guidelines?: GuidelinesConfig;
+  graph?: GraphConfig;
 }
 
 // Minimal Babel-compatible AST node type
@@ -156,6 +206,8 @@ export interface FindingEmitArg {
   message?: string;
   tier?: Tier;
   fix?: Fix | null;
+  /** Symbol name this finding concerns, for cross-file blast-radius lookup. */
+  symbol?: string | null;
   loc?: {
     start: { line: number; column: number };
     end?: { line: number; column: number };

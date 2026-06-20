@@ -27,6 +27,10 @@ export { reviewGuidelines, evaluateGuidelines, resolveGuidelinesForFile, applyDe
 export { loadLearnings, recordLearning, applyLearnings, isDismissed, codeHash } from "./learnings.js";
 export { TOOLS as agentTools } from "./agent/tools.js";
 export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier } from "./tiers.js";
+export { getGraph, resolveGraphConfig, makeCodeGraphProvider, codeGraphAvailable, normalizeImpact, DEFAULT_GRAPH_CONFIG } from "./graph/index.js";
+export type { GraphProvider, ImpactQuery, GraphRunner } from "./graph/index.js";
+export { attachImpact, IMPACT_RULES } from "./impact.js";
+export { predictedSignal, realizedSignal } from "./signal.js";
 
 import fs from "fs";
 import { analyze } from "./analyzer.js";
@@ -34,6 +38,9 @@ import { loadConfig as _loadConfig, isIgnored as _isIgnored } from "./config.js"
 import { getChangedFiles as _getChangedFiles, getPreviousContent as _getPreviousContent, repoRoot as _repoRoot } from "./git.js";
 import { overallTier as _overallTier, tierCounts as _tierCounts } from "./tiers.js";
 import { loadLearnings as _loadLearnings, applyLearnings as _applyLearnings } from "./learnings.js";
+import { getGraph as _getGraph } from "./graph/index.js";
+import { attachImpact as _attachImpact } from "./impact.js";
+import type { GraphProvider } from "./graph/index.js";
 import type { Config, AnalyzeResult } from "./types.js";
 
 export interface ReviewResult {
@@ -44,12 +51,12 @@ export interface ReviewResult {
   config: Config;
 }
 
-export function reviewChanges(cwd: string, opts: { mode?: string } = {}): ReviewResult {
+export function reviewChanges(cwd: string, opts: { mode?: string; graph?: GraphProvider | null } = {}): ReviewResult {
   const { config } = _loadConfig(cwd);
   const mode = opts.mode || config.gate.mode || "working";
   const changed = _getChangedFiles(cwd, { mode });
   const learnings = _loadLearnings(_repoRoot(cwd) || cwd);
-  const files: AnalyzeResult[] = [];
+  let files: AnalyzeResult[] = [];
 
   for (const [filePath, changedLines] of changed) {
     if (_isIgnored(filePath, config, cwd)) continue;
@@ -63,6 +70,10 @@ export function reviewChanges(cwd: string, opts: { mode?: string } = {}): Review
     const result = _applyLearnings(analyze({ filePath, content, previousContent, changedLines, config }), learnings);
     if (result.findings.length > 0) files.push(result);
   }
+
+  // Cross-file blast radius (no-op when no code graph is available).
+  const graph = _getGraph(cwd, config, opts.graph !== undefined ? { provider: opts.graph } : {});
+  files = _attachImpact(files, { cwd, config, graph });
 
   const allFindings = files.flatMap((f) => f.findings);
   return {

@@ -78,6 +78,12 @@ Returns a structured analysis result. Key fields:
 - `tier` — overall tier: `"green"` | `"yellow"` | `"orange"`
 - `blocking` — true if any finding should block a commit
 
+When a code graph is available, public-surface findings also carry:
+- `impact` — `{ callerCount, reviewers[], testGaps[], reachable }` — cross-file blast radius
+- `tierAdjusted` — `"escalated"` (has callers) or `"deescalated"` (nobody calls it)
+
+If a finding is `escalated` with a high `callerCount`, **fix it before surfacing the code** — the change breaks existing call sites.
+
 ### diffgate_check_staged
 
 ```json

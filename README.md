@@ -30,6 +30,7 @@ diffgate check --github             # same + emit GitHub Actions inline annotati
 diffgate watch                      # live review as you edit
 diffgate guidelines                 # review diff against your repo's AGENTS.md/CLAUDE.md etc.
 diffgate feedback <ruleId> <f> <l>  # record a dismiss/confirm verdict on a finding
+diffgate stats                      # signal-vs-noise report (realized verdicts + predicted diff)
 diffgate init                       # write a starter .diffgate.json
 diffgate install-hook               # add a git pre-commit gate
 diffgate mcp                        # start the MCP stdio server
@@ -60,6 +61,7 @@ npm run package --prefix extension   # produces extension/diffgate-*.vsix
 - **Language-agnostic pattern rules** — secrets, SQL/schema changes, auth/crypto, dynamic execution, and injection sinks are detected across Python, Go, Java, Ruby, and any text via pattern rules.
 - **Real gate** — when a change is high-impact, DiffGate runs your `testCommand` and shows the actual exit code and output.
 - **Hybrid AI (optional, provider-agnostic)** — the deterministic engine always runs offline; when `ai.enabled` is true it adds plain-English explanations and fix suggestions. Works with **Anthropic, OpenAI, OpenRouter, Groq, Together, LM Studio, Ollama, or any OpenAI-compatible endpoint**.
+- **Cross-file blast radius (optional code graph)** — when a code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph)) is available, public-surface findings carry deterministic impact (caller count, suggested reviewers, test gaps). DiffGate uses it to **route attention, not add comments**: a public change with callers stays orange and names the reviewers; one nobody calls de-escalates to yellow and stops blocking. Fully optional and graceful — a no-op when no graph is present.
 - **Deep Review** — for orange findings, an agentic loop (grep, read_file, find_references, git_blame) investigates blast radius and returns a `confirmed-risk / likely-safe / needs-human` verdict.
 - **Guideline review** — reviews the diff against your repo's own `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, and similar files. Per-directory scoping; the nearest file wins. No extra API key needed in host mode — the calling agent does the judgment.
 - **Learnings** — `diffgate feedback` records dismiss/confirm verdicts. Dismissed findings (same rule + same code) are suppressed in all future reviews. Stored in `.diffgate/learnings.json` — commit it to share across the team.
@@ -100,6 +102,12 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
   "rules": {                                 // tune built-ins
     "todo-marker": false,                    //  - disable a rule
     "network-call": { "tier": "green" }      //  - or change its tier
+  },
+
+  "graph": {                                 // optional cross-file blast radius
+    "enabled": "auto",                       //  - "auto": use a code graph when indexed, else no-op
+    "provider": "codegraph",                 //  - github.com/codegraph-ai/CodeGraph
+    "escalateThreshold": 1                   //  - callers ≥ this keeps a public change orange; 0 callers → yellow
   },
 
   "ignore": ["**/node_modules/**", "**/dist/**"]
@@ -171,6 +179,34 @@ diffgate guidelines            # run manually
 ```
 
 Findings are `yellow` / non-blocking by default (configurable).
+
+---
+
+## Cross-file blast radius (code graph)
+
+Most reviewers face a false tradeoff: index the whole repo for cross-file context and you catch breaking changes *but get noisier*; stay diff-scoped and you're quiet *but miss the call sites*. DiffGate resolves it because tiers **route attention instead of emitting comments** — so cross-file context makes the review *quieter and more complete at once*.
+
+When an optional code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph), Apache-2.0) is present, the impact pass enriches public-surface findings (`public-api-change`, `signature-drift`, `deprecated-api`) and adjusts their tier:
+
+| Situation | What DiffGate does |
+|-----------|--------------------|
+| Public change **with callers** | Stays 🟠, message names the caller count, **suggested reviewers**, and **untested** call sites (`tierAdjusted: escalated`) |
+| Public change **nobody calls** | De-escalates 🟠 → 🟡 and **stops blocking the gate** (`tierAdjusted: deescalated`) |
+| No graph available | Complete no-op — same behavior as before, no subprocess cost |
+
+**Setup** — install CodeGraph and index your repo once; DiffGate auto-detects the index (`~/.codegraph/graph.db`). No config needed beyond the defaults; tune via the `graph` block. The graph indexes committed/disk state, so *who calls a changed symbol* is reliable. To never auto-de-escalate a rule, pin its tier: `"rules": { "signature-drift": { "tier": "orange" } }`.
+
+Impact surfaces everywhere a finding does: the CLI report, GitHub PR annotations, SARIF `properties`, the MCP `diffgate_analyze` output (so coding agents see blast radius **before code is written to disk**), and the VS Code hover card.
+
+---
+
+## Signal report
+
+```bash
+diffgate stats          # realized signal (from your verdicts) + predicted signal (current diff)
+```
+
+*Realized* signal turns the `confirm`/`dismiss` verdicts in `.diffgate/learnings.json` into a ratio of real catches to noise, and lists **chronically-noisy rules** worth disabling. *Predicted* signal scores the current diff (🟠/🟡 = signal, 🟢 = low-signal). Use it to prove — and keep — a low-noise review.
 
 ---
 
@@ -268,7 +304,7 @@ You'll see green findings (logging), yellow findings (deprecated `StripeClient.c
 ## Tests
 
 ```bash
-npm test    # builds the extension, runs 71 unit/integration tests + the extension smoke test
+npm test    # builds the extension, runs 101 unit/integration tests + the extension smoke test
 ```
 
 ## Contributing

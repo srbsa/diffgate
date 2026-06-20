@@ -57,6 +57,17 @@
     "network-call": { "tier": "green" }
   },
 
+  "//graph": "Optional cross-file blast radius via a code graph (github.com/codegraph-ai/CodeGraph). enabled 'auto' = use it when an index exists, silent otherwise. A public-surface change with callers stays orange and names the reviewers; one with zero callers de-escalates to yellow. Pin a rule's tier (e.g. \"signature-drift\": { \"tier\": \"orange\" }) to opt out of de-escalation.",
+  "graph": {
+    "enabled": "auto",
+    "provider": "codegraph",
+    "command": "codegraph-server",
+    "mode": "cli",
+    "maxCallers": 20,
+    "escalateThreshold": 1,
+    "timeoutMs": 4000
+  },
+
   "//guidelines": "Review the diff against your repo's own AGENTS.md/CLAUDE.md/.cursorrules (nearest file wins per directory). evaluator 'auto' = use the calling agent's model when none is configured (no API key), else the configured provider.",
   "guidelines": {
     "enabled": true,

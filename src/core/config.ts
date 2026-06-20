@@ -24,6 +24,7 @@ export const DEFAULT_CONFIG: Config = {
   },
   testCommand: null,
   guidelines: { enabled: true, autoDetect: true, files: [], maxDepth: 3, maxBytesPerFile: 8000, tier: "yellow", blocking: false, evaluator: "auto" },
+  graph: { enabled: "auto", provider: "codegraph", command: "codegraph-server", mode: "cli", maxCallers: 20, escalateThreshold: 1, timeoutMs: 4000 },
 };
 
 const CONFIG_NAME = ".diffgate.json";
@@ -50,6 +51,7 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   cfg.orangePatterns = raw.orangePatterns;
   cfg.testCommand = (raw.testCommand as string | null | undefined) ?? DEFAULT_CONFIG.testCommand;
   cfg.guidelines = { ...DEFAULT_CONFIG.guidelines, ...(raw.guidelines || {}) };
+  cfg.graph = { ...DEFAULT_CONFIG.graph, ...(raw.graph || {}) };
   return cfg;
 }
 

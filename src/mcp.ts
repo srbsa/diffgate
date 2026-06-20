@@ -17,6 +17,8 @@ import {
   loadLearnings,
   applyLearnings,
   recordLearning,
+  getGraph,
+  attachImpact,
 } from "./core/index.js";
 import type { Finding, Config, FetchFn } from "./core/types.js";
 
@@ -62,7 +64,9 @@ export const TOOL_DEFS = [
     name: "diffgate_analyze",
     description:
       "Analyze a file for code review findings. Only flags risk on lines changed vs the git baseline (diff-aware). " +
-      "Pass `content` to analyze unsaved or generated code before it is written to disk.",
+      "Pass `content` to analyze unsaved or generated code before it is written to disk. " +
+      "When a code graph is available, public-surface findings carry an `impact` field (caller count, suggested " +
+      "reviewers, test gaps) and may be tier-adjusted — fix high-blast-radius findings before surfacing the code.",
     inputSchema: {
       type: "object",
       properties: {
@@ -177,8 +181,13 @@ export async function handleAnalyze({ filePath, content, cwd: cwdArg }: { filePa
     }
   }
 
-  const result = analyze({ filePath: absPath, content: actualContent, previousContent, changedLines, config });
-  return applyLearnings(result, loadLearnings(repoRoot(cwd) || cwd));
+  const result = applyLearnings(
+    analyze({ filePath: absPath, content: actualContent, previousContent, changedLines, config }),
+    loadLearnings(repoRoot(cwd) || cwd)
+  );
+  // Cross-file blast radius (no-op when no code graph is available).
+  const [withImpact] = attachImpact([result], { cwd, config, graph: getGraph(cwd, config) });
+  return withImpact;
 }
 
 export async function handleCheckStaged({ cwd: cwdArg, mode = "working" }: { cwd?: string; mode?: string } = {}) {
