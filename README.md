@@ -166,6 +166,8 @@ The engine is **provider-agnostic**. Under the hood there are two wire adapters 
 
 Disable or re-tier any rule via the `rules` key in `.diffgate.json`.
 
+**Native precision (no code graph needed).** Injection and secret findings are refined deterministically from the file's own AST: an XSS sink whose value comes from a recognized sanitizer (`DOMPurify.sanitize`, `escapeHtml`, `encodeURIComponent`, …) is **down-tiered to a yellow "verify" note** rather than blocking, and `hardcoded-secret` drops env/placeholder/low-entropy matches while always keeping — and labeling — known provider key formats. Down-tiering never *suppresses* a security finding, so a missed sanitizer stays blocking (the safe default).
+
 ---
 
 ## Guideline review (AGENTS.md / CLAUDE.md)

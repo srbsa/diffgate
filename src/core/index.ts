@@ -36,6 +36,8 @@ export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, GraphSt
 export { attachImpact, IMPACT_RULES } from "./impact.js";
 export { attachSecurity, SECURITY_RULES } from "./security.js";
 export { predictedSignal, realizedSignal } from "./signal.js";
+export { isSanitizerCall, resolvesToSanitizer, classifySecret, shannonEntropy } from "./taint.js";
+export { loadState, shouldShowGraphTip, recordGraphTipShown, GRAPH_TIP_LIMIT } from "./state.js";
 
 import fs from "fs";
 import { analyze } from "./analyzer.js";

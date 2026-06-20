@@ -1,7 +1,30 @@
 import { memberName, walk } from "../parsers/javascript.js";
+import { resolvesToSanitizer, classifySecret } from "../taint.js";
 import type { Rule, AstNode, EmitFn, RuleContext, DeprecatedEntry, Config } from "../types.js";
 
 const JS = ["javascript", "typescript"];
+
+/** Message for an injection finding whose tainted value is neutralized by a recognized sanitizer. */
+function sanitizedNote(sanitizer: string): string {
+  return (
+    `A recognized sanitizer (\`${sanitizer}\`) wraps this value at the call site — likely safe, ` +
+    `but verify it neutralizes every input on this path. Down-tiered from a blocking finding to review.`
+  );
+}
+
+/**
+ * Emit an injection finding, down-tiered to a non-blocking review note when `sanitizer` names a
+ * recognized neutralizer for the flagged value. We never suppress — a missed sanitizer keeps the
+ * finding blocking (the safe default), so this cannot hide a real vulnerability.
+ */
+function emitMaybeSanitized(emit: EmitFn, node: AstNode, ctx: RuleContext, sanitizer: string | null): void {
+  const code = (ctx.lines[node.loc!.start.line - 1] || "").trim();
+  emit(
+    sanitizer
+      ? { loc: node.loc, code, tier: "yellow", blocking: false, tierAdjusted: "deescalated", message: sanitizedNote(sanitizer) }
+      : { loc: node.loc, code }
+  );
+}
 
 // --- AST rule helper functions for JS/TS ------------------------------------
 
@@ -50,7 +73,7 @@ function isDynamicString(node: AstNode | null | undefined, ctx: RuleContext): bo
 
 function isRequestData(node: AstNode): boolean {
   const name = memberName(node);
-  if (name && /\b(req|request|ctx|context)\.(query|body|params|headers)\b/i.test(name)) {
+  if (name && /\b(req|request|ctx|context)\.(query|body|params|headers|cookies|signedCookies)\b/i.test(name)) {
     return true;
   }
   return false;
@@ -142,6 +165,8 @@ export const BUILTIN_RULES: Rule[] = [
       /\bsk_live_[0-9a-zA-Z]{16,}\b/,
       /(?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["'][^"'\s]{8,}["']/i,
     ],
+    // Drop env/placeholder/low-entropy matches; keep known provider key formats (high confidence).
+    validate: classifySecret,
   },
 
   // ----------------------------------------------------- database / schema
@@ -383,10 +408,7 @@ export const BUILTIN_RULES: Rule[] = [
         const left = memberName(node.left as AstNode);
         if (left && (left.endsWith(".innerHTML") || left.endsWith(".outerHTML"))) {
           if (isDynamicString(node.right as AstNode, ctx)) {
-            emit({
-              loc: node.loc,
-              code: (ctx.lines[node.loc!.start.line - 1] || "").trim(),
-            });
+            emitMaybeSanitized(emit, node, ctx, resolvesToSanitizer(node.right as AstNode, "xss-sink", ctx));
           }
         }
       } else if (node.type === "CallExpression") {
@@ -397,10 +419,7 @@ export const BUILTIN_RULES: Rule[] = [
         )) {
           const arg = (node as any).arguments?.[0] as AstNode | undefined;
           if (arg && isDynamicString(arg, ctx)) {
-            emit({
-              loc: node.loc,
-              code: (ctx.lines[node.loc!.start.line - 1] || "").trim(),
-            });
+            emitMaybeSanitized(emit, node, ctx, resolvesToSanitizer(arg, "xss-sink", ctx));
           }
         }
       }

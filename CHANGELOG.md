@@ -7,6 +7,23 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.0] — 2026-06-20
+
+### Added — native security signal (no code graph required)
+
+The whole product thesis is "flag what needs attention, in a gradient, without noise." These land for **every** user; CodeGraph remains strictly optional and only adds cross-file reach on top.
+
+- **Sanitizer-aware XSS down-tiering.** A dynamic `innerHTML`/`document.write`/`insertAdjacentHTML` value that is produced by a recognized sanitizer (`DOMPurify.sanitize`, `escapeHtml`, `encodeURIComponent`, `he.encode`, …) is **down-tiered from a blocking orange to a yellow review note** ("sink, but sanitized in place — verify") instead of blocking the gate. Resolves one level of local-variable aliasing (`const clean = DOMPurify.sanitize(x); el.innerHTML = clean`). We **never suppress** a security finding — a missed sanitizer keeps it blocking — so this can only reduce noise, never hide a vulnerability.
+- **Secret-finding precision.** The broad `hardcoded-secret` catch-all now runs an entropy + placeholder filter: env/interpolation references (`process.env.X`, `${…}`) and obvious placeholders (`changeme`, `your-key-here`, low-entropy fixtures) are dropped, while **known provider key formats (AWS/GitHub/Stripe/Google/Slack) are always kept and labeled "high confidence."**
+- **Wider taint sources.** Request-derived input detection now covers `req.cookies` / `req.signedCookies` in addition to `query`/`body`/`params`/`headers`, improving recall for the path-traversal and SQL sinks.
+- **New engine hooks** (internal): pattern rules gain an optional `validate(match)` for per-match precision; AST findings can carry a `blocking` override and `tierAdjusted` natively (previously only the graph passes set tiers).
+
+### Changed
+
+- **The CodeGraph adoption tip now fades.** The one-line "install CodeGraph for blast radius" nudge on `check` shows at most **3 times per repo** (tracked in `.diffgate/state.json`), then goes quiet — CodeGraph is good-to-have, not mandatory, and the engine is fully useful without it.
+
+---
+
 ## [0.3.0] — 2026-06-20
 
 ### Added

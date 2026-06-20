@@ -97,7 +97,7 @@ function makeFinding(rule: Rule, fields: FindingEmitArg & { line: number }): Fin
   return {
     ruleId: rule.id,
     tier: fields.tier || rule.tier,
-    blocking: !!rule.blocking,
+    blocking: fields.blocking ?? !!rule.blocking,
     title: rule.title,
     message: fields.message || (typeof rule.message === "string" ? rule.message : ""),
     line: fields.line,
@@ -107,6 +107,7 @@ function makeFinding(rule: Rule, fields: FindingEmitArg & { line: number }): Fin
     code: fields.code || "",
     fix: fields.fix || null,
     symbol: fields.symbol ?? null,
+    tierAdjusted: fields.tierAdjusted,
   };
 }
 
@@ -130,7 +131,14 @@ function runPattern(rule: PatternRule, ctx: RuleContext, findings: Finding[]): v
     for (const re of rule.patterns) {
       const m = re.exec(text);
       if (m) {
-        const message = typeof rule.message === "function" ? rule.message(m[0]) : (rule.message || "");
+        let message = typeof rule.message === "function" ? rule.message(m[0]) : (rule.message || "");
+        let tier: Finding["tier"] | undefined;
+        if (rule.validate) {
+          const v = rule.validate(m[0]);
+          if (v && v.skip) continue; // false positive — try the next pattern on this line
+          if (v && v.tier) tier = v.tier;
+          if (v && v.note) message = message ? `${message} (${v.note})` : v.note;
+        }
         findings.push(
           makeFinding(rule, {
             line: lineNo,
@@ -139,6 +147,7 @@ function runPattern(rule: PatternRule, ctx: RuleContext, findings: Finding[]): v
             endColumn: m.index + m[0].length,
             code: text.trim(),
             message,
+            tier,
           })
         );
         break;
@@ -182,6 +191,8 @@ function runAst(rule: AstRule, ast: AstNode, ctx: RuleContext, findings: Finding
           code: text.trim(),
           message: arg.message,
           tier: arg.tier,
+          blocking: arg.blocking,
+          tierAdjusted: arg.tierAdjusted,
           fix: arg.fix,
           symbol: arg.symbol,
         })

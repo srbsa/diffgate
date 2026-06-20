@@ -32,6 +32,8 @@ import {
   resolveGraphConfig,
   makeCodeGraphProvider,
   IMPACT_RULES,
+  shouldShowGraphTip,
+  recordGraphTipShown,
 } from "./core/index.js";
 import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
@@ -184,7 +186,7 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
 
   console.log(formatReport(review.files, review, cwd));
   console.log(c.dim(`\n  diff mode: ${mode}`));
-  maybeGraphTip(allFindings, config);
+  maybeGraphTip(allFindings, config, cwd);
 
   if (flags["deep"]) await printDeepReviews(allFindings, review.files, config, cwd);
   else if (flags["ai"]) await printAiExplanations(allFindings, review.files, config);
@@ -507,13 +509,17 @@ function cmdStats(pos: string[], flags: Record<string, string | true>): void {
 }
 
 // One-line, non-nagging nudge: only when graphing is on, no index exists, AND the diff actually
-// contains a public-surface finding that a code graph would have enriched.
-function maybeGraphTip(findings: Finding[], config: Config): void {
+// contains a public-surface finding that a code graph would have enriched. CodeGraph is strictly
+// optional (the engine is fully useful without it), so the tip fades out after a few shows.
+function maybeGraphTip(findings: Finding[], config: Config, cwd: string): void {
   const status = graphStatus(config);
   if (!status.enabled || status.indexed) return;
   if (!findings.some((f) => IMPACT_RULES.has(f.ruleId))) return;
+  const root = repoRoot(cwd) || cwd;
+  if (!shouldShowGraphTip(root)) return;
   const how = status.commandFound ? "diffgate graph index" : "install CodeGraph, then `diffgate graph index`";
-  console.log(c.dim(`\n  💡 Cross-file blast radius is off — ${how} to route reviewers by caller count.`));
+  console.log(c.dim(`\n  💡 Optional: cross-file blast radius is off — ${how} to route reviewers by caller count.`));
+  recordGraphTipShown(root);
 }
 
 function cmdGraph(pos: string[], flags: Record<string, string | true>): void {

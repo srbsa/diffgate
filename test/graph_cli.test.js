@@ -95,7 +95,7 @@ test("check shows the graph adoption tip when unindexed and a public-surface cha
     fs.writeFileSync(file, "export function getThing(id, extra){ return id + extra; }\n");
 
     const { out } = runCli(tmp, ["check", "--working"]);
-    assert.match(out, /Cross-file blast radius is off/, "tip shown for a public-surface diff");
+    assert.match(out, /cross-file blast radius is off/i, "tip shown for a public-surface diff");
     assert.match(out, /install CodeGraph/i);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -116,7 +116,7 @@ test("check does NOT show the graph tip when graphing is disabled", () => {
     fs.writeFileSync(file, "export function getThing(id, extra){ return id + extra; }\n");
 
     const { out } = runCli(tmp, ["check", "--working"]);
-    assert.doesNotMatch(out, /Cross-file blast radius is off/);
+    assert.doesNotMatch(out, /cross-file blast radius is off/i);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

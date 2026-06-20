@@ -262,6 +262,10 @@ export interface FindingEmitArg {
   message?: string;
   tier?: Tier;
   fix?: Fix | null;
+  /** Override the rule's default blocking flag (e.g. a sanitizer-aware native down-tier). */
+  blocking?: boolean;
+  /** Set when a tier was raised/lowered from the rule default by a native refinement. */
+  tierAdjusted?: "escalated" | "deescalated" | null;
   /** Symbol name this finding concerns, for cross-file blast-radius lookup. */
   symbol?: string | null;
   loc?: {
@@ -286,6 +290,12 @@ interface RuleBase {
 export interface PatternRule extends RuleBase {
   type: "pattern";
   patterns: RegExp[];
+  /**
+   * Optional post-match refinement: inspect the matched text to drop false positives (`skip`),
+   * re-tier, or attach a confidence note. Runs per match in the engine. Used by `hardcoded-secret`
+   * for entropy/placeholder precision.
+   */
+  validate?: (matchText: string) => { skip?: boolean; tier?: Tier; note?: string } | null | void;
 }
 
 export interface AstRule extends RuleBase {
