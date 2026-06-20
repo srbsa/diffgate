@@ -79,10 +79,12 @@ Returns a structured analysis result. Key fields:
 - `blocking` — true if any finding should block a commit
 
 When a code graph is available, public-surface findings also carry:
-- `impact` — `{ callerCount, reviewers[], testGaps[], reachable }` — cross-file blast radius
+- `impact` — `{ callerCount, reviewers[], testGaps[], reachable, complexity?, staleDoc? }` — cross-file blast radius
 - `tierAdjusted` — `"escalated"` (has callers) or `"deescalated"` (nobody calls it)
+- `editContext` — on the highest-blast finding only: `{ callers[], tests[], history[] }` from `get_edit_context`, so you can update the call sites in the same turn **before writing the code to disk**
+- `security` — on injection-class findings when a Pro taint graph is present: `{ tainted, dataFlow[] }`. `tainted: true` means user input reaches the sink (source → … → sink in `dataFlow`) — **do not ship it**.
 
-If a finding is `escalated` with a high `callerCount`, **fix it before surfacing the code** — the change breaks existing call sites.
+If a finding is `escalated` with a high `callerCount`, **fix it before surfacing the code** — the change breaks existing call sites. Use `editContext.callers` to find them and `editContext.tests` to update coverage.
 
 ### diffgate_check_staged
 

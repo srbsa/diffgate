@@ -31,6 +31,8 @@ diffgate watch                      # live review as you edit
 diffgate guidelines                 # review diff against your repo's AGENTS.md/CLAUDE.md etc.
 diffgate feedback <ruleId> <f> <l>  # record a dismiss/confirm verdict on a finding
 diffgate stats                      # signal-vs-noise report (realized verdicts + predicted diff)
+diffgate graph status               # is the code graph enabled / installed / indexed?
+diffgate graph index                # build the cross-file index (or print install help)
 diffgate init                       # write a starter .diffgate.json
 diffgate install-hook               # add a git pre-commit gate
 diffgate mcp                        # start the MCP stdio server
@@ -61,7 +63,7 @@ npm run package --prefix extension   # produces extension/diffgate-*.vsix
 - **Language-agnostic pattern rules** — secrets, SQL/schema changes, auth/crypto, dynamic execution, and injection sinks are detected across Python, Go, Java, Ruby, and any text via pattern rules.
 - **Real gate** — when a change is high-impact, DiffGate runs your `testCommand` and shows the actual exit code and output.
 - **Hybrid AI (optional, provider-agnostic)** — the deterministic engine always runs offline; when `ai.enabled` is true it adds plain-English explanations and fix suggestions. Works with **Anthropic, OpenAI, OpenRouter, Groq, Together, LM Studio, Ollama, or any OpenAI-compatible endpoint**.
-- **Cross-file blast radius (optional code graph)** — when a code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph)) is available, public-surface findings carry deterministic impact (caller count, suggested reviewers, test gaps). DiffGate uses it to **route attention, not add comments**: a public change with callers stays orange and names the reviewers; one nobody calls de-escalates to yellow and stops blocking. Fully optional and graceful — a no-op when no graph is present.
+- **Cross-file blast radius (optional code graph)** — when a code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph)) is available, public-surface findings carry deterministic impact (caller count, suggested reviewers, test gaps, complexity, stale docs) sourced from a single `pr_context` call per review. DiffGate uses it to **route attention, not add comments**: a public change with callers stays orange and names the reviewers; one nobody calls de-escalates to yellow and stops blocking. For injection-class findings, an optional Pro taint analysis confirms whether user input reaches the sink. Fully optional and graceful — a no-op when no graph is present.
 - **Deep Review** — for orange findings, an agentic loop (grep, read_file, find_references, git_blame) investigates blast radius and returns a `confirmed-risk / likely-safe / needs-human` verdict.
 - **Guideline review** — reviews the diff against your repo's own `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, and similar files. Per-directory scoping; the nearest file wins. No extra API key needed in host mode — the calling agent does the judgment.
 - **Learnings** — `diffgate feedback` records dismiss/confirm verdicts. Dismissed findings (same rule + same code) are suppressed in all future reviews. Stored in `.diffgate/learnings.json` — commit it to share across the team.
@@ -107,7 +109,9 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
   "graph": {                                 // optional cross-file blast radius
     "enabled": "auto",                       //  - "auto": use a code graph when indexed, else no-op
     "provider": "codegraph",                 //  - github.com/codegraph-ai/CodeGraph
-    "escalateThreshold": 1                   //  - callers ≥ this keeps a public change orange; 0 callers → yellow
+    "escalateThreshold": 1,                  //  - callers ≥ this keeps a public change orange; 0 callers → yellow
+    "security": "auto",                      //  - use the Pro taint graph for injection findings when present
+    "securityDeescalate": false              //  - allow a proven-clean sink to de-escalate (off = enrich-only)
   },
 
   "ignore": ["**/node_modules/**", "**/dist/**"]
@@ -190,11 +194,15 @@ When an optional code graph ([codegraph-ai/CodeGraph](https://github.com/codegra
 
 | Situation | What DiffGate does |
 |-----------|--------------------|
-| Public change **with callers** | Stays 🟠, message names the caller count, **suggested reviewers**, and **untested** call sites (`tierAdjusted: escalated`) |
+| Public change **with callers** | Stays 🟠, message names the caller count, **suggested reviewers**, **untested** call sites, plus complexity and stale-doc flags (`tierAdjusted: escalated`) |
 | Public change **nobody calls** | De-escalates 🟠 → 🟡 and **stops blocking the gate** (`tierAdjusted: deescalated`) |
 | No graph available | Complete no-op — same behavior as before, no subprocess cost |
 
-**Setup** — install CodeGraph and index your repo once; DiffGate auto-detects the index (`~/.codegraph/graph.db`). No config needed beyond the defaults; tune via the `graph` block. The graph indexes committed/disk state, so *who calls a changed symbol* is reliable. To never auto-de-escalate a rule, pin its tier: `"rules": { "signature-drift": { "tier": "orange" } }`.
+**How it sources impact.** One `pr_context` call per review covers the whole diff (callers, test gaps, reviewers, stale docs, complexity). Symbols it doesn't cover — or any time it's unavailable — fall back to a per-finding `analyze_impact` lookup, with `find_related_tests` supplying authoritative test-gap data. In the MCP loop, `diffgate_analyze` additionally attaches `get_edit_context` (callers/tests/recent history) to the highest-blast finding so an agent can fix the call sites before writing code.
+
+**Setup** — `diffgate graph status` tells you what's configured; `diffgate graph index` builds the index (or prints install instructions if CodeGraph isn't installed). DiffGate auto-detects the index (`~/.codegraph/graph.db`). The graph indexes committed/disk state, so *who calls a changed symbol* is reliable. To never auto-de-escalate a rule, pin its tier: `"rules": { "signature-drift": { "tier": "orange" } }`.
+
+**Graph-aware security (optional, Pro).** For injection-class findings (`sql-injection`, `xss-sink`, `nosql-injection`, `path-traversal`, …) a CodeGraph Pro taint analysis answers *does user input actually reach this sink?* A confirmed taint path is attached (source → … → sink) and keeps the gate. A proven-clean sink de-escalates **only if you set `graph.securityDeescalate: true`** — enrich-only by default, because a false "no taint" must never silently hide a vulnerability. (Validated against CodeGraph's documented contract, not a live Pro binary.)
 
 Impact surfaces everywhere a finding does: the CLI report, GitHub PR annotations, SARIF `properties`, the MCP `diffgate_analyze` output (so coding agents see blast radius **before code is written to disk**), and the VS Code hover card.
 
@@ -304,7 +312,7 @@ You'll see green findings (logging), yellow findings (deprecated `StripeClient.c
 ## Tests
 
 ```bash
-npm test    # builds the extension, runs 101 unit/integration tests + the extension smoke test
+npm test    # builds the extension, runs 145 unit/integration tests + the extension smoke test
 ```
 
 ## Contributing

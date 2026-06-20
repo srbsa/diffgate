@@ -24,7 +24,11 @@ export const DEFAULT_CONFIG: Config = {
   },
   testCommand: null,
   guidelines: { enabled: true, autoDetect: true, files: [], maxDepth: 3, maxBytesPerFile: 8000, tier: "yellow", blocking: false, evaluator: "auto" },
-  graph: { enabled: "auto", provider: "codegraph", command: "codegraph-server", mode: "cli", maxCallers: 20, escalateThreshold: 1, timeoutMs: 4000 },
+  graph: {
+    enabled: "auto", provider: "codegraph", command: "codegraph-server", mode: "cli",
+    maxCallers: 20, escalateThreshold: 1, timeoutMs: 4000,
+    prContext: true, relatedTests: true, editContext: true, security: "auto", securityDeescalate: false,
+  },
 };
 
 const CONFIG_NAME = ".diffgate.json";

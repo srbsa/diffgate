@@ -135,6 +135,111 @@ test("attachImpact: escalateThreshold gate (below threshold leaves tier as-is, s
   assert.ok(f.impact);
 });
 
+// --- #2 pr_context primary, analyze_impact fallback --------------------------
+
+test("attachImpact: pr_context is the primary source (no per-finding impact() call)", () => {
+  const res = publicApiResult();
+  let impactCalls = 0;
+  const graph = {
+    id: "fake",
+    prContext: () => ({
+      bySymbol: { getThing: impactObj({ symbol: "getThing", callerCount: 4, callers: [{ file: "a.js" }, { file: "b.js" }], reviewers: ["alice"] }) },
+      staleDocs: [],
+      source: "codegraph",
+    }),
+    impact: () => { impactCalls++; return null; },
+  };
+  const [out] = attachImpact([res], { cwd: "/repo", config: cfg, graph });
+  const f = find(out, "public-api-change");
+  assert.equal(f.impact.callerCount, 4, "enriched from pr_context");
+  assert.equal(f.tierAdjusted, "escalated");
+  assert.match(f.message, /@alice/);
+  assert.equal(impactCalls, 0, "pr_context covered the symbol — no fallback call");
+});
+
+test("attachImpact: falls back to analyze_impact when pr_context omits the symbol", () => {
+  const res = publicApiResult();
+  let impactCalls = 0;
+  const graph = {
+    id: "fake",
+    prContext: () => ({ bySymbol: {}, staleDocs: [], source: "codegraph" }), // empty coverage
+    impact: () => { impactCalls++; return impactObj({ symbol: "getThing", callerCount: 7, callers: [{ file: "z.js" }] }); },
+  };
+  const [out] = attachImpact([res], { cwd: "/repo", config: cfg, graph });
+  assert.equal(impactCalls, 1, "uncovered symbol triggers the fallback");
+  assert.equal(find(out, "public-api-change").impact.callerCount, 7);
+});
+
+test("attachImpact: pr_context matches a bare name against a qualified key", () => {
+  // deprecated-api symbol is "StripeClient.charge"; pr_context keys it bare as "charge".
+  const res = analyze({ filePath: "pay.js", content: `const r = StripeClient.charge(amount, token);\n`, config: cfg });
+  const graph = {
+    id: "fake",
+    prContext: () => ({ bySymbol: { charge: impactObj({ symbol: "charge", callerCount: 3, callers: [{ file: "a.js" }] }) }, staleDocs: [], source: "codegraph" }),
+    impact: () => { throw new Error("should not fall back"); },
+  };
+  const [out] = attachImpact([res], { cwd: "/repo", config: cfg, graph });
+  assert.match(find(out, "deprecated-api").message, /Blast radius: 3/);
+});
+
+test("attachImpact: pr_context stale-doc warning folds onto the matching finding", () => {
+  const res = publicApiResult();
+  const graph = {
+    id: "fake",
+    prContext: () => ({
+      bySymbol: { getThing: impactObj({ symbol: "getThing", callerCount: 2, callers: [{ file: "a.js" }] }) },
+      staleDocs: [{ symbol: "getThing", note: "param drift" }],
+      source: "codegraph",
+    }),
+    impact: () => null,
+  };
+  const [out] = attachImpact([res], { cwd: "/repo", config: cfg, graph });
+  const f = find(out, "public-api-change");
+  assert.equal(f.impact.staleDoc, true);
+  assert.match(f.message, /stale docs/);
+});
+
+// --- #4 find_related_tests fills test gaps in the fallback path --------------
+
+test("attachImpact: relatedTests=[] marks a changed public symbol untested", () => {
+  const res = publicApiResult();
+  let relatedCalls = 0;
+  const graph = {
+    id: "fake",
+    impact: () => impactObj({ symbol: "getThing", callerCount: 2, callers: [{ file: "a.js" }], testGaps: [] }),
+    relatedTests: () => { relatedCalls++; return []; }, // authoritatively no covering test
+  };
+  const [out] = attachImpact([res], { cwd: "/repo", config: cfg, graph });
+  const f = find(out, "public-api-change");
+  assert.equal(relatedCalls, 1);
+  assert.equal(f.impact.testGaps.length, 1);
+  assert.equal(f.impact.testGaps[0].symbol, "getThing");
+  assert.match(f.message, /untested: getThing/);
+});
+
+test("attachImpact: relatedTests is NOT consulted when impact already has test gaps", () => {
+  const res = publicApiResult();
+  let relatedCalls = 0;
+  const graph = {
+    id: "fake",
+    impact: () => impactObj({ symbol: "getThing", callerCount: 1, callers: [{ file: "a.js" }], testGaps: [{ symbol: "existing" }] }),
+    relatedTests: () => { relatedCalls++; return []; },
+  };
+  attachImpact([res], { cwd: "/repo", config: cfg, graph });
+  assert.equal(relatedCalls, 0, "test gaps already present — no extra query");
+});
+
+test("attachImpact: relatedTests with covering tests does not invent a gap", () => {
+  const res = publicApiResult();
+  const graph = {
+    id: "fake",
+    impact: () => impactObj({ symbol: "getThing", callerCount: 1, callers: [{ file: "a.js" }], testGaps: [] }),
+    relatedTests: () => [{ file: "getThing.test.js" }],
+  };
+  const [out] = attachImpact([res], { cwd: "/repo", config: cfg, graph });
+  assert.equal(find(out, "public-api-change").impact.testGaps.length, 0);
+});
+
 // --- end-to-end through reviewChanges with an injected graph -----------------
 
 function runGit(cwd, ...args) {

@@ -44,7 +44,9 @@ function firstSentence(text: string): string {
   return (m ? m[0] : text).trim();
 }
 
-function impactLine(f: AnalyzeResult["findings"][number]): string | null {
+type Finding = AnalyzeResult["findings"][number];
+
+function impactLine(f: Finding): string | null {
   const im = f.impact;
   if (!im) return null;
   if (f.tierAdjusted === "deescalated") {
@@ -56,9 +58,25 @@ function impactLine(f: AnalyzeResult["findings"][number]): string | null {
   const bits = [`⚡ ${count} call site${im.callerCount === 1 ? "" : "s"}${fileCount ? ` · ${fileCount} file${fileCount === 1 ? "" : "s"}` : ""}`];
   if (im.reachable === true) bits.push("reachable");
   if (im.reviewers.length) bits.push("route " + im.reviewers.slice(0, 3).map((r) => "@" + r).join(", "));
+  if (typeof im.complexity === "number" && im.complexity >= 10) bits.push("complexity " + im.complexity);
+  if (im.staleDoc) bits.push("stale docs");
   if (im.testGaps.length) bits.push("⚠ untested: " + im.testGaps.slice(0, 3).map((t) => t.symbol || t.file).join(", "));
   const colored = f.tierAdjusted === "escalated" ? c.orange : c.gray;
   return colored(bits.join(" · "));
+}
+
+// Graph-aware taint verdict line for injection-class findings.
+function securityLine(f: Finding): string | null {
+  const s = f.security;
+  if (!s) return null;
+  if (s.tainted === true) {
+    const hops = s.dataFlow.map((r) => r.symbol || r.file || "?").slice(0, 5).join(" → ");
+    return c.orange("🔓 taint path confirmed" + (hops ? ": " + hops : ""));
+  }
+  if (s.tainted === false) {
+    return c.gray("🛡 no taint path in the code graph" + (f.tierAdjusted === "deescalated" ? " (down-tiered)" : ""));
+  }
+  return null;
 }
 
 export function formatFile(fileResult: AnalyzeResult, cwd: string): string {
@@ -71,6 +89,8 @@ export function formatFile(fileResult: AnalyzeResult, cwd: string): string {
     lines.push(`        ${c.gray("└ " + firstSentence(f.message))}  ${c.dim("[" + f.ruleId + "]")}`);
     const im = impactLine(f);
     if (im) lines.push(`        ${im}`);
+    const sec = securityLine(f);
+    if (sec) lines.push(`        ${sec}`);
     if (f.code) lines.push(`        ${c.dim(c.gray(truncate(f.code, 78)))}`);
   }
   return lines.join("\n");

@@ -137,6 +137,63 @@ test("handleAnalyze returns no findings for safe content", async () => {
   }
 });
 
+test("handleAnalyze attaches blast radius + pre-edit context via an injected graph", async () => {
+  const dir = tmpDir({});
+  const content = `export function getThing(id) { return id; }\n`;
+  let editCtxCalls = 0;
+  const graph = {
+    id: "fake",
+    impact: () => ({
+      symbol: "getThing", callerCount: 4, callers: [{ file: "a.js" }, { file: "b.js" }],
+      reachable: true, testGaps: [], reviewers: ["alice"], source: "codegraph", truncated: false,
+    }),
+    editContext: () => { editCtxCalls++; return { callers: [{ file: "a.js", line: 3 }], tests: [], history: ["alice — edited"], source: "codegraph" }; },
+  };
+  try {
+    const result = await handleAnalyze({ filePath: path.join(dir, "api.js"), content, cwd: dir }, { graph });
+    const f = result.findings.find((x) => x.ruleId === "public-api-change");
+    assert.equal(f.tierAdjusted, "escalated");
+    assert.equal(f.impact.callerCount, 4);
+    assert.equal(editCtxCalls, 1, "edit context fetched for the escalated finding");
+    assert.equal(f.editContext.history[0], "alice — edited");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleAnalyze records a graph-aware taint verdict on an injection finding", async () => {
+  const dir = tmpDir({});
+  const content = "function q(req){ return db.query(`SELECT * FROM u WHERE id=${req.query.id}`); }\n";
+  const graph = {
+    id: "fake",
+    impact: () => null,
+    security: () => ({ tainted: true, dataFlow: [{ symbol: "req.query.id" }, { symbol: "db.query" }], source: "codegraph" }),
+  };
+  try {
+    const result = await handleAnalyze({ filePath: path.join(dir, "db.js"), content, cwd: dir }, { graph });
+    const f = result.findings.find((x) => x.ruleId === "sql-injection");
+    assert.ok(f, "sql-injection fired");
+    assert.equal(f.security.tainted, true);
+    assert.match(f.message, /Taint path/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleAnalyze is a clean no-op when the injected graph is null", async () => {
+  const dir = tmpDir({});
+  const content = `export function getThing(id) { return id; }\n`;
+  try {
+    const result = await handleAnalyze({ filePath: path.join(dir, "api.js"), content, cwd: dir }, { graph: null });
+    const f = result.findings.find((x) => x.ruleId === "public-api-change");
+    assert.ok(f, "finding still present");
+    assert.equal(f.impact, undefined, "no graph → no impact");
+    assert.equal(f.tierAdjusted, undefined);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- handleCheckStaged -------------------------------------------------------
 
 test("handleCheckStaged returns { files, tier, counts, blocking } shape", async () => {

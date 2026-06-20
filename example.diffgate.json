@@ -65,7 +65,13 @@
     "mode": "cli",
     "maxCallers": 20,
     "escalateThreshold": 1,
-    "timeoutMs": 4000
+    "timeoutMs": 4000,
+    "prContext": true,
+    "relatedTests": true,
+    "editContext": true,
+    "//security": "Pro taint graph for injection findings. 'auto' = use when present. securityDeescalate true lets a proven-clean sink down-tier (off = enrich-only, the safe default).",
+    "security": "auto",
+    "securityDeescalate": false
   },
 
   "//guidelines": "Review the diff against your repo's own AGENTS.md/CLAUDE.md/.cursorrules (nearest file wins per directory). evaluator 'auto' = use the calling agent's model when none is configured (no API key), else the configured provider.",

@@ -3,9 +3,15 @@ import assert from "node:assert/strict";
 
 import {
   normalizeImpact,
+  normalizePrContext,
+  normalizeEditContext,
+  normalizeSecurity,
+  normalizeTests,
   makeCodeGraphProvider,
   codeGraphAvailable,
+  commandAvailable,
   getGraph,
+  graphStatus,
   resolveGraphConfig,
 } from "../dist/core/index.js";
 
@@ -131,4 +137,190 @@ test("resolveGraphConfig fills defaults and applies overrides", () => {
   assert.equal(g.provider, "codegraph");
   assert.equal(g.escalateThreshold, 5);
   assert.equal(g.maxCallers, 20);
+  // New capability flags default on (security "auto", de-escalation off).
+  assert.equal(g.prContext, true);
+  assert.equal(g.relatedTests, true);
+  assert.equal(g.editContext, true);
+  assert.equal(g.security, "auto");
+  assert.equal(g.securityDeescalate, false);
+});
+
+// --- normalizeImpact: new complexity + stale-doc fields ----------------------
+
+test("normalizeImpact reads complexity and stale-doc flags", () => {
+  const im = normalizeImpact(
+    { callers: [{ file: "a.js" }], cyclomatic_complexity: 14, stale_doc: true },
+    { symbol: "s", source: "codegraph" }
+  );
+  assert.equal(im.complexity, 14);
+  assert.equal(im.staleDoc, true);
+});
+
+test("normalizeImpact omits complexity/staleDoc when absent", () => {
+  const im = normalizeImpact({ callers: [] }, { symbol: "s", source: "codegraph" });
+  assert.equal(im.complexity, undefined);
+  assert.equal(im.staleDoc, undefined);
+});
+
+// --- normalizePrContext: whole-diff payload ----------------------------------
+
+test("normalizePrContext maps changed functions by symbol + collects stale docs", () => {
+  const raw = {
+    changed_functions: [
+      { name: "getUser", callers: [{ file: "a.js" }, { file: "b.js" }], suggested_reviewers: ["alice"], complexity: 12 },
+      { symbol: "saveUser", caller_count: 0, untested: ["saveUser"] },
+    ],
+    stale_docs: [{ symbol: "getUser", note: "doc references old param" }],
+    commit_hint: "refactor: tighten user API",
+  };
+  const pr = normalizePrContext(raw, { source: "codegraph" });
+  assert.equal(pr.bySymbol.getUser.callerCount, 2);
+  assert.deepEqual(pr.bySymbol.getUser.reviewers, ["alice"]);
+  assert.equal(pr.bySymbol.getUser.complexity, 12);
+  assert.equal(pr.bySymbol.saveUser.callerCount, 0);
+  assert.equal(pr.staleDocs.length, 1);
+  assert.equal(pr.staleDocs[0].symbol, "getUser");
+  assert.equal(pr.commitHint, "refactor: tighten user API");
+});
+
+test("normalizePrContext tolerates alternate keys + string stale docs", () => {
+  const pr = normalizePrContext(
+    { symbols: [{ name: "x", direct_callers: [{ file: "y.js" }] }], staleDocs: ["docs/api.md out of date"] },
+    { source: "codegraph" }
+  );
+  assert.equal(pr.bySymbol.x.callerCount, 1);
+  assert.equal(pr.staleDocs[0].note, "docs/api.md out of date");
+});
+
+test("normalizePrContext returns null on non-object input", () => {
+  assert.equal(normalizePrContext(null, { source: "codegraph" }), null);
+});
+
+// --- normalizeTests / normalizeEditContext -----------------------------------
+
+test("normalizeTests reads a bare array or a tests-keyed object", () => {
+  assert.equal(normalizeTests({ tests: [{ file: "t.spec.js" }] }).length, 1);
+  assert.equal(normalizeTests([{ file: "a.test.js" }, { file: "b.test.js" }]).length, 2);
+  assert.deepEqual(normalizeTests({ tests: [] }), []);
+});
+
+test("normalizeEditContext gathers callers, tests, and history", () => {
+  const ec = normalizeEditContext(
+    {
+      callers: [{ file: "a.js", line: 3 }],
+      tests: [{ file: "a.test.js" }],
+      history: [{ author: "alice", message: "fix add" }, "bob — refactor"],
+    },
+    { source: "codegraph" }
+  );
+  assert.equal(ec.callers.length, 1);
+  assert.equal(ec.tests.length, 1);
+  assert.equal(ec.history.length, 2);
+  assert.match(ec.history[0], /alice/);
+  assert.equal(ec.source, "codegraph");
+});
+
+// --- normalizeSecurity: taint verdict inference ------------------------------
+
+test("normalizeSecurity reads an explicit tainted flag + data-flow path", () => {
+  const v = normalizeSecurity(
+    { tainted: true, data_flow: [{ symbol: "req.query.id" }, { symbol: "db.query" }], detector: "detect_injection" },
+    { source: "codegraph" }
+  );
+  assert.equal(v.tainted, true);
+  assert.equal(v.dataFlow.length, 2);
+  assert.equal(v.detector, "detect_injection");
+});
+
+test("normalizeSecurity infers tainted=true from a non-empty path when no flag given", () => {
+  const v = normalizeSecurity({ taint_path: [{ symbol: "src" }, { symbol: "sink" }] }, { source: "codegraph" });
+  assert.equal(v.tainted, true);
+});
+
+test("normalizeSecurity infers tainted=false from an explicit clean result", () => {
+  const v = normalizeSecurity({ clean: true }, { source: "codegraph" });
+  assert.equal(v.tainted, false);
+  assert.deepEqual(v.dataFlow, []);
+});
+
+test("normalizeSecurity leaves tainted null when the graph is silent", () => {
+  const v = normalizeSecurity({ note: "analysis incomplete" }, { source: "codegraph" });
+  assert.equal(v.tainted, null);
+});
+
+// --- provider: new tool methods via injected runner --------------------------
+
+test("provider.prContext calls pr_context and maps symbols", () => {
+  let seen = null;
+  const runner = (call) => {
+    seen = call;
+    return JSON.stringify({ changed_functions: [{ name: "f", callers: [{ file: "a.js" }] }] });
+  };
+  const pr = makeCodeGraphProvider("/repo", {}, runner).prContext({ cwd: "/repo", baseBranch: "main" });
+  assert.equal(seen.tool, "pr_context");
+  assert.equal(seen.args.baseBranch, "main");
+  assert.equal(pr.bySymbol.f.callerCount, 1);
+});
+
+test("provider.relatedTests returns [] for an authoritatively untested symbol", () => {
+  const runner = () => JSON.stringify({ tests: [] });
+  const tests = makeCodeGraphProvider("/repo", {}, runner).relatedTests({ symbol: "s", file: "a.js", line: 1, cwd: "/repo" });
+  assert.deepEqual(tests, []);
+});
+
+test("provider.editContext + security route to the right tools", () => {
+  const tools = [];
+  const runner = (call) => {
+    tools.push(call.tool);
+    if (call.tool === "get_edit_context") return JSON.stringify({ callers: [{ file: "a.js" }], tests: [], history: [] });
+    if (call.tool === "security_detect_injection") return JSON.stringify({ tainted: true, data_flow: [{ symbol: "sink" }] });
+    return null;
+  };
+  const p = makeCodeGraphProvider("/repo", {}, runner);
+  assert.equal(p.editContext({ symbol: "s", file: "a.js", line: 1, cwd: "/repo" }).callers.length, 1);
+  const v = p.security({ symbol: "s", file: "a.js", line: 1, cwd: "/repo", ruleId: "sql-injection", sink: "db.query(x)" });
+  assert.equal(v.tainted, true);
+  assert.ok(tools.includes("get_edit_context"));
+  assert.ok(tools.includes("security_detect_injection"));
+});
+
+test("provider retries with the codegraph_ namespace when the bare tool yields nothing", () => {
+  const seen = [];
+  const runner = (call) => {
+    seen.push(call.tool);
+    if (call.tool === "codegraph_analyze_impact") return JSON.stringify({ callers: [{ file: "a.js" }] });
+    return null; // bare name returns nothing
+  };
+  const im = makeCodeGraphProvider("/repo", {}, runner).impact({ symbol: "s", file: "a.js", line: 1, cwd: "/repo" });
+  assert.deepEqual(seen, ["analyze_impact", "codegraph_analyze_impact"]);
+  assert.equal(im.callerCount, 1);
+});
+
+test("provider.reindex returns true when the index tool confirms", () => {
+  const ok = makeCodeGraphProvider("/repo", {}, () => JSON.stringify({ indexed: 42 })).reindex({ full: true });
+  assert.equal(ok, true);
+  const no = makeCodeGraphProvider("/repo", {}, () => null).reindex();
+  assert.equal(no, false);
+});
+
+// --- commandAvailable / graphStatus ------------------------------------------
+
+test("commandAvailable resolves an existing absolute path, rejects a bogus one", () => {
+  assert.equal(commandAvailable(process.execPath), true); // node itself
+  assert.equal(commandAvailable("/definitely/not/a/real/binary-xyz"), false);
+  assert.equal(commandAvailable(""), false);
+});
+
+test("graphStatus reports disabled and command-resolution states without spawning", () => {
+  const off = graphStatus({ graph: { enabled: false } });
+  assert.equal(off.enabled, false);
+  assert.equal(off.indexed, false);
+  assert.match(off.reason, /disabled/i);
+
+  // enabled + a bogus command path → enabled true, command not found. (indexed depends on the
+  // host's ~/.codegraph, so we don't assert it here.)
+  const on = graphStatus({ graph: { enabled: "auto", command: "/definitely/not/real-xyz" } });
+  assert.equal(on.enabled, true);
+  assert.equal(on.commandFound, false);
+  assert.equal(typeof on.reason, "string");
 });

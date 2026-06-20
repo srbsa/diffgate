@@ -25,6 +25,7 @@ import {
   tierCounts,
   getGraph,
   attachImpact,
+  attachSecurity,
 } from "../../src/core/index.js";
 import type { Finding, AnalyzeResult, Config } from "../../src/core/types.js";
 
@@ -180,7 +181,10 @@ function analyzeDocument(document: vscode.TextDocument): void {
   if (!document.isDirty) {
     try {
       const graph = getGraph(folder, config);
-      if (graph) res = attachImpact([res], { cwd: folder, config, graph })[0];
+      if (graph) {
+        res = attachImpact([res], { cwd: folder, config, graph })[0];
+        res = attachSecurity([res], { cwd: folder, config, graph })[0];
+      }
     } catch {
       /* impact is best-effort */
     }
@@ -271,9 +275,20 @@ const hoverProvider: vscode.HoverProvider = {
           const bits: string[] = [`**${im.callerCount}${im.truncated ? "+" : ""}** call site${im.callerCount === 1 ? "" : "s"}${fileCount ? ` across ${fileCount} file${fileCount === 1 ? "" : "s"}` : ""}`];
           if (im.reachable === true) bits.push("reachable from an entry point");
           if (im.reviewers.length) bits.push(`route: ${im.reviewers.slice(0, 3).map((r) => "@" + r).join(", ")}`);
+          if (typeof im.complexity === "number" && im.complexity >= 10) bits.push(`complexity ${im.complexity}`);
+          if (im.staleDoc) bits.push("$(book) stale docs");
           if (im.testGaps.length) bits.push(`$(warning) untested: ${im.testGaps.slice(0, 3).map((t) => t.symbol || t.file).join(", ")}`);
           const icon = f.tierAdjusted === "escalated" ? "$(flame)" : "$(zap)";
           md.appendMarkdown(`> ${icon} **Blast radius:** ${bits.join(" · ")}\n\n`);
+        }
+      }
+      const sec = f.security;
+      if (sec) {
+        if (sec.tainted === true) {
+          const hops = sec.dataFlow.map((r) => r.symbol || r.file || "?").slice(0, 5).join(" → ");
+          md.appendMarkdown(`> $(unlock) **Taint path confirmed**${hops ? `: ${hops}` : ""}\n\n`);
+        } else if (sec.tainted === false) {
+          md.appendMarkdown(`> $(shield) **No taint path** in the code graph${f.tierAdjusted === "deescalated" ? " _(down-tiered)_" : ""}.\n\n`);
         }
       }
       const vKey = `${document.uri.toString()}::${f.ruleId}::${f.line}`;

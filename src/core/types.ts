@@ -35,6 +35,10 @@ export interface Finding {
   impact?: ImpactInfo | null;
   /** Set when a tier was raised/lowered from the rule default by the impact pass. */
   tierAdjusted?: "escalated" | "deescalated" | null;
+  /** Graph-aware security verdict for injection-class findings (Pro security graph only). */
+  security?: SecurityVerdict | null;
+  /** Pre-edit context (callers/tests/history) for a high-blast finding — MCP analyze only. */
+  editContext?: EditContext | null;
 }
 
 /** A single location in the codebase (a call site, a missing-test target, etc.). */
@@ -61,6 +65,48 @@ export interface ImpactInfo {
   source: string;
   /** True if callers/testGaps were truncated to the cap. */
   truncated?: boolean;
+  /** Cyclomatic complexity of the changed symbol, when the graph reports it. */
+  complexity?: number | null;
+  /** True when the symbol's documentation looks stale relative to its current signature. */
+  staleDoc?: boolean | null;
+}
+
+/** A symbol whose documentation/spec drifted from the code, surfaced by pr_context. */
+export interface StaleDoc {
+  symbol?: string;
+  file?: string;
+  note?: string;
+}
+
+/** Whole-diff context from a single pr_context call: per-symbol impact + repo-level signals. */
+export interface PrContextInfo {
+  /** Impact keyed by symbol name (exact), used to enrich findings without a per-finding call. */
+  bySymbol: Record<string, ImpactInfo>;
+  /** Symbols whose docs drifted from the code. */
+  staleDocs: StaleDoc[];
+  /** A suggested commit-message subject line, when the graph offers one. */
+  commitHint?: string | null;
+  source: string;
+}
+
+/** Pre-edit context for a symbol: who calls it, what tests cover it, recent history. */
+export interface EditContext {
+  callers: ImpactRef[];
+  tests: ImpactRef[];
+  /** Recent change history (authors / commits touching the symbol), newest first. */
+  history: string[];
+  source: string;
+}
+
+/** Graph-aware taint verdict for an injection-class finding. */
+export interface SecurityVerdict {
+  /** true = user input reaches the sink; false = no taint path; null = the graph was unsure. */
+  tainted: boolean | null;
+  /** The taint path (source → … → sink), when the graph traced one. */
+  dataFlow: ImpactRef[];
+  /** Which detector produced this (e.g. "detect_injection", "trace_data_flow"). */
+  detector?: string;
+  source: string;
 }
 
 export interface AnalyzeResult {
@@ -163,6 +209,16 @@ export interface GraphConfig {
   escalateThreshold?: number;
   /** Per-query budget in ms before the graph call is abandoned (degrades to no impact). Default 4000. */
   timeoutMs?: number;
+  /** Use one pr_context call per review for whole-diff impact (falls back to per-finding analyze_impact). Default true. */
+  prContext?: boolean;
+  /** Fill test gaps via find_related_tests in the analyze_impact fallback path. Default true. */
+  relatedTests?: boolean;
+  /** Attach pre-edit context (get_edit_context) to escalated findings in MCP analyze. Default true. */
+  editContext?: boolean;
+  /** Use the Pro security graph (taint tracing) to enrich injection findings. "auto" (default) = use when present. */
+  security?: boolean | "auto";
+  /** Allow the security graph to DOWN-tier an injection finding it proves has no taint path. Default false (enrich-only). */
+  securityDeescalate?: boolean;
 }
 
 export interface Config {

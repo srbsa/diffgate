@@ -28,6 +28,10 @@ import {
   applyLearnings,
   predictedSignal,
   realizedSignal,
+  graphStatus,
+  resolveGraphConfig,
+  makeCodeGraphProvider,
+  IMPACT_RULES,
 } from "./core/index.js";
 import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
@@ -180,6 +184,7 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
 
   console.log(formatReport(review.files, review, cwd));
   console.log(c.dim(`\n  diff mode: ${mode}`));
+  maybeGraphTip(allFindings, config);
 
   if (flags["deep"]) await printDeepReviews(allFindings, review.files, config, cwd);
   else if (flags["ai"]) await printAiExplanations(allFindings, review.files, config);
@@ -501,6 +506,62 @@ function cmdStats(pos: string[], flags: Record<string, string | true>): void {
   }
 }
 
+// One-line, non-nagging nudge: only when graphing is on, no index exists, AND the diff actually
+// contains a public-surface finding that a code graph would have enriched.
+function maybeGraphTip(findings: Finding[], config: Config): void {
+  const status = graphStatus(config);
+  if (!status.enabled || status.indexed) return;
+  if (!findings.some((f) => IMPACT_RULES.has(f.ruleId))) return;
+  const how = status.commandFound ? "diffgate graph index" : "install CodeGraph, then `diffgate graph index`";
+  console.log(c.dim(`\n  💡 Cross-file blast radius is off — ${how} to route reviewers by caller count.`));
+}
+
+function cmdGraph(pos: string[], flags: Record<string, string | true>): void {
+  const sub = pos[0] || "status";
+  const cwd = path.resolve(pos[1] || ".");
+  const { config } = loadConfig(cwd);
+  const g = resolveGraphConfig(config);
+  const status = graphStatus(config);
+
+  if (sub === "status") {
+    if (flags["json"]) { console.log(JSON.stringify(status, null, 2)); return; }
+    const dot = (ok: boolean) => (ok ? c.green("●") : c.gray("○"));
+    console.log(`${c.bold("🛡  DiffGate")} ${c.dim("— code graph")}\n`);
+    console.log(`  ${dot(status.enabled)} enabled       ${c.dim(status.enabled ? "yes" : "no (graph.enabled=false / mode=off)")}`);
+    console.log(`  ${dot(status.commandFound)} ${("`" + status.command + "`").padEnd(20)} ${c.dim(status.commandFound ? "found on PATH" : "not on PATH")}`);
+    console.log(`  ${dot(status.indexed)} indexed       ${c.dim(status.indexed ? status.dbPath : "no index")}`);
+    console.log(`\n  ${status.indexed ? c.green("✔ " + status.reason) : c.yellow(status.reason)}`);
+    return;
+  }
+
+  if (sub === "index") {
+    if (g.enabled === false || g.mode === "off") {
+      fail("Graphing is disabled in .diffgate.json (graph.enabled=false / mode=off).");
+    }
+    if (!status.commandFound) {
+      console.log(c.yellow(`✖ ${g.command} not found on PATH.`));
+      console.log(c.dim("\n  Install CodeGraph (github.com/codegraph-ai/CodeGraph), e.g.:"));
+      console.log("    " + c.bold("npm i -g @codegraph-ai/codegraph") + c.dim("   # or download a release binary"));
+      console.log(c.dim(`  Then re-run ${c.bold("diffgate graph index")}. Set "graph.command" if the binary is named differently.`));
+      process.exit(1);
+    }
+    console.log(c.dim(`Indexing ${cwd} with ${g.command}${flags["full"] ? " (full reindex)" : ""}…`));
+    const provider = makeCodeGraphProvider(cwd, g);
+    const ok = typeof provider.reindex === "function" ? provider.reindex({ full: !!flags["full"] }) : false;
+    if (ok) {
+      console.log(c.green(`✔ Indexed. Cross-file blast radius is now active for ${path.basename(cwd)}.`));
+      console.log(c.dim("  CodeGraph keeps the index fresh via filesystem events; re-run after large refactors."));
+    } else {
+      console.log(c.yellow("⚠ Index command returned no confirmation."));
+      console.log(c.dim(`  Verify ${g.command} runs standalone, or index manually per CodeGraph's docs. Checked: ${status.dbPath}`));
+      process.exit(1);
+    }
+    return;
+  }
+
+  fail(`Unknown graph subcommand: ${sub}. Use \`diffgate graph status\` or \`diffgate graph index\`.`);
+}
+
 const INIT_TEMPLATE = {
   testCommand: null,
   gate: { mode: "working", failOn: "orange" },
@@ -561,6 +622,7 @@ ${c.bold("Commands")}
   ${c.blue("guidelines")}   Review diff against AGENTS.md/CLAUDE.md/.cursorrules etc.
   ${c.blue("feedback")}     <ruleId> <file> <line> — dismiss as noise / --confirm (learns)
   ${c.blue("stats")}        Signal-vs-noise report (realized verdicts + predicted diff)
+  ${c.blue("graph")}        Code-graph status / index (cross-file blast radius)
   ${c.blue("init")}         Write a starter .diffgate.json
   ${c.blue("install-hook")} Install a git pre-commit gate
   ${c.blue("mcp")}          Start the MCP stdio server (for coding agents)
@@ -585,7 +647,7 @@ ${c.bold("Examples")}
 
 async function main(): Promise<void> {
   const [, , maybeCmd, ...rest] = process.argv;
-  const known = ["check", "scan", "watch", "explain", "guidelines", "feedback", "stats", "init", "install-hook", "mcp"];
+  const known = ["check", "scan", "watch", "explain", "guidelines", "feedback", "stats", "graph", "init", "install-hook", "mcp"];
   let cmd = maybeCmd;
   let argv = rest;
   if (!cmd || cmd.startsWith("-")) {
@@ -609,6 +671,7 @@ async function main(): Promise<void> {
       case "guidelines": return await cmdGuidelines(pos, flags);
       case "feedback": return cmdFeedback(pos, flags);
       case "stats": return cmdStats(pos, flags);
+      case "graph": return cmdGraph(pos, flags);
       case "init": return cmdInit(pos, flags);
       case "install-hook": return cmdInstallHook(pos, flags);
       case "mcp": return runMcpServer();

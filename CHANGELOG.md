@@ -7,6 +7,25 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.0] — 2026-06-20
+
+### Added
+
+- **Deeper code-graph use** — DiffGate now drives more of CodeGraph than a single `analyze_impact` call:
+  - **`pr_context` is the primary source.** One whole-diff call returns callers, test gaps, suggested reviewers, **stale-doc warnings**, and **cyclomatic complexity** per changed symbol. Findings are enriched from that single payload; symbols it doesn't cover — or any time it's unavailable — fall back to the per-finding `analyze_impact` lookup, so behavior degrades cleanly. Complexity (when high) and stale-doc flags now show in the CLI report, SARIF `properties`, and the VS Code hover.
+  - **`find_related_tests` for authoritative test gaps.** In the fallback path, a changed public symbol with zero covering tests is marked untested directly from the graph instead of inferred.
+  - **`get_edit_context` in the MCP loop.** `diffgate_analyze` attaches callers/tests/recent-history for the highest-blast finding, so a coding agent can fix the call sites **before the generated code is written to disk**.
+- **`diffgate graph` command** — `graph status` shows whether the graph is enabled, the binary is on PATH, and an index exists; `graph index` bootstraps the index (or prints install help when CodeGraph isn't installed). `check` also shows a one-line, non-nagging tip when a public-surface change would benefit from a graph that isn't indexed yet.
+- **Graph-aware security (optional, Pro)** — for injection-class findings (`sql-injection`, `xss-sink`, `nosql-injection`, `path-traversal`, `dangerous-exec`, `prototype-pollution`), a CodeGraph Pro taint analysis answers "does user input actually reach this sink?". A **confirmed taint path** is attached to the finding (source → … → sink) and keeps the gate; a **proven-clean** sink can de-escalate **only when `graph.securityDeescalate` is explicitly enabled** (enrich-only by default — a false "no taint" must never silently hide a vulnerability). Fully optional and a no-op when no security graph is present.
+- **New `graph` config keys** — `prContext`, `relatedTests`, `editContext` (all default `true`), `security` (`"auto"`), and `securityDeescalate` (`false`).
+
+### Notes
+
+- The CodeGraph driver tries each tool by its bare name and retries with the `codegraph_` namespace, tolerating version/profile differences in tool naming.
+- The security pass is validated against CodeGraph's documented tool contract and injected fakes, **not a live Pro binary** — treat the security integration as untested-against-a-real-server until exercised in your environment.
+
+---
+
 ## [0.2.0] — 2026-06-20
 
 ### Added

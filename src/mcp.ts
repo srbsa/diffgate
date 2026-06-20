@@ -19,6 +19,8 @@ import {
   recordLearning,
   getGraph,
   attachImpact,
+  attachSecurity,
+  resolveGraphConfig,
 } from "./core/index.js";
 import type { Finding, Config, FetchFn } from "./core/types.js";
 
@@ -160,7 +162,10 @@ export const TOOL_DEFS = [
   },
 ];
 
-export async function handleAnalyze({ filePath, content, cwd: cwdArg }: { filePath: string; content?: string; cwd?: string }) {
+export async function handleAnalyze(
+  { filePath, content, cwd: cwdArg }: { filePath: string; content?: string; cwd?: string },
+  opts: { graph?: Parameters<typeof attachImpact>[1]["graph"] } = {}
+) {
   const cwd = cwdArg || process.cwd();
   const absPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const { config } = loadConfig(cwd);
@@ -185,8 +190,23 @@ export async function handleAnalyze({ filePath, content, cwd: cwdArg }: { filePa
     analyze({ filePath: absPath, content: actualContent, previousContent, changedLines, config }),
     loadLearnings(repoRoot(cwd) || cwd)
   );
-  // Cross-file blast radius (no-op when no code graph is available).
-  const [withImpact] = attachImpact([result], { cwd, config, graph: getGraph(cwd, config) });
+  // Cross-file blast radius + graph-aware security (no-ops when no code graph is available).
+  const graph = opts.graph !== undefined ? opts.graph : getGraph(cwd, config);
+  let [withImpact] = attachImpact([result], { cwd, config, graph, mode: "working" });
+  [withImpact] = attachSecurity([withImpact], { cwd, config, graph });
+  // Pre-edit context for the agent: callers/tests/history of the highest-blast finding, so it
+  // can fix the call sites before the generated code is ever written to disk.
+  if (graph && typeof graph.editContext === "function" && resolveGraphConfig(config).editContext) {
+    const target = withImpact.findings.find((f) => f.tierAdjusted === "escalated" && f.symbol);
+    if (target) {
+      try {
+        const ec = graph.editContext({ symbol: target.symbol as string, file: absPath, line: target.line, cwd });
+        if (ec) target.editContext = ec;
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
   return withImpact;
 }
 

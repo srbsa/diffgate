@@ -4,7 +4,7 @@ import type { AnalyzeResult, Finding } from "./core/types.js";
 const SARIF_LEVEL: Record<string, string> = { orange: "error", yellow: "warning", green: "note" };
 
 function impactProps(f: Finding): Record<string, unknown> | undefined {
-  if (!f.impact && !f.symbol && !f.tierAdjusted) return undefined;
+  if (!f.impact && !f.symbol && !f.tierAdjusted && !f.security) return undefined;
   const props: Record<string, unknown> = {};
   if (f.symbol) props["symbol"] = f.symbol;
   if (f.tierAdjusted) props["tierAdjusted"] = f.tierAdjusted;
@@ -13,7 +13,14 @@ function impactProps(f: Finding): Record<string, unknown> | undefined {
     if (f.impact.reviewers.length) props["suggestedReviewers"] = f.impact.reviewers;
     if (f.impact.testGaps.length) props["testGaps"] = f.impact.testGaps.map((t) => t.symbol || t.file);
     if (f.impact.reachable !== null) props["reachable"] = f.impact.reachable;
+    if (typeof f.impact.complexity === "number") props["complexity"] = f.impact.complexity;
+    if (f.impact.staleDoc) props["staleDoc"] = true;
     props["impactSource"] = f.impact.source;
+  }
+  if (f.security) {
+    props["tainted"] = f.security.tainted;
+    if (f.security.dataFlow.length) props["dataFlow"] = f.security.dataFlow.map((r) => r.symbol || r.file);
+    props["securitySource"] = f.security.source;
   }
   return props;
 }

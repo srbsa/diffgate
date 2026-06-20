@@ -27,9 +27,14 @@ export { reviewGuidelines, evaluateGuidelines, resolveGuidelinesForFile, applyDe
 export { loadLearnings, recordLearning, applyLearnings, isDismissed, codeHash } from "./learnings.js";
 export { TOOLS as agentTools } from "./agent/tools.js";
 export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier } from "./tiers.js";
-export { getGraph, resolveGraphConfig, makeCodeGraphProvider, codeGraphAvailable, normalizeImpact, DEFAULT_GRAPH_CONFIG } from "./graph/index.js";
-export type { GraphProvider, ImpactQuery, GraphRunner } from "./graph/index.js";
+export {
+  getGraph, resolveGraphConfig, graphStatus, makeCodeGraphProvider, codeGraphAvailable,
+  commandAvailable, graphDbDir, normalizeImpact, normalizePrContext, normalizeEditContext,
+  normalizeSecurity, normalizeTests, DEFAULT_GRAPH_CONFIG,
+} from "./graph/index.js";
+export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, GraphStatus, GraphRunner } from "./graph/index.js";
 export { attachImpact, IMPACT_RULES } from "./impact.js";
+export { attachSecurity, SECURITY_RULES } from "./security.js";
 export { predictedSignal, realizedSignal } from "./signal.js";
 
 import fs from "fs";
@@ -40,6 +45,7 @@ import { overallTier as _overallTier, tierCounts as _tierCounts } from "./tiers.
 import { loadLearnings as _loadLearnings, applyLearnings as _applyLearnings } from "./learnings.js";
 import { getGraph as _getGraph } from "./graph/index.js";
 import { attachImpact as _attachImpact } from "./impact.js";
+import { attachSecurity as _attachSecurity } from "./security.js";
 import type { GraphProvider } from "./graph/index.js";
 import type { Config, AnalyzeResult } from "./types.js";
 
@@ -71,9 +77,10 @@ export function reviewChanges(cwd: string, opts: { mode?: string; graph?: GraphP
     if (result.findings.length > 0) files.push(result);
   }
 
-  // Cross-file blast radius (no-op when no code graph is available).
+  // Cross-file blast radius + graph-aware security (both no-ops when no code graph is available).
   const graph = _getGraph(cwd, config, opts.graph !== undefined ? { provider: opts.graph } : {});
-  files = _attachImpact(files, { cwd, config, graph });
+  files = _attachImpact(files, { cwd, config, graph, mode });
+  files = _attachSecurity(files, { cwd, config, graph });
 
   const allFindings = files.flatMap((f) => f.findings);
   return {
