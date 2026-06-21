@@ -1,7 +1,9 @@
 // Aggregated metrics for the `report` command — the surface engineering leaders buy on.
 // Pure functions over a review + the learnings store; the CLI renders them.
-import type { AnalyzeResult } from "./core/types.js";
+import type { AnalyzeResult, AgentConfig, Finding } from "./core/types.js";
 import type { LearningStore } from "./core/learnings.js";
+import { SECURITY_RULES } from "./core/security.js";
+import { TIER_ORDER } from "./core/tiers.js";
 
 export interface RuleCount {
   rule: string;
@@ -70,23 +72,73 @@ export function buildMetrics(files: AnalyzeResult[], learnings: LearningStore, c
   };
 }
 
-/** Compact machine verdict for coding agents — "can I surface this diff to the human?" */
-export function agentVerdict(files: AnalyzeResult[]): {
-  verdict: "pass" | "blocked";
+/** Autonomy rung for a single finding (see AgentConfig). Deterministic — never uses LLM output. */
+export type AgentRung = "block" | "escalate" | "autofix" | "advisory";
+
+export function rungFor(f: Finding, autoFixFloor: string): AgentRung {
+  // Hard rules (secret, destructive SQL, injection) and graph-confirmed taint are the only true blocks.
+  if (f.blocking) return "block";
+  if (SECURITY_RULES.has(f.ruleId) && f.trust === "confirmed") return "block";
+  // Graph-confirmed high blast radius → hand to a human rather than silently editing call sites.
+  if (f.tierAdjusted === "escalated") return "escalate";
+  if ((TIER_ORDER[f.tier] ?? 0) >= (TIER_ORDER[autoFixFloor] ?? 2)) return "autofix";
+  return "advisory";
+}
+
+interface AgentVerdictFinding {
+  rule: string; tier: string; trust: string; rung: AgentRung;
+  file: string; line: number; message: string;
+}
+
+/**
+ * Compact machine verdict for coding agents — "can I surface this diff to the human?" The autonomy
+ * ladder (config.gate.agent) decides how findings translate to a verdict:
+ *  - "advisory" (default): only `block`-rung findings fail; everything else is "review" (exit 0).
+ *  - "gated": legacy — any orange/blocking finding blocks.
+ *  - "off": never blocks; pure advisory data.
+ */
+export function agentVerdict(
+  files: AnalyzeResult[],
+  agent: AgentConfig = {}
+): {
+  verdict: "pass" | "review" | "blocked";
+  mode: string;
+  budget: { maxFixesPerTurn: number; escalateAfterTurns: number };
   counts: { green: number; yellow: number; orange: number };
-  findings: { rule: string; tier: string; file: string; line: number; message: string }[];
+  findings: AgentVerdictFinding[];
 } {
+  const mode = agent.mode ?? "advisory";
+  const autoFixFloor = agent.autoFixFloor ?? "orange";
   const counts = { green: 0, yellow: 0, orange: 0 };
-  let blocked = false;
-  const findings: { rule: string; tier: string; file: string; line: number; message: string }[] = [];
+  const findings: AgentVerdictFinding[] = [];
+  let hasBlock = false;
+  let hasReview = false; // escalate or autofix rung — worth a human's eyes but not a hard fail
+
   for (const file of files) {
     for (const f of file.findings) {
       if (f.tier in counts) counts[f.tier as keyof typeof counts] += 1;
-      if (f.blocking || f.tier === "orange") blocked = true;
-      findings.push({ rule: f.ruleId, tier: f.tier, file: file.filePath, line: f.line, message: f.message });
+      const rung = rungFor(f, autoFixFloor);
+      if (rung === "block") hasBlock = true;
+      else if (rung === "escalate" || rung === "autofix") hasReview = true;
+      findings.push({
+        rule: f.ruleId, tier: f.tier, trust: f.trust ?? "confirmed", rung,
+        file: file.filePath, line: f.line, message: f.message,
+      });
     }
   }
-  return { verdict: blocked ? "blocked" : "pass", counts, findings };
+
+  let verdict: "pass" | "review" | "blocked";
+  if (mode === "off") verdict = "pass";
+  else if (mode === "gated") verdict = hasBlock || counts.orange > 0 ? "blocked" : "pass";
+  else verdict = hasBlock ? "blocked" : hasReview ? "review" : "pass"; // advisory
+
+  return {
+    verdict,
+    mode,
+    budget: { maxFixesPerTurn: agent.maxFixesPerTurn ?? 3, escalateAfterTurns: agent.escalateAfterTurns ?? 2 },
+    counts,
+    findings,
+  };
 }
 
 function toSorted(m: Map<string, number>): RuleCount[] {

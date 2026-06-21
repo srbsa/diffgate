@@ -6,8 +6,8 @@ import path from "path";
 import { execFileSync } from "child_process";
 
 import { analyze, DEFAULT_CONFIG } from "../dist/core/index.js";
-import { isIgnored } from "../dist/core/config.js";
-import { getChangedLinesForFile, reviewChanges } from "../dist/core/index.js";
+import { isIgnored, loadConfig } from "../dist/core/config.js";
+import { getChangedLinesForFile, reviewChanges, buildCapabilities, capabilityHint } from "../dist/core/index.js";
 
 const cfg = DEFAULT_CONFIG;
 const find = (res, ruleId) => res.findings.find((f) => f.ruleId === ruleId);
@@ -225,4 +225,46 @@ test("prototype-pollution: fires on Object.assign(existing, req.body)", () => {
 test("prototype-pollution: does NOT fire on Object.assign({}, req.body)", () => {
   const res = analyze({ filePath: "h.js", content: "const safe = Object.assign({}, req.body);\n", config: cfg });
   assert.equal(find(res, "prototype-pollution"), undefined);
+});
+
+// --- agent autonomy config + capability manifest ----------------------------
+
+test("DEFAULT_CONFIG ships an advisory agent policy", () => {
+  const a = DEFAULT_CONFIG.gate.agent;
+  assert.equal(a.mode, "advisory");
+  assert.equal(a.autoFixFloor, "orange");
+  assert.equal(a.maxFixesPerTurn, 3);
+  assert.equal(a.escalateAfterTurns, 2);
+  assert.equal(a.trustSource, "deterministic");
+});
+
+test("loadConfig merges a partial gate.agent over the defaults", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grg-cfg-"));
+  fs.writeFileSync(path.join(dir, ".diffgate.json"), JSON.stringify({ gate: { agent: { mode: "off", maxFixesPerTurn: 1 } } }));
+  const { config } = loadConfig(dir);
+  assert.equal(config.gate.agent.mode, "off", "override applied");
+  assert.equal(config.gate.agent.maxFixesPerTurn, 1, "override applied");
+  assert.equal(config.gate.agent.autoFixFloor, "orange", "untouched default kept");
+  assert.equal(config.gate.agent.trustSource, "deterministic", "untouched default kept");
+  assert.equal(config.gate.failOn, "orange", "sibling gate field kept");
+});
+
+test("buildCapabilities reports layers and gates LLM-only tools", () => {
+  const caps = buildCapabilities(DEFAULT_CONFIG, "9.9.9");
+  assert.equal(caps.version, "9.9.9");
+  assert.equal(caps.core, true);
+  assert.equal(caps.llm.available, false, "ai disabled by default");
+  assert.ok(!caps.availableTools.includes("diffgate_explain"), "explain hidden when no LLM");
+  assert.ok(caps.unavailableTools.includes("diffgate_deep_review"));
+  assert.ok(caps.availableTools.includes("diffgate_analyze"));
+  assert.equal(caps.agent.mode, "advisory");
+  assert.ok(caps.protocol.some((p) => /Loop budget/.test(p)), "protocol carries the loop budget");
+  assert.ok(caps.protocol.some((p) => /host mode/.test(p)), "no-LLM protocol warns about host-mode self-review");
+});
+
+test("capabilityHint is a compact 3-field meta", () => {
+  const hint = capabilityHint(DEFAULT_CONFIG);
+  assert.deepEqual(Object.keys(hint).sort(), ["agentMode", "graph", "llm"]);
+  assert.equal(hint.llm, false);
+  assert.equal(hint.agentMode, "advisory");
 });

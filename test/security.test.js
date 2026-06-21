@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { analyze, attachSecurity, SECURITY_RULES, DEFAULT_CONFIG } from "../dist/core/index.js";
+import { analyze, attachSecurity, labelTrust, trustFor, SECURITY_RULES, DEFAULT_CONFIG } from "../dist/core/index.js";
 
 const cfg = DEFAULT_CONFIG;
 const find = (res, ruleId) => res.findings.find((f) => f.ruleId === ruleId);
@@ -119,4 +119,37 @@ test("attachSecurity: null verdict (graph unsure) leaves the finding untouched",
   const g = secGraph(null);
   const [out] = attachSecurity([res], { cwd: "/repo", config: cfg, graph: g.graph });
   assert.equal(find(out, "sql-injection").security, undefined);
+});
+
+// --- deterministic trust labels ---------------------------------------------
+
+test("labelTrust: injection finding with no graph is 'unconfirmed'", () => {
+  const [out] = labelTrust([sqlInjectionResult()]);
+  assert.equal(find(out, "sql-injection").trust, "unconfirmed", "no taint analysis available");
+});
+
+test("labelTrust: a confirmed taint path is 'confirmed'", () => {
+  const g = secGraph({ tainted: true, dataFlow: [{ symbol: "req.query.id" }], source: "codegraph" });
+  let [out] = attachSecurity([sqlInjectionResult()], { cwd: "/repo", config: cfg, graph: g.graph });
+  [out] = labelTrust([out]);
+  assert.equal(find(out, "sql-injection").trust, "confirmed");
+});
+
+test("labelTrust: a graph-cleared sink is 'cleared'", () => {
+  const g = secGraph({ tainted: false, dataFlow: [], source: "codegraph" });
+  let [out] = attachSecurity([sqlInjectionResult()], { cwd: "/repo", config: cfg, graph: g.graph });
+  [out] = labelTrust([out]);
+  assert.equal(find(out, "sql-injection").trust, "cleared");
+});
+
+test("trustFor: non-security deterministic rule is 'confirmed', guideline is 'unconfirmed'", () => {
+  assert.equal(trustFor({ ruleId: "deprecated-api" }), "confirmed");
+  assert.equal(trustFor({ ruleId: "guideline" }), "unconfirmed");
+});
+
+test("labelTrust: preserves an already-set trust label", () => {
+  const res = sqlInjectionResult();
+  res.findings[0].trust = "confirmed";
+  const [out] = labelTrust([res]);
+  assert.equal(find(out, "sql-injection").trust, "confirmed", "did not overwrite");
 });

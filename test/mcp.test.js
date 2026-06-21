@@ -10,6 +10,7 @@ import {
   createWriter,
   handleAnalyze,
   handleCheckStaged,
+  handleCapabilities,
   handleDeepReview,
   TOOL_DEFS,
 } from "../dist/mcp.js";
@@ -194,6 +195,34 @@ test("handleAnalyze is a clean no-op when the injected graph is null", async () 
   }
 });
 
+test("handleAnalyze labels trust and embeds a compact capability hint", async () => {
+  const dir = tmpDir({});
+  const content = `const key = "sk_live_abcdef0123456789abcd";\n`;
+  try {
+    const result = await handleAnalyze({ filePath: path.join(dir, "config.js"), content, cwd: dir }, { graph: null });
+    const f = result.findings.find((x) => x.ruleId === "hardcoded-secret");
+    assert.equal(f.trust, "confirmed", "non-security deterministic rule → confirmed");
+    assert.ok(result._diffgate, "carries a capability hint");
+    assert.deepEqual(Object.keys(result._diffgate).sort(), ["agentMode", "graph", "llm"]);
+    assert.equal(result._diffgate.graph, false, "no graph injected");
+    assert.equal(result._diffgate.agentMode, "advisory");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleAnalyze: injection with no graph is labeled trust:'unconfirmed'", async () => {
+  const dir = tmpDir({});
+  const content = "function q(req){ return db.query(`SELECT * FROM u WHERE id=${req.query.id}`); }\n";
+  try {
+    const result = await handleAnalyze({ filePath: path.join(dir, "db.js"), content, cwd: dir }, { graph: null });
+    const f = result.findings.find((x) => x.ruleId === "sql-injection");
+    assert.equal(f.trust, "unconfirmed", "no taint analysis → unconfirmed");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- handleCheckStaged -------------------------------------------------------
 
 test("handleCheckStaged returns { files, tier, counts, blocking } shape", async () => {
@@ -203,6 +232,27 @@ test("handleCheckStaged returns { files, tier, counts, blocking } shape", async 
   assert.ok("tier" in result, "should have tier");
   assert.ok("counts" in result, "should have counts");
   assert.ok("blocking" in result, "should have blocking");
+  assert.ok(result._diffgate, "carries a capability hint");
+});
+
+// --- handleCapabilities ------------------------------------------------------
+
+test("handleCapabilities reports layers, tools, and the agent budget", async () => {
+  const dir = tmpDir({});
+  const caps = await handleCapabilities({ cwd: dir });
+  assert.equal(caps.core, true);
+  assert.equal(caps.graph.available, false);
+  assert.equal(caps.llm.available, false);
+  assert.ok(caps.availableTools.includes("diffgate_capabilities"));
+  assert.ok(!caps.availableTools.includes("diffgate_explain"), "explain hidden with no LLM");
+  assert.ok(caps.unavailableTools.includes("diffgate_explain"));
+  assert.equal(caps.agent.mode, "advisory");
+  assert.equal(caps.agent.maxFixesPerTurn, 3);
+  assert.ok(Array.isArray(caps.protocol) && caps.protocol.length > 0);
+});
+
+test("diffgate_capabilities is advertised in TOOL_DEFS", () => {
+  assert.ok(TOOL_DEFS.some((t) => t.name === "diffgate_capabilities"));
 });
 
 // --- handleDeepReview --------------------------------------------------------

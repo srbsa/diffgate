@@ -28,7 +28,7 @@ diffgate scan mock_project          # analyze files directly (no git needed)
 diffgate check                      # review your pending git changes (the gate)
 diffgate check --github             # same + emit GitHub Actions inline annotations
 diffgate check --pr                 # CI: post a PR review + commit status (gates merge)
-diffgate check --agent              # compact JSON verdict for coding agents (pass/blocked)
+diffgate check --agent              # machine verdict for coding agents (advisory by default; pass/review/blocked)
 diffgate watch                      # live review as you edit
 diffgate report                     # review metrics: tiers, hotspots, learnings
 diffgate report --compliance        # SOC 2 control evidence for the diff
@@ -94,9 +94,14 @@ deterministic**, then spreads by living where review actually happens — the pu
   so noise suppression is org-wide. Local config/verdicts always win.
 - **Metrics for leaders** — `diffgate report` summarizes tiers, hotspot files, and the
   noise-reduction loop; `--compliance` emits SOC 2 control evidence ([COMPLIANCE.md](COMPLIANCE.md)).
-- **Guardrail for AI agents** — the deterministic core is the trustable checkpoint between
-  agent-written code and a human. Use the MCP server or `check --agent`. See
-  [docs/ai-agents.md](docs/ai-agents.md).
+- **Guardrail for AI agents (without the fix-loop)** — the deterministic core is the
+  trustable checkpoint between agent-written code and a human. An **autonomy ladder**
+  (`gate.agent`) grades each finding into `block` / `escalate` / `autofix` / `advisory` with a
+  per-turn fix budget, so by default agents only hard-stop on the genuine hard rules and
+  surface everything else as `review` instead of looping. `diffgate_capabilities` tells the
+  agent which layers (graph/LLM) are live up front, and a deterministic `trust` label
+  (`confirmed`/`cleared`/`unconfirmed`) keeps it acting on evidence, not on its own confidence.
+  Use the MCP server or `check --agent`. See [docs/ai-agents.md](docs/ai-agents.md).
 
 ---
 
@@ -108,7 +113,10 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 {
   "extends": ["@acme/diffgate-policy"],       // inherit org-wide policy packs (base-first; local wins)
   "testCommand": "npm test",                 // run for orange changes (the gate)
-  "gate": { "mode": "working", "failOn": "orange" },
+  "gate": {
+    "mode": "working", "failOn": "orange",
+    "agent": { "mode": "advisory", "autoFixFloor": "orange", "maxFixesPerTurn": 3, "escalateAfterTurns": 2, "trustSource": "deterministic" }
+  },                                          // agent autonomy ladder: advisory by default (only hard rules block)
   "learnings": { "shared": ["../shared-policy"] }, // merge dismiss/confirm verdicts across repos
   "ai": { "enabled": false, "model": "claude-sonnet-4-6", "apiKeyEnv": "ANTHROPIC_API_KEY" },
 

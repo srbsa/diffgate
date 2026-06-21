@@ -11,7 +11,11 @@ export const DEFAULT_CONFIG: Config = {
   rules: {},
   customPatterns: [],
   ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**", "**/coverage/**", "**/vendor/**", "**/*.min.js"],
-  gate: { mode: "working", failOn: "orange" },
+  gate: {
+    mode: "working",
+    failOn: "orange",
+    agent: { mode: "advisory", autoFixFloor: "orange", maxFixesPerTurn: 3, escalateAfterTurns: 2, trustSource: "deterministic" },
+  },
   ai: {
     enabled: false,
     provider: "anthropic",
@@ -48,6 +52,7 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   const cfg = { ...DEFAULT_CONFIG, ...raw } as Config;
   cfg.ai = { ...DEFAULT_CONFIG.ai, ...(raw.ai || {}) };
   cfg.gate = { ...DEFAULT_CONFIG.gate, ...(raw.gate || {}) };
+  cfg.gate.agent = { ...DEFAULT_CONFIG.gate.agent, ...((raw.gate || {}).agent || {}) };
   cfg.rules = { ...(raw.rules || {}) };
   cfg.deprecated = Array.isArray(raw.deprecated) ? raw.deprecated : DEFAULT_CONFIG.deprecated;
   cfg.customPatterns = Array.isArray(raw.customPatterns) ? raw.customPatterns : [];

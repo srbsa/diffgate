@@ -35,6 +35,10 @@ export interface GuidelinePayload {
   groups: GuidelineGroupPayload[];
   instructions: string;
   schema: Record<string, unknown>;
+  /** Host mode = the calling agent judges its own diff. This is a self-review, NOT an independent
+   *  gate, so it is always advisory: the host must never block a change on these results. */
+  independent: false;
+  advisory: true;
 }
 
 export type GuidelineEvalResult =
@@ -149,7 +153,19 @@ export async function evaluateGuidelines(input: GuidelineEvalInput): Promise<Gui
   if (groups.length === 0) return { mode: "model", findings: [] };
 
   if (chooseBackend(config) === "host") {
-    return { mode: "host", payload: { groups, instructions: `${SYSTEM}\n\n${instructions()}`, schema: RESULT_SCHEMA } };
+    const advisoryNote =
+      "\n\nThis is a SELF-REVIEW (no independent model evaluated the diff). Treat any violations you find " +
+      "as advisory only — surface them, do not block the change on them.";
+    return {
+      mode: "host",
+      payload: {
+        groups,
+        instructions: `${SYSTEM}\n\n${instructions()}${advisoryNote}`,
+        schema: RESULT_SCHEMA,
+        independent: false,
+        advisory: true,
+      },
+    };
   }
 
   const cap = config.guidelines?.tier ?? "yellow";

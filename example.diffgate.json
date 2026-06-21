@@ -7,7 +7,15 @@
   "testCommand": "npm test",
   "gate": {
     "mode": "working",
-    "failOn": "orange"
+    "failOn": "orange",
+    "//agent": "How an agent consumer (MCP / `check --agent`) is gated — graded advice with a budget, not a block on every finding. mode 'advisory' (default) only blocks on hard rules (secrets/destructive-SQL/injection) and graph-confirmed taint; everything else is surfaced as 'review' (exit 0). 'gated' = legacy (orange blocks). 'off' = never blocks. trustSource 'deterministic' keeps LLM output out of the gate decision.",
+    "agent": {
+      "mode": "advisory",
+      "autoFixFloor": "orange",
+      "maxFixesPerTurn": 3,
+      "escalateAfterTurns": 2,
+      "trustSource": "deterministic"
+    }
   },
 
   "ai": {

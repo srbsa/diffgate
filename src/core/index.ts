@@ -35,7 +35,9 @@ export {
 } from "./graph/index.js";
 export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, GraphStatus, GraphRunner } from "./graph/index.js";
 export { attachImpact, IMPACT_RULES } from "./impact.js";
-export { attachSecurity, SECURITY_RULES } from "./security.js";
+export { attachSecurity, SECURITY_RULES, labelTrust, trustFor } from "./security.js";
+export { buildCapabilities, capabilityHint } from "./capabilities.js";
+export type { Capabilities } from "./capabilities.js";
 export { predictedSignal, realizedSignal } from "./signal.js";
 export { isSanitizerCall, resolvesToSanitizer, classifySecret, shannonEntropy } from "./taint.js";
 export { loadState, shouldShowGraphTip, recordGraphTipShown, GRAPH_TIP_LIMIT } from "./state.js";
@@ -48,7 +50,7 @@ import { overallTier as _overallTier, tierCounts as _tierCounts } from "./tiers.
 import { loadMergedLearnings as _loadMergedLearnings, applyLearnings as _applyLearnings } from "./learnings.js";
 import { getGraph as _getGraph } from "./graph/index.js";
 import { attachImpact as _attachImpact } from "./impact.js";
-import { attachSecurity as _attachSecurity } from "./security.js";
+import { attachSecurity as _attachSecurity, labelTrust as _labelTrust } from "./security.js";
 import type { GraphProvider } from "./graph/index.js";
 import type { Config, AnalyzeResult } from "./types.js";
 
@@ -86,6 +88,7 @@ export function reviewChanges(cwd: string, opts: { mode?: string; base?: string;
   const graph = _getGraph(cwd, config, opts.graph !== undefined ? { provider: opts.graph } : {});
   files = _attachImpact(files, { cwd, config, graph, mode });
   files = _attachSecurity(files, { cwd, config, graph });
+  files = _labelTrust(files);
 
   const allFindings = files.flatMap((f) => f.findings);
   return {

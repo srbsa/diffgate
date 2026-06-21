@@ -20,7 +20,10 @@ import {
   getGraph,
   attachImpact,
   attachSecurity,
+  labelTrust,
   resolveGraphConfig,
+  buildCapabilities,
+  capabilityHint,
 } from "./core/index.js";
 import type { Finding, Config, FetchFn } from "./core/types.js";
 
@@ -126,12 +129,24 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: "diffgate_capabilities",
+    description:
+      "Report which DiffGate layers are active (core / code graph / LLM), which tools you can call right now " +
+      "without an error, and the agent autonomy budget (fix limit, escalation, trust source). Call this once up " +
+      "front so you know what's available instead of discovering it via thrown errors.",
+    inputSchema: {
+      type: "object",
+      properties: { cwd: { type: "string", description: "Repo root. Defaults to process.cwd()." } },
+    },
+  },
+  {
     name: "diffgate_guidelines",
     description:
       "Review the diff against the repo's own coding guideline files (AGENTS.md, CLAUDE.md, .cursorrules, etc.), " +
       "scoped per directory (nearest file wins). " +
-      "IMPORTANT: if the result has mode='host', NO external model was used — YOU (the calling agent) must evaluate each " +
-      "group's `hunks` against its `guidelines` text and report violations as findings matching `schema`, using your own model. " +
+      "IMPORTANT: if the result has mode='host', NO external model was used — this is a SELF-REVIEW, not an " +
+      "independent gate: YOU (the calling agent) evaluate each group's `hunks` against its `guidelines` text using " +
+      "your own model. Treat host-mode results as ADVISORY only — never block the change on them. " +
       "If mode='model', findings were produced by the configured provider and are returned directly.",
     inputSchema: {
       type: "object",
@@ -194,6 +209,7 @@ export async function handleAnalyze(
   const graph = opts.graph !== undefined ? opts.graph : getGraph(cwd, config);
   let [withImpact] = attachImpact([result], { cwd, config, graph, mode: "working" });
   [withImpact] = attachSecurity([withImpact], { cwd, config, graph });
+  [withImpact] = labelTrust([withImpact]);
   // Pre-edit context for the agent: callers/tests/history of the highest-blast finding, so it
   // can fix the call sites before the generated code is ever written to disk.
   if (graph && typeof graph.editContext === "function" && resolveGraphConfig(config).editContext) {
@@ -207,12 +223,19 @@ export async function handleAnalyze(
       }
     }
   }
-  return withImpact;
+  return { ...withImpact, _diffgate: capabilityHint(config) };
 }
 
 export async function handleCheckStaged({ cwd: cwdArg, mode = "working" }: { cwd?: string; mode?: string } = {}) {
   const cwd = cwdArg || process.cwd();
-  return reviewChanges(cwd, { mode });
+  const review = reviewChanges(cwd, { mode });
+  return { ...review, _diffgate: capabilityHint(review.config) };
+}
+
+export async function handleCapabilities({ cwd: cwdArg }: { cwd?: string } = {}) {
+  const cwd = cwdArg || process.cwd();
+  const { config } = loadConfig(cwd);
+  return buildCapabilities(config, VERSION);
 }
 
 export async function handleDeepReview(
@@ -285,6 +308,7 @@ export async function handleFeedback(
 const DISPATCH: Record<string, (args: Record<string, unknown>, opts?: unknown) => Promise<unknown>> = {
   diffgate_analyze: (args) => handleAnalyze(args as Parameters<typeof handleAnalyze>[0]),
   diffgate_check_staged: (args) => handleCheckStaged(args as Parameters<typeof handleCheckStaged>[0]),
+  diffgate_capabilities: (args) => handleCapabilities(args as Parameters<typeof handleCapabilities>[0]),
   diffgate_deep_review: (args) => handleDeepReview(args as Parameters<typeof handleDeepReview>[0]),
   diffgate_explain: (args) => handleExplain(args as Parameters<typeof handleExplain>[0]),
   diffgate_guidelines: (args) => handleGuidelines(args as Parameters<typeof handleGuidelines>[0]),

@@ -78,6 +78,11 @@ test("evaluateGuidelines host backend returns materials for the agent (no model)
   assert.deepEqual(res.payload.groups[0].sources, ["AGENTS.md"]);
   assert.match(res.payload.groups[0].guidelines, /Never log secrets/);
   assert.equal(res.payload.groups[0].hunks.length, 1);
+  // Host mode is a self-review, never an independent gate.
+  assert.equal(res.payload.independent, false);
+  assert.equal(res.payload.advisory, true);
+  assert.match(res.payload.instructions, /SELF-REVIEW/);
+  assert.match(res.payload.instructions, /do not block/i);
 });
 
 test("evaluateGuidelines model backend parses findings and caps tier", async () => {

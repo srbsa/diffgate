@@ -193,7 +193,9 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
   }
 
   if (flags["agent"]) {
-    const v = agentVerdict(review.files);
+    const modeOverride = typeof flags["agent-mode"] === "string" ? (flags["agent-mode"] as "advisory" | "gated" | "off") : undefined;
+    const agentCfg = { ...config.gate.agent, ...(modeOverride ? { mode: modeOverride } : {}) };
+    const v = agentVerdict(review.files, agentCfg);
     console.log(JSON.stringify(v, null, 2));
     process.exit(v.verdict === "blocked" && !flags["no-fail"] ? 1 : 0);
   }

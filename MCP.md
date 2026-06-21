@@ -56,12 +56,25 @@ In Cursor Settings → MCP, add:
 
 | Tool | When to use |
 |---|---|
+| `diffgate_capabilities` | **First** — learn which layers (core/graph/LLM) are live, which tools work, and the autonomy budget |
 | `diffgate_analyze` | After writing/modifying a file — check it for risk before suggesting it to the user |
 | `diffgate_check_staged` | Before committing — scan all pending changes across the repo |
 | `diffgate_deep_review` | When `diffgate_analyze` returns an orange finding — investigate blast radius |
 | `diffgate_explain` | Get a concise explanation of any yellow/orange finding |
 | `diffgate_guidelines` | Check the diff against the repo's AGENTS.md/CLAUDE.md coding guidelines |
 | `diffgate_feedback` | Record a dismiss or confirm verdict on a finding (updates learnings) |
+
+### diffgate_capabilities
+
+```json
+{ "cwd": "/path/to/repo" }            // optional: defaults to cwd
+```
+
+Returns `{ version, core, graph: { available, reason }, llm: { available, provider },
+availableTools[], unavailableTools[], agent: { mode, autoFixFloor, maxFixesPerTurn,
+escalateAfterTurns, trustSource, failOn }, protocol[] }`. Call it once up front so you know
+which tools work (e.g. `diffgate_explain` errors with no LLM) and the autonomy budget to
+respect — rather than discovering missing layers via thrown errors mid-loop.
 
 ### diffgate_analyze
 
@@ -74,9 +87,11 @@ In Cursor Settings → MCP, add:
 ```
 
 Returns a structured analysis result. Key fields:
-- `findings[]` — list of findings, each with `{ ruleId, tier, title, message, line, fix? }`
+- `findings[]` — list of findings, each with `{ ruleId, tier, trust, title, message, line, fix? }`
+- `trust` (per finding) — deterministic confidence: `"confirmed"` (a signal backs it) · `"cleared"` (graph proved no taint path) · `"unconfirmed"` (no signal could confirm/deny — flag for a human, don't silently "fix")
 - `tier` — overall tier: `"green"` | `"yellow"` | `"orange"`
 - `blocking` — true if any finding should block a commit
+- `_diffgate` — compact capability hint `{ graph, llm, agentMode }`
 
 When a code graph is available, public-surface findings also carry:
 - `impact` — `{ callerCount, reviewers[], testGaps[], reachable, complexity?, staleDoc? }` — cross-file blast radius
@@ -131,7 +146,7 @@ Reviews the diff against the repo's own coding-guideline files (`AGENTS.md`, `CL
 { "cwd": "/path/to/repo", "mode": "working" }
 ```
 
-**Host mode (default when no provider is configured):** returns `{ mode: "host", groups: [...] }` where each group contains the guideline text and the relevant diff hunks. **When you receive this, evaluate the hunks against the guidelines yourself and surface any violations as findings.** This costs zero tokens on DiffGate's side — you use your own model and credits.
+**Host mode (default when no provider is configured):** returns `{ mode: "host", payload: { groups: [...], independent: false, advisory: true } }` where each group contains the guideline text and the relevant diff hunks. **When you receive this, evaluate the hunks against the guidelines yourself and surface any violations as findings.** This costs zero tokens on DiffGate's side — you use your own model and credits. Because you are judging your own diff, host mode is a **self-review, not an independent gate** (`independent: false`): treat results as **advisory only — never block the change on them**.
 
 **Model mode:** DiffGate calls the configured provider and returns `{ mode: "model", findings: [...] }` directly.
 

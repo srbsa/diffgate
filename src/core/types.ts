@@ -39,6 +39,15 @@ export interface Finding {
   security?: SecurityVerdict | null;
   /** Pre-edit context (callers/tests/history) for a high-blast finding — MCP analyze only. */
   editContext?: EditContext | null;
+  /**
+   * Deterministic confidence label for the agent autonomy ladder, set by a graph-independent pass:
+   *  - "confirmed"   a high-trust deterministic signal backs the risk (a graph taint path, or a
+   *                  non-security deterministic pattern/AST rule).
+   *  - "cleared"     a high-trust signal disproved it (the graph found no taint path to the sink).
+   *  - "unconfirmed" no deterministic signal could confirm/deny it (an injection-class pattern with
+   *                  no code graph, or an LLM-derived guideline finding). Treat as advisory.
+   */
+  trust?: "confirmed" | "unconfirmed" | "cleared" | null;
 }
 
 /** A single location in the codebase (a call site, a missing-test target, etc.). */
@@ -122,6 +131,31 @@ export interface AnalyzeResult {
 export interface GateConfig {
   failOn: Tier;
   mode: "staged" | "working";
+  /** How an agent consumer (MCP / `check --agent`) is gated. See AgentConfig. */
+  agent?: AgentConfig;
+}
+
+/**
+ * Autonomy policy for an agent consumer. The aim is graded advice with a budget — not a hard block
+ * on every finding — so agents self-correct without infinite fix-loops or needless human interrupts.
+ */
+export interface AgentConfig {
+  /**
+   * - "advisory" (default): only `blocking` findings (the hard rules) and graph-confirmed taint
+   *   actually block; everything else is surfaced as "review" and never fails the agent gate.
+   * - "gated": legacy — anything at/above the gate tier blocks (orange blocks).
+   * - "off": never blocks; pure advisory data, the agent owns every decision.
+   */
+  mode?: "advisory" | "gated" | "off";
+  /** Findings at/above this tier are the agent's auto-fix rung; below it they are informational. Default "orange". */
+  autoFixFloor?: Tier;
+  /** Loop budget: max DiffGate fixes an agent should apply in one turn before pausing. Default 3. */
+  maxFixesPerTurn?: number;
+  /** Escalate to a human when the same finding survives this many agent turns. Default 2. */
+  escalateAfterTurns?: number;
+  /** Source of truth for the gate decision. "deterministic" (default) keeps LLM output (explain)
+   *  out of the gate — only graph/AST/pattern signals can move a rung. "any" lets all signals count. */
+  trustSource?: "deterministic" | "any";
 }
 
 export interface AiDeepReviewConfig {

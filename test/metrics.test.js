@@ -55,3 +55,48 @@ test("agentVerdict", async (t) => {
     assert.equal(v.verdict, "pass");
   });
 });
+
+test("agentVerdict autonomy ladder", async (t) => {
+  await t.test("advisory (default): a non-blocking orange is 'review', not 'blocked'", () => {
+    const v = agentVerdict([file("/r/a.js", [finding("network-call", "orange", { blocking: false })])]);
+    assert.equal(v.verdict, "review");
+    assert.equal(v.mode, "advisory");
+    assert.equal(v.findings[0].rung, "autofix");
+  });
+
+  await t.test("advisory: a hard (blocking) finding blocks", () => {
+    const v = agentVerdict([file("/r/a.js", [finding("hardcoded-secret", "orange", { blocking: true })])]);
+    assert.equal(v.verdict, "blocked");
+    assert.equal(v.findings[0].rung, "block");
+  });
+
+  await t.test("advisory: a graph-confirmed taint blocks even when not flagged blocking", () => {
+    const v = agentVerdict([file("/r/a.js", [finding("xss-sink", "orange", { blocking: false, trust: "confirmed" })])]);
+    assert.equal(v.verdict, "blocked");
+    assert.equal(v.findings[0].rung, "block");
+  });
+
+  await t.test("advisory: an escalated (high blast radius) finding is 'review' + 'escalate' rung", () => {
+    const v = agentVerdict([file("/r/a.js", [finding("public-api-change", "orange", { blocking: false, tierAdjusted: "escalated" })])]);
+    assert.equal(v.verdict, "review");
+    assert.equal(v.findings[0].rung, "escalate");
+  });
+
+  await t.test("off mode never blocks", () => {
+    const v = agentVerdict([file("/r/a.js", [finding("hardcoded-secret", "orange", { blocking: true })])], { mode: "off" });
+    assert.equal(v.verdict, "pass");
+  });
+
+  await t.test("gated mode keeps legacy orange-blocks behavior", () => {
+    const v = agentVerdict([file("/r/a.js", [finding("network-call", "orange", { blocking: false })])], { mode: "gated" });
+    assert.equal(v.verdict, "blocked");
+  });
+
+  await t.test("echoes mode + budget for the agent", () => {
+    const v = agentVerdict([file("/r/a.js", [finding("todo-marker", "green")])], { mode: "advisory", maxFixesPerTurn: 5, escalateAfterTurns: 4 });
+    assert.equal(v.verdict, "pass");
+    assert.deepEqual(v.budget, { maxFixesPerTurn: 5, escalateAfterTurns: 4 });
+    assert.equal(v.findings[0].rung, "advisory");
+    assert.equal(v.findings[0].trust, "confirmed", "defaults to confirmed when unset");
+  });
+});

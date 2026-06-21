@@ -21,6 +21,30 @@ export const SECURITY_RULES = new Set([
   "sql-injection", "nosql-injection", "xss-sink", "path-traversal", "dangerous-exec", "prototype-pollution",
 ]);
 
+/** Deterministic trust label for a single finding (see Finding.trust). Pure; no graph call. */
+export function trustFor(finding: Finding): NonNullable<Finding["trust"]> {
+  // LLM-derived guideline findings are non-deterministic — never auto-trusted.
+  if (finding.ruleId === "guideline") return "unconfirmed";
+  if (SECURITY_RULES.has(finding.ruleId)) {
+    if (finding.security?.tainted === true) return "confirmed";  // graph traced a taint path
+    if (finding.security?.tainted === false) return "cleared";   // graph proved no taint path
+    return "unconfirmed";                                        // pattern guess, no taint analysis
+  }
+  // Non-security findings come from deterministic pattern/AST detection — the detection IS the proof.
+  return "confirmed";
+}
+
+/**
+ * Attach the deterministic trust label to every finding. Runs whether or not a code graph is
+ * present (so core-only setups still get honest "unconfirmed" labels on injection guesses).
+ */
+export function labelTrust(files: AnalyzeResult[]): AnalyzeResult[] {
+  return files.map((result) => ({
+    ...result,
+    findings: result.findings.map((f) => (f.trust ? f : { ...f, trust: trustFor(f) })),
+  }));
+}
+
 function tierPinned(config: Partial<Config>, ruleId: string): boolean {
   const ov = config.rules?.[ruleId];
   return !!(ov && typeof ov === "object" && (ov.tier !== undefined || ov.blocking !== undefined));
