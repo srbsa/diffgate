@@ -7,6 +7,28 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.2] — 2026-06-21
+
+Hardening of the agent autonomy ladder (0.4.1): make the budget enforceable where a session actually exists, surface trust in the IDE, and close config/CLI footguns.
+
+### Added
+
+- **Opt-in budget enforcement** ([src/core/session.ts](src/core/session.ts)). DiffGate stays stateless and deterministic by default (a CI/pre-commit gate is a pure function of the diff). But in the two contexts that have a real agent loop, it now counts how many gate checks a finding has survived and escalates when it outlasts `escalateAfterTurns`:
+  - **MCP** (one server process == one session): `diffgate_check_staged` adds an `agentBudget` block listing findings that have recurred past the budget — the external "stop re-fixing, escalate to a human" signal an agent can't self-enforce.
+  - **CLI**: `diffgate check --agent --session=<id>` (or `$DIFFGATE_AGENT_SESSION`) promotes over-budget findings to the `escalate` rung, surfacing them as `review`. Without a session id, behavior is unchanged and deterministic. `agentVerdict` gains an `escalations` count and a per-finding `overBudget` flag.
+  - Session ledger is idle-window scoped (30 min) and per-`sessionId`, so unrelated runs never bleed into each other.
+- **Trust in the VS Code hover.** Findings now carry their deterministic trust label (`confirmed` / `cleared` / `unconfirmed`) in the editor, so the same orange finding reads "pattern/AST match" vs "no taint analysis available — verify before acting". Kept quiet for green/yellow deterministic matches to avoid noise.
+
+### Changed
+
+- **`gate.agent.mode` (and `failOn`, `agent.autoFixFloor`, `agent.trustSource`) are now validated at config load** — a typo like `"gated2"` throws a clear error instead of silently falling back to advisory behavior.
+- **Host-mode guideline payload is structurally non-blocking.** `diffgate_guidelines` host mode now returns `blocking: false` plus a `reason`, so a harness can honor the advisory constraint without parsing prose (in addition to the existing `independent:false`/`advisory:true`).
+- **`diffgate_capabilities` protocol text** now states plainly that the loop budget is *self-enforced* (DiffGate cannot reject the Nth fix per call) and that MCP/`--session` runs emit a hard-stop budget signal.
+
+### Fixed
+
+- **`--agent-mode` space form no longer silently ignored.** `diffgate check --agent-mode gated` (no `=`) warns to stderr instead of quietly staying advisory; an unknown value also warns. Documented in `--help`.
+
 ## [0.4.0] — 2026-06-20
 
 ### Added — native security signal (no code graph required)

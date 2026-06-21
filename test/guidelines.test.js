@@ -81,6 +81,9 @@ test("evaluateGuidelines host backend returns materials for the agent (no model)
   // Host mode is a self-review, never an independent gate.
   assert.equal(res.payload.independent, false);
   assert.equal(res.payload.advisory, true);
+  // Structural restatement so a harness can honor the constraint without parsing prose.
+  assert.equal(res.payload.blocking, false);
+  assert.match(res.payload.reason, /never block/i);
   assert.match(res.payload.instructions, /SELF-REVIEW/);
   assert.match(res.payload.instructions, /do not block/i);
 });

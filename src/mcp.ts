@@ -24,11 +24,18 @@ import {
   resolveGraphConfig,
   buildCapabilities,
   capabilityHint,
+  recordTurn,
+  findingFingerprint,
 } from "./core/index.js";
 import type { Finding, Config, FetchFn } from "./core/types.js";
 
 declare const __DIFFGATE_VERSION__: string;
 const VERSION = typeof __DIFFGATE_VERSION__ !== "undefined" ? __DIFFGATE_VERSION__ : "0.0.0";
+
+// One MCP server process == one agent session. This id keys the budget ledger so we can count how
+// many gate checks a finding has survived this session — the one place DiffGate can honestly give
+// the agent the external "stop re-fixing, escalate" signal it cannot enforce statelessly per call.
+const MCP_SESSION = `mcp:${process.pid}:${Date.now()}`;
 
 const SEP = Buffer.from("\r\n\r\n");
 
@@ -232,7 +239,29 @@ export async function handleCheckStaged({ cwd: cwdArg, mode = "working" }: { cwd
   // Omit `config` from the MCP payload: it bloats the agent context window every call and
   // exposes resolved config (ai.apiKeyEnv, customPatterns, extends paths, …) to the agent.
   const { config, ...rest } = review;
-  return { ...rest, _diffgate: capabilityHint(config) };
+  const out: Record<string, unknown> = { ...rest, _diffgate: capabilityHint(config) };
+  // Budget signal: each check_staged is one "turn". When a finding outlasts escalateAfterTurns this
+  // session, surface it so the agent escalates to a human instead of looping. Best-effort.
+  try {
+    const root = repoRoot(cwd) || cwd;
+    const escalateAfterTurns = config.gate?.agent?.escalateAfterTurns ?? 2;
+    const entries = review.files.flatMap((fr) => fr.findings.map((f) => ({ file: fr.filePath, finding: f })));
+    const { overBudget, turns } = recordTurn(root, MCP_SESSION, entries, { escalateAfterTurns });
+    if (overBudget.size > 0) {
+      out.agentBudget = {
+        escalateAfterTurns,
+        message: `${overBudget.size} finding(s) have survived ${escalateAfterTurns}+ gate checks this session. Escalate to a human with context instead of re-fixing.`,
+        overBudget: review.files.flatMap((fr) =>
+          fr.findings
+            .filter((f) => overBudget.has(findingFingerprint(fr.filePath, f)))
+            .map((f) => ({ rule: f.ruleId, file: fr.filePath, line: f.line, turns: turns.get(findingFingerprint(fr.filePath, f)) }))
+        ),
+      };
+    }
+  } catch {
+    /* budget is best-effort — never break a check */
+  }
+  return out;
 }
 
 export async function handleCapabilities({ cwd: cwdArg }: { cwd?: string } = {}) {

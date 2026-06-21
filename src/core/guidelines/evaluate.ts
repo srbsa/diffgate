@@ -39,6 +39,11 @@ export interface GuidelinePayload {
    *  gate, so it is always advisory: the host must never block a change on these results. */
   independent: false;
   advisory: true;
+  /** Structural restatement of the advisory constraint: a harness can check `blocking === false`
+   *  without parsing prose. Host-mode findings can never gate a change. */
+  blocking: false;
+  /** Human/agent-readable reason the result is non-blocking, so the constraint travels with the data. */
+  reason: string;
 }
 
 export type GuidelineEvalResult =
@@ -164,6 +169,8 @@ export async function evaluateGuidelines(input: GuidelineEvalInput): Promise<Gui
         schema: RESULT_SCHEMA,
         independent: false,
         advisory: true,
+        blocking: false,
+        reason: "host-mode self-review: no independent model evaluated the diff — surface findings, never block on them.",
       },
     };
   }

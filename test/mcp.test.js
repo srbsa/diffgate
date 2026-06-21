@@ -4,6 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { Readable, Writable, PassThrough } from "stream";
+import { execSync } from "node:child_process";
 
 import {
   createReader,
@@ -234,6 +235,29 @@ test("handleCheckStaged returns { files, tier, counts, blocking } shape", async 
   assert.ok("blocking" in result, "should have blocking");
   assert.ok(result._diffgate, "carries a capability hint");
   assert.ok(!("config" in result), "omits resolved config from the MCP payload");
+  assert.ok(!("agentBudget" in result), "no budget alert when there are no findings");
+});
+
+test("handleCheckStaged flags an over-budget finding after escalateAfterTurns checks", async () => {
+  const dir = tmpDir({});
+  execSync("git init -q", { cwd: dir });
+  fs.writeFileSync(path.join(dir, "config.js"), `const key = "sk_live_abcdef0123456789abcd";\n`);
+  try {
+    const r1 = await handleCheckStaged({ cwd: dir });
+    assert.ok(
+      r1.files.some((f) => f.findings.some((x) => x.ruleId === "hardcoded-secret")),
+      "the secret is found"
+    );
+    assert.ok(!("agentBudget" in r1), "1st check: under the budget, no alert");
+
+    // The same finding survives a 2nd gate check (default escalateAfterTurns=2) → budget alert.
+    const r2 = await handleCheckStaged({ cwd: dir });
+    assert.ok(r2.agentBudget, "2nd check: finding outlasted the budget → agentBudget present");
+    assert.equal(r2.agentBudget.overBudget[0].rule, "hardcoded-secret");
+    assert.equal(r2.agentBudget.overBudget[0].turns, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- handleCapabilities ------------------------------------------------------

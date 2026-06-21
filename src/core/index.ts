@@ -41,6 +41,7 @@ export type { Capabilities } from "./capabilities.js";
 export { predictedSignal, realizedSignal } from "./signal.js";
 export { isSanitizerCall, resolvesToSanitizer, classifySecret, shannonEntropy } from "./taint.js";
 export { loadState, shouldShowGraphTip, recordGraphTipShown, GRAPH_TIP_LIMIT } from "./state.js";
+export { recordTurn, findingFingerprint, loadSession, clearSession, DEFAULT_SESSION_TTL_MS } from "./session.js";
 
 import fs from "fs";
 import { analyze } from "./analyzer.js";

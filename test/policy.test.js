@@ -71,6 +71,36 @@ test("config extends (org policy packs)", async (t) => {
   });
 });
 
+test("config validation of enum fields", async (t) => {
+  await t.test("rejects an invalid gate.agent.mode (no silent fallback)", () => {
+    const dir = tmp();
+    write(dir, ".diffgate.json", { gate: { agent: { mode: "gated2" } } });
+    assert.throws(() => loadConfig(dir), /agent\.mode must be one of/);
+  });
+
+  await t.test("rejects an invalid gate.failOn", () => {
+    const dir = tmp();
+    write(dir, ".diffgate.json", { gate: { failOn: "red" } });
+    assert.throws(() => loadConfig(dir), /failOn must be one of/);
+  });
+
+  await t.test("rejects an invalid agent.autoFixFloor and trustSource", () => {
+    const d1 = tmp();
+    write(d1, ".diffgate.json", { gate: { agent: { autoFixFloor: "purple" } } });
+    assert.throws(() => loadConfig(d1), /autoFixFloor must be one of/);
+    const d2 = tmp();
+    write(d2, ".diffgate.json", { gate: { agent: { trustSource: "vibes" } } });
+    assert.throws(() => loadConfig(d2), /trustSource must be one of/);
+  });
+
+  await t.test("accepts valid values", () => {
+    const dir = tmp();
+    write(dir, ".diffgate.json", { gate: { failOn: "yellow", agent: { mode: "off", autoFixFloor: "green", trustSource: "any" } } });
+    const { config } = loadConfig(dir);
+    assert.equal(config.gate.agent.mode, "off");
+  });
+});
+
 test("shared learnings (org-wide noise suppression)", async (t) => {
   await t.test("merges shared + local stores; local wins per id", () => {
     const shared = tmp();

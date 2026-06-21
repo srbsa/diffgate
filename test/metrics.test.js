@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert";
 import { buildMetrics, agentVerdict } from "../dist/metrics.js";
+import { findingFingerprint } from "../dist/core/session.js";
 
 function finding(ruleId, tier, over = {}) {
   return { ruleId, tier, blocking: tier === "orange", title: ruleId, message: "m", line: 1, column: 0, endLine: 1, endColumn: 1, code: "", fix: null, ...over };
@@ -98,5 +99,32 @@ test("agentVerdict autonomy ladder", async (t) => {
     assert.deepEqual(v.budget, { maxFixesPerTurn: 5, escalateAfterTurns: 4 });
     assert.equal(v.findings[0].rung, "advisory");
     assert.equal(v.findings[0].trust, "confirmed", "defaults to confirmed when unset");
+    assert.equal(v.escalations, 0, "no escalations without a tracked session");
+  });
+});
+
+test("agentVerdict budget overrun (opt-in session)", async (t) => {
+  await t.test("an over-budget advisory finding is promoted to 'escalate' → 'review'", () => {
+    const yellow = finding("network-call", "yellow", { code: "fetch(x)" });
+    const over = new Set([findingFingerprint("/r/a.js", yellow)]);
+    const v = agentVerdict([file("/r/a.js", [yellow])], { mode: "advisory" }, { overBudget: over });
+    assert.equal(v.findings[0].rung, "escalate");
+    assert.equal(v.findings[0].overBudget, true);
+    assert.equal(v.escalations, 1);
+    assert.equal(v.verdict, "review", "escalation surfaces a non-blocking finding for human review");
+  });
+
+  await t.test("a blocking finding stays 'block' even when over budget", () => {
+    const secret = finding("hardcoded-secret", "orange", { blocking: true, code: "sk_live_x" });
+    const over = new Set([findingFingerprint("/r/a.js", secret)]);
+    const v = agentVerdict([file("/r/a.js", [secret])], { mode: "advisory" }, { overBudget: over });
+    assert.equal(v.findings[0].rung, "block");
+    assert.equal(v.verdict, "blocked");
+  });
+
+  await t.test("no overBudget set → no escalation (deterministic default)", () => {
+    const v = agentVerdict([file("/r/a.js", [finding("network-call", "yellow", { code: "fetch(x)" })])], { mode: "advisory" });
+    assert.equal(v.findings[0].rung, "advisory");
+    assert.equal(v.escalations, 0);
   });
 });

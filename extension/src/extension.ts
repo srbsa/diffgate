@@ -26,6 +26,8 @@ import {
   getGraph,
   attachImpact,
   attachSecurity,
+  labelTrust,
+  SECURITY_RULES,
 } from "../../src/core/index.js";
 import type { Finding, AnalyzeResult, Config } from "../../src/core/types.js";
 
@@ -111,6 +113,29 @@ function buildRange(finding: Finding, document: vscode.TextDocument | null): vsc
   return new vscode.Range(startLine, startCol, startLine, endCol);
 }
 
+// One-line trust note for the hover. Kept quiet for the common case (green/yellow deterministic
+// matches) so it only speaks up where it changes what a reviewer/agent should do: any orange
+// finding, or any finding DiffGate could not deterministically confirm.
+function trustHover(f: Finding): string | null {
+  const trust = f.trust;
+  if (!trust) return null;
+  if (f.tier !== "orange" && trust === "confirmed") return null;
+  const sec = SECURITY_RULES.has(f.ruleId);
+  if (trust === "unconfirmed") {
+    const why = f.ruleId === "guideline"
+      ? "LLM-derived guideline — no deterministic signal"
+      : sec
+        ? "no taint analysis available — a code graph would confirm or clear this"
+        : "no deterministic signal could confirm this";
+    return `$(question) **Unconfirmed** — ${why}. Verify before acting; don't silently "fix".`;
+  }
+  if (trust === "cleared") {
+    return `$(pass) **Cleared** — the code graph found no user-input path to this sink.`;
+  }
+  // confirmed (only reached for orange, per the guard above)
+  return `$(verified) **Confirmed** — ${sec ? "a graph taint path" : "a deterministic pattern/AST match"} backs this finding.`;
+}
+
 function toDiagnostic(finding: Finding, document: vscode.TextDocument | null): vscode.Diagnostic {
   const d = new vscode.Diagnostic(buildRange(finding, document), `${finding.title}: ${finding.message}`, severityFor(finding));
   d.source = "diffgate";
@@ -189,6 +214,9 @@ function analyzeDocument(document: vscode.TextDocument): void {
       /* impact is best-effort */
     }
   }
+  // Deterministic trust label (graph-independent): "confirmed" / "cleared" / "unconfirmed". Surfaced
+  // in the hover so the same orange finding reads "pattern match" vs "no taint analysis available".
+  res = labelTrust([res])[0];
   diagnostics.set(document.uri, res.findings.map((f) => toDiagnostic(f, document)));
   findingsByUri.set(document.uri.toString(), { res, folder, config });
 
@@ -291,6 +319,8 @@ const hoverProvider: vscode.HoverProvider = {
           md.appendMarkdown(`> $(shield) **No taint path** in the code graph${f.tierAdjusted === "deescalated" ? " _(down-tiered)_" : ""}.\n\n`);
         }
       }
+      const trustLine = trustHover(f);
+      if (trustLine) md.appendMarkdown(`> ${trustLine}\n\n`);
       const vKey = `${document.uri.toString()}::${f.ruleId}::${f.line}`;
       const cached = verdictCache.get(vKey);
       if (cached) {

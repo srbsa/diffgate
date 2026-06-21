@@ -36,6 +36,7 @@ import {
   IMPACT_RULES,
   shouldShowGraphTip,
   recordGraphTipShown,
+  recordTurn,
 } from "./core/index.js";
 import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
@@ -75,6 +76,24 @@ function resolveMode(flags: Record<string, string | true>, config: Config): stri
   if (flags["staged"]) return "staged";
   if (flags["working"]) return "working";
   return config.gate.mode || "working";
+}
+
+const AGENT_MODES = ["advisory", "gated", "off"] as const;
+
+/** Resolve `--agent-mode=<mode>`, warning on the two footguns: the space form (`--agent-mode gated`,
+ *  which the `key=value` parser drops) and an unknown value. Returns undefined → use configured mode. */
+function resolveAgentMode(flags: Record<string, string | true>): (typeof AGENT_MODES)[number] | undefined {
+  const raw = flags["agent-mode"];
+  if (raw === undefined) return undefined;
+  if (raw === true) {
+    console.error(c.yellow("⚠ --agent-mode needs a value: use --agent-mode=advisory|gated|off (the space form is ignored). Falling back to configured mode."));
+    return undefined;
+  }
+  if (!(AGENT_MODES as readonly string[]).includes(raw)) {
+    console.error(c.yellow(`⚠ Unknown --agent-mode=${raw}; expected advisory|gated|off. Falling back to configured mode.`));
+    return undefined;
+  }
+  return raw as (typeof AGENT_MODES)[number];
 }
 
 async function printAiExplanations(findings: Finding[], files: AnalyzeResult[], config: Config, limit = 8): Promise<void> {
@@ -193,9 +212,18 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
   }
 
   if (flags["agent"]) {
-    const modeOverride = typeof flags["agent-mode"] === "string" ? (flags["agent-mode"] as "advisory" | "gated" | "off") : undefined;
+    const modeOverride = resolveAgentMode(flags);
     const agentCfg = { ...config.gate.agent, ...(modeOverride ? { mode: modeOverride } : {}) };
-    const v = agentVerdict(review.files, agentCfg);
+    // Budget enforcement is opt-in (a session id) so CI/one-shot runs stay deterministic. With a
+    // session, findings that outlast escalateAfterTurns are promoted to a human-review escalation.
+    const sessionId = typeof flags["session"] === "string" ? (flags["session"] as string) : process.env.DIFFGATE_AGENT_SESSION || undefined;
+    let overBudget: Set<string> | undefined;
+    if (sessionId && agentCfg.mode !== "off") {
+      const root = repoRoot(cwd) || cwd;
+      const entries = review.files.flatMap((fr) => fr.findings.map((f) => ({ file: fr.filePath, finding: f })));
+      overBudget = recordTurn(root, sessionId, entries, { escalateAfterTurns: agentCfg.escalateAfterTurns ?? 2 }).overBudget;
+    }
+    const v = agentVerdict(review.files, agentCfg, overBudget ? { overBudget } : {});
     console.log(JSON.stringify(v, null, 2));
     process.exit(v.verdict === "blocked" && !flags["no-fail"] ? 1 : 0);
   }
@@ -765,7 +793,9 @@ ${c.bold("Options")}
   --sarif            SARIF 2.1.0 output (GitHub code scanning)
   --github           GitHub Actions inline PR annotations
   --pr[=<n>]         Post a PR review + commit status (needs GITHUB_TOKEN); --pr-dry-run to preview
-  --agent            Compact JSON verdict for coding agents (pass/blocked)
+  --agent            Compact JSON verdict for coding agents (pass/review/blocked)
+  --agent-mode=<m>   advisory|gated|off — override gate.agent.mode (note: the = is required)
+  --session=<id>     Track findings across calls in this id; escalate ones that outlast the budget
 
 ${c.bold("Examples")}
   diffgate check --staged

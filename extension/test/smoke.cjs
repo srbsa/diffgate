@@ -180,6 +180,7 @@ assert.equal(secret.source, "diffgate");
 const hover = captured.hoverProvider.provideHover(doc, new Position(1, 4));
 assert.ok(hover && hover.contents.value.includes("Hardcoded secret"), "hover should describe the finding");
 assert.ok(hover.contents.value.includes("Explain with AI"), "hover should offer AI explain");
+assert.ok(hover.contents.value.includes("Confirmed"), "hover should surface the trust label on an orange finding");
 
 // Code actions on the deprecated-api line (line index 2) -> should include a fix
 const depDiag = diags.find((d) => d.code === "deprecated-api");

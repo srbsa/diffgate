@@ -48,10 +48,13 @@ function buildProtocol(opts: { graph: boolean; llm: boolean; agent: Required<Age
   const lines = [
     `Severity rungs: fix findings at/above '${agent.autoFixFloor}' only in code you just wrote; ` +
       `surface 'yellow'/'green' as notes, do not auto-fix.`,
-    `Loop budget: apply at most ${agent.maxFixesPerTurn} DiffGate fixes per turn. If a fix creates a ` +
-      `new finding, STOP and report — do not re-fix.`,
+    `Loop budget (self-enforced): DiffGate is stateless per call and CANNOT reject your Nth fix — YOU ` +
+      `must cap at ${agent.maxFixesPerTurn} DiffGate-driven fixes per turn. If a fix creates a new ` +
+      `finding, STOP and report; do not re-fix.`,
     `Escalate (don't block): when the same finding survives ${agent.escalateAfterTurns} turns, hand it ` +
-      `to the human with context instead of trying again.`,
+      `to the human with context instead of trying again. In an MCP or '--session' run, DiffGate ` +
+      `tracks this and flags it (response 'agentBudget' / a finding's rung becomes 'escalate') — treat ` +
+      `that as a hard stop.`,
     `Trust the label, not your confidence: act on a finding's 'trust' field. 'confirmed' = real; ` +
       `'cleared' = safe; 'unconfirmed' = flag for a human, don't silently "fix".`,
     `False positives: use diffgate_feedback {verdict:"dismiss"} with a reason rather than changing correct code.`,

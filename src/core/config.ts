@@ -63,7 +63,29 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   cfg.graph = { ...DEFAULT_CONFIG.graph, ...(raw.graph || {}) };
   if (raw.learnings) cfg.learnings = raw.learnings as Config["learnings"];
   delete cfg.extends;
+  validate(cfg);
   return cfg;
+}
+
+const TIERS = ["green", "yellow", "orange"];
+const AGENT_MODES = ["advisory", "gated", "off"];
+const TRUST_SOURCES = ["deterministic", "any"];
+
+/** Enforce the enum-valued config fields so a typo fails loudly at load instead of silently
+ *  falling back to a default behavior (e.g. agent.mode:"gated2" → silent advisory). */
+function validate(cfg: Config): void {
+  const oneOf = (label: string, val: unknown, allowed: string[]) => {
+    if (val !== undefined && (typeof val !== "string" || !allowed.includes(val))) {
+      throw new Error(`gate config: ${label} must be one of ${allowed.map((a) => `"${a}"`).join(" | ")}, got ${JSON.stringify(val)}`);
+    }
+  };
+  oneOf("failOn", cfg.gate.failOn, TIERS);
+  const agent = cfg.gate.agent;
+  if (agent) {
+    oneOf("agent.mode", agent.mode, AGENT_MODES);
+    oneOf("agent.autoFixFloor", agent.autoFixFloor, TIERS);
+    oneOf("agent.trustSource", agent.trustSource, TRUST_SOURCES);
+  }
 }
 
 type RawConfig = Partial<Config> & Record<string, unknown>;

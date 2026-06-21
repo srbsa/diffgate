@@ -4,6 +4,7 @@ import type { AnalyzeResult, AgentConfig, Finding } from "./core/types.js";
 import type { LearningStore } from "./core/learnings.js";
 import { SECURITY_RULES } from "./core/security.js";
 import { TIER_ORDER } from "./core/tiers.js";
+import { findingFingerprint } from "./core/session.js";
 
 export interface RuleCount {
   rule: string;
@@ -88,6 +89,8 @@ export function rungFor(f: Finding, autoFixFloor: string): AgentRung {
 interface AgentVerdictFinding {
   rule: string; tier: string; trust: string; rung: AgentRung;
   file: string; line: number; message: string;
+  /** True when this finding has outlasted the agent's escalation budget this session (see opts). */
+  overBudget?: boolean;
 }
 
 /**
@@ -99,30 +102,43 @@ interface AgentVerdictFinding {
  */
 export function agentVerdict(
   files: AnalyzeResult[],
-  agent: AgentConfig = {}
+  agent: AgentConfig = {},
+  opts: { overBudget?: Set<string> } = {}
 ): {
   verdict: "pass" | "review" | "blocked";
   mode: string;
   budget: { maxFixesPerTurn: number; escalateAfterTurns: number };
+  /** Count of findings that outlasted the escalation budget (0 unless a session was tracked). */
+  escalations: number;
   counts: { green: number; yellow: number; orange: number };
   findings: AgentVerdictFinding[];
 } {
   const mode = agent.mode ?? "advisory";
   const autoFixFloor = agent.autoFixFloor ?? "orange";
+  const overBudget = opts.overBudget;
   const counts = { green: 0, yellow: 0, orange: 0 };
   const findings: AgentVerdictFinding[] = [];
   let hasBlock = false;
   let hasReview = false; // escalate or autofix rung — worth a human's eyes but not a hard fail
+  let escalations = 0;
 
   for (const file of files) {
     for (const f of file.findings) {
       if (f.tier in counts) counts[f.tier as keyof typeof counts] += 1;
-      const rung = rungFor(f, autoFixFloor);
+      let rung = rungFor(f, autoFixFloor);
+      // Budget overrun (only when a session was tracked): a finding the agent keeps re-touching is
+      // promoted to 'escalate' so it surfaces for human review instead of feeding another fix-loop.
+      const over = !!overBudget && overBudget.has(findingFingerprint(file.filePath, f));
+      if (over) {
+        escalations += 1;
+        if (rung === "autofix" || rung === "advisory") rung = "escalate";
+      }
       if (rung === "block") hasBlock = true;
       else if (rung === "escalate" || rung === "autofix") hasReview = true;
       findings.push({
         rule: f.ruleId, tier: f.tier, trust: f.trust ?? "confirmed", rung,
         file: file.filePath, line: f.line, message: f.message,
+        ...(over ? { overBudget: true } : {}),
       });
     }
   }
@@ -136,6 +152,7 @@ export function agentVerdict(
     verdict,
     mode,
     budget: { maxFixesPerTurn: agent.maxFixesPerTurn ?? 3, escalateAfterTurns: agent.escalateAfterTurns ?? 2 },
+    escalations,
     counts,
     findings,
   };
