@@ -1,0 +1,34 @@
+name: Publish VS Code extension
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install core deps
+        run: npm ci
+
+      - name: Build core (extension bundles it)
+        run: npm run build
+
+      - name: Install extension deps + package
+        run: npm ci --prefix extension && npm run package --prefix extension
+
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish --packagePath extension/diffgate-*.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX (Cursor / Windsurf / Gitpod)
+        run: npx ovsx publish extension/diffgate-*.vsix -p ${{ secrets.OVSX_TOKEN }}
+        continue-on-error: true  # don't fail the release if Open VSX is temporarily unavailable

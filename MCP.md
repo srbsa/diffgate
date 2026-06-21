@@ -5,11 +5,20 @@ Expose the diffgate engine to any coding agent that supports MCP (Claude Code, C
 ## Quick start
 
 ```bash
-npm install -g .          # or: npm link
-diffgate mcp             # starts the stdio server; clients launch it for you
+npm install -g diffgate-review   # install once globally
 ```
 
-## Register with Claude Code
+### Claude Code (one command)
+
+```bash
+claude mcp add diffgate -- diffgate mcp
+```
+
+That's it. Restart Claude Code and `diffgate` appears in your MCP tools list.
+
+> **Or install the Desktop Extension (.mcpb)** — download `diffgate.mcpb` from the [latest release](https://github.com/srbsa/diffgate/releases/latest) and open it in Claude Desktop for one-click install.
+
+### Manual registration (Claude Code / any agent)
 
 Add to `~/.claude/mcp.json` (global) or `.mcp.json` in your project root:
 

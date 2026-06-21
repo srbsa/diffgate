@@ -24,7 +24,9 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "mock_project",
+    ".github/workflows/diffgate.yml"
   ],
   "scripts": {
     "build": "node esbuild.config.js && tsc -p tsconfig.types.json",

@@ -1,0 +1,67 @@
+{
+  "manifest_version": "0.4",
+  "name": "diffgate",
+  "display_name": "DiffGate",
+  "version": "0.4.2",
+  "description": "Diff-aware, three-tiered code review gate. Reviews only changed lines, gates high-impact changes (secrets, schema drops, injection sinks, public-API drift) while letting safe edits fly through.",
+  "author": {
+    "name": "DiffGate",
+    "url": "https://github.com/srbsa/diffgate"
+  },
+  "repository": "https://github.com/srbsa/diffgate",
+  "license": "Apache-2.0",
+
+  "server": {
+    "type": "node",
+    "entry_point": "dist/cli.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/cli.js", "mcp"]
+    }
+  },
+
+  "tools": [
+    {
+      "name": "diffgate_capabilities",
+      "description": "Learn which layers (core/graph/LLM) are live. Call first so you know which tools work and what the autonomy budget is."
+    },
+    {
+      "name": "diffgate_analyze",
+      "description": "Check a file for risk findings before surfacing it. Returns tier (green/yellow/orange), blocking flag, and per-finding trust labels."
+    },
+    {
+      "name": "diffgate_check_staged",
+      "description": "Scan all pending git changes across the repo. Returns aggregate tier and per-file findings."
+    },
+    {
+      "name": "diffgate_deep_review",
+      "description": "Agentic blast-radius analysis for an orange finding (requires ai.enabled). Returns confirmed-risk / likely-safe / needs-human verdict."
+    },
+    {
+      "name": "diffgate_explain",
+      "description": "Plain-English explanation and fix suggestion for a finding (requires ai.enabled)."
+    },
+    {
+      "name": "diffgate_guidelines",
+      "description": "Check the diff against the repo's AGENTS.md / CLAUDE.md / .cursorrules coding guidelines."
+    },
+    {
+      "name": "diffgate_feedback",
+      "description": "Record a dismiss or confirm verdict on a finding. Dismissed findings are suppressed in all future reviews."
+    }
+  ],
+
+  "user_config": [
+    {
+      "name": "ANTHROPIC_API_KEY",
+      "title": "Anthropic API Key",
+      "description": "Optional. Required only for diffgate_deep_review and diffgate_explain when provider is 'anthropic'. The core deterministic gate works without any key.",
+      "required": false,
+      "sensitive": true
+    }
+  ],
+
+  "compatibility": {
+    "claude_desktop": ">=0.10.0"
+  }
+}

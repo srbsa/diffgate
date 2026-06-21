@@ -1,0 +1,46 @@
+name: Build and release Desktop Extension (.mcpb)
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+jobs:
+  build-mcpb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm ci
+
+      - name: Build distributable
+        run: npm run build
+
+      - name: Stamp version in manifest
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('extension.manifest.json','utf8'));
+            m.version = '$VERSION';
+            fs.writeFileSync('extension.manifest.json', JSON.stringify(m, null, 2));
+          "
+
+      - name: Bundle into .mcpb (zip)
+        run: |
+          mkdir -p mcpb_staging
+          cp extension.manifest.json mcpb_staging/manifest.json
+          cp -r dist mcpb_staging/dist
+          cp package.json mcpb_staging/
+          # install prod-only deps inside the bundle so it's self-contained
+          cd mcpb_staging && npm install --omit=dev --ignore-scripts 2>/dev/null; cd ..
+          cd mcpb_staging && zip -r ../diffgate.mcpb . && cd ..
+
+      - name: Upload .mcpb to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: diffgate.mcpb

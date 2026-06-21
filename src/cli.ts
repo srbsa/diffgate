@@ -721,6 +721,33 @@ const INIT_TEMPLATE = {
 function cmdInit(pos: string[], flags: Record<string, string | true>): void {
   const cwd = path.resolve(pos[0] || ".");
   const target = path.join(cwd, ".diffgate.json");
+
+  // --demo: skip config write, run a scan of the bundled mock_project so new users
+  // see what DiffGate output looks like before they have any uncommitted changes.
+  if (flags["demo"]) {
+    const mockDir = path.resolve(path.dirname(CLI_PATH), "..", "mock_project");
+    if (!fs.existsSync(mockDir)) {
+      console.log(c.yellow("mock_project not found — run `diffgate scan <path>` against your own files."));
+      return;
+    }
+    const { config } = loadConfig(cwd);
+    const filePaths = [...walkFiles(mockDir, config, mockDir)];
+    const files: AnalyzeResult[] = [];
+    for (const fp of filePaths) {
+      let content: string;
+      try { content = fs.readFileSync(fp, "utf-8"); } catch { continue; }
+      const res = analyze({ filePath: fp, content, config });
+      if (res.findings.length > 0) files.push(res);
+    }
+    const allFindings = files.flatMap((f) => f.findings);
+    const review = { files, counts: tierCounts(allFindings), tier: overallTier(allFindings), blocking: allFindings.some((f) => f.blocking) };
+    console.log(c.bold("\n🛡  DiffGate — demo scan of bundled mock_project\n"));
+    console.log(c.dim("  This is what DiffGate looks like on real code. Run `diffgate check` on your own diff.\n"));
+    console.log(formatReport(files, review, mockDir));
+    console.log(c.dim("\n  Next: `diffgate init` to write a config, or `diffgate check` to review your pending changes."));
+    return;
+  }
+
   if (fs.existsSync(target) && !flags["force"]) {
     fail(`.diffgate.json already exists. Use --force to overwrite.`);
   }
@@ -734,7 +761,7 @@ function cmdInit(pos: string[], flags: Record<string, string | true>): void {
   }
   fs.writeFileSync(target, JSON.stringify(template, null, 2) + "\n");
   console.log(c.green(`✔ Wrote ${path.relative(process.cwd(), target)}`));
-  console.log(c.dim("  Next: `diffgate check` to review your diff, or `diffgate install-hook` for a pre-commit gate."));
+  console.log(c.dim("  Next: `diffgate check` to review your diff, `diffgate init --demo` to see example output, or `diffgate install-hook` for a pre-commit gate."));
 }
 
 function cmdInstallHook(pos: string[], flags: Record<string, string | true>): void {
@@ -777,7 +804,7 @@ ${c.bold("Commands")}
   ${c.blue("feedback")}     <ruleId> <file> <line> — dismiss as noise / --confirm (learns)
   ${c.blue("stats")}        Signal-vs-noise report (realized verdicts + predicted diff)
   ${c.blue("graph")}        Code-graph status / index (cross-file blast radius)
-  ${c.blue("init")}         Write a tailored .diffgate.json (auto-detects test cmd/langs)
+  ${c.blue("init")}         Write a tailored .diffgate.json (auto-detects test cmd/langs) · --demo to preview output
   ${c.blue("install-hook")} Install a git pre-commit gate
   ${c.blue("mcp")}          Start the MCP stdio server (for coding agents)
 

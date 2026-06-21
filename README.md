@@ -20,43 +20,68 @@ It runs two ways from one shared engine:
 
 ## Quick start
 
-```bash
-npm install            # installs the engine + @babel/parser
-npm link               # optional: makes `diffgate` available globally
+**Install once, works everywhere:**
 
-diffgate scan mock_project          # analyze files directly (no git needed)
-diffgate check                      # review your pending git changes (the gate)
-diffgate check --github             # same + emit GitHub Actions inline annotations
-diffgate check --pr                 # CI: post a PR review + commit status (gates merge)
-diffgate check --agent              # machine verdict for coding agents (advisory by default; pass/review/blocked)
-diffgate watch                      # live review as you edit
-diffgate report                     # review metrics: tiers, hotspots, learnings
-diffgate report --compliance        # SOC 2 control evidence for the diff
-diffgate bench                      # noise benchmark (precision/recall/false-blocks)
-diffgate guidelines                 # review diff against your repo's AGENTS.md/CLAUDE.md etc.
-diffgate feedback <ruleId> <f> <l>  # record a dismiss/confirm verdict on a finding
-diffgate stats                      # signal-vs-noise report (realized verdicts + predicted diff)
-diffgate graph status               # is the code graph enabled / installed / indexed?
-diffgate graph index                # build the cross-file index (or print install help)
-diffgate init                       # write a tailored .diffgate.json (auto-detects test cmd/langs)
-diffgate install-hook               # add a git pre-commit gate
-diffgate mcp                        # start the MCP stdio server
+```bash
+npm install -g diffgate-review
+cd your-repo
+diffgate init          # auto-detects language + test command, writes .diffgate.json
+diffgate check         # review your pending changes right now
 ```
 
-> No git repo? `check`/`watch` fall back gracefully; use `scan` to analyze files directly.
+**No uncommitted changes yet?** See what the output looks like before changing anything:
+
+```bash
+diffgate init --demo   # live scan of bundled examples — no config or git changes needed
+```
+
+**Pre-commit hook (installs in ~2 seconds, only tests on 🟠 orange):**
+
+```bash
+diffgate install-hook  # adds .git/hooks/pre-commit — does NOT run your test suite on safe edits
+```
+
+> The hook only runs tests when a change is genuinely high-impact (orange tier). Green and yellow changes pass instantly. The gate is fast because it's selective.
+
+### Coding agent (Claude Code / Cursor)
+
+```bash
+# Claude Code — one command:
+claude mcp add diffgate -- diffgate mcp
+
+# Cursor — add to MCP settings:
+# { "diffgate": { "command": "diffgate", "args": ["mcp"] } }
+```
+
+Or install the **Desktop Extension** for one-click setup: download [`diffgate.mcpb`](https://github.com/srbsa/diffgate/releases/latest) and open it in Claude Desktop.
 
 ### VS Code extension
 
-```bash
-npm install --prefix extension
-npm run build --prefix extension
-```
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=diffgate.diffgate-review) or [Open VSX](https://open-vsx.org/extension/diffgate/diffgate-review) (Cursor / Windsurf / Gitpod).
 
-Press **F5** in this repo ("Run DiffGate Extension") to launch a dev host, or build an installable package:
+---
+
+### Full command reference
 
 ```bash
-npm run package --prefix extension   # produces extension/diffgate-*.vsix
-# then: code --install-extension extension/diffgate-0.1.2.vsix
+diffgate check                      # review pending changes (the gate)
+diffgate check --staged             # staged-only (pre-commit)
+diffgate check --github             # + emit GitHub Actions inline annotations
+diffgate check --pr                 # CI: post PR review + commit status (gates merge)
+diffgate check --agent              # machine verdict for coding agents
+diffgate watch                      # live review as you edit
+diffgate scan <path>                # analyze files directly (no git needed)
+diffgate report                     # review metrics: tiers, hotspots, learnings
+diffgate report --compliance        # SOC 2 control evidence for the diff
+diffgate bench                      # noise benchmark (precision/recall/false-blocks)
+diffgate guidelines                 # review diff against AGENTS.md/CLAUDE.md etc.
+diffgate feedback <ruleId> <f> <l>  # record a dismiss/confirm verdict
+diffgate stats                      # signal-vs-noise report
+diffgate graph status               # is the code graph enabled / installed / indexed?
+diffgate graph index                # build the cross-file index
+diffgate init                       # write a tailored .diffgate.json
+diffgate install-hook               # add a git pre-commit gate
+diffgate mcp                        # start the MCP stdio server
 ```
 
 ---
@@ -79,29 +104,67 @@ Engine layout: [`src/core`](src/core) (shared) · [`src/cli.ts`](src/cli.ts) (CL
 
 ## Team adoption
 
-DiffGate is built around one thesis: a reviewer earns trust by being **quiet and
-deterministic**, then spreads by living where review actually happens — the pull request.
+DiffGate earns trust by being quiet and deterministic, then spreads by living where review actually happens — the pull request.
 
-- **PR-native review** — `diffgate check --pr` posts inline review comments + a `diffgate`
-  commit status on the PR; orange findings fail the check. Make it a required check and
-  it's a merge gate, not another comment to scroll past. Drop-in
-  [GitHub Action](.github/workflows/diffgate.yml) + [App scaffold](docs/github-app.md).
-- **Provable low noise** — `diffgate bench` scores precision/recall and, the metric that
-  predicts adoption, **false blocks per clean change** (target: 0). Corpus is versioned and
-  offline so anyone can reproduce it. See [BENCHMARK.md](BENCHMARK.md).
-- **Org-wide policy packs** — `extends` lets repos inherit a shared `.diffgate.json` (a
-  path or an npm package); `learnings.shared` merges dismiss/confirm verdicts across repos
-  so noise suppression is org-wide. Local config/verdicts always win.
-- **Metrics for leaders** — `diffgate report` summarizes tiers, hotspot files, and the
-  noise-reduction loop; `--compliance` emits SOC 2 control evidence ([COMPLIANCE.md](COMPLIANCE.md)).
-- **Guardrail for AI agents (without the fix-loop)** — the deterministic core is the
-  trustable checkpoint between agent-written code and a human. An **autonomy ladder**
-  (`gate.agent`) grades each finding into `block` / `escalate` / `autofix` / `advisory` with a
-  per-turn fix budget, so by default agents only hard-stop on the genuine hard rules and
-  surface everything else as `review` instead of looping. `diffgate_capabilities` tells the
-  agent which layers (graph/LLM) are live up front, and a deterministic `trust` label
-  (`confirmed`/`cleared`/`unconfirmed`) keeps it acting on evidence, not on its own confidence.
-  Use the MCP server or `check --agent`. See [docs/ai-agents.md](docs/ai-agents.md).
+### Step 1 — Add the GitHub Action (zero infrastructure)
+
+Drop [`.github/workflows/diffgate.yml`](.github/workflows/diffgate.yml) into your repo. On every PR it posts inline review comments + a `diffgate` commit status. Make it a required status check (Settings → Branches → require `diffgate`) and orange findings block merge.
+
+See [docs/github-app.md](docs/github-app.md) for the one-click org-wide App option.
+
+### Step 2 — Provable low noise
+
+Before rolling it out, show the team the numbers. `diffgate bench` runs against a versioned corpus offline — anyone can reproduce it:
+
+```bash
+diffgate bench
+# 100% precision / 100% recall / 0.00 false blocks per clean change
+```
+
+The gate only ever fires on changes that are genuinely high-impact. Safe edits — comments, logging, formatting — are never blocked. See [BENCHMARK.md](BENCHMARK.md).
+
+### Step 3 — Spread noise suppression across the team
+
+When DiffGate flags something that *isn't* actually risky, dismiss it once and it's gone for everyone:
+
+```bash
+diffgate feedback <ruleId> <file> <line> --dismiss   # suppress this pattern org-wide
+git add .diffgate/learnings.json && git commit -m "chore: suppress <ruleId> false positive"
+```
+
+Committed `learnings.json` is automatically applied by every developer and in CI. To merge verdicts from a shared policy repo:
+
+```jsonc
+// .diffgate.json
+{
+  "learnings": { "shared": ["../shared-policy/.diffgate"] }
+}
+```
+
+### Step 4 — Org-wide policy (no npm package required)
+
+Policy packs can be a local path — no npm publishing needed:
+
+```jsonc
+// repos/<any-repo>/.diffgate.json
+{
+  "extends": ["../../shared/.diffgate.json"]   // relative path to a shared config file
+}
+```
+
+Or an npm package when you're ready to formalize: `"extends": ["@acme/diffgate-policy"]`.
+
+### Step 5 — Metrics for leaders
+
+```bash
+diffgate report            # tier breakdown, hotspot files, noise-reduction trend
+diffgate report --compliance  # SOC 2 control evidence (COMPLIANCE.md)
+diffgate stats             # signal-vs-noise: realized verdicts + predicted ratio
+```
+
+### Guardrail for AI agents
+
+The deterministic core is the trustable checkpoint between agent-written code and a human. An **autonomy ladder** (`gate.agent`) grades each finding into `block` / `escalate` / `autofix` / `advisory` with a per-turn fix budget, so agents only hard-stop on genuine hard rules and surface everything else as `review`. `diffgate_capabilities` tells the agent which layers are live up front. See [docs/ai-agents.md](docs/ai-agents.md).
 
 ---
 
@@ -111,7 +174,7 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 
 ```jsonc
 {
-  "extends": ["@acme/diffgate-policy"],       // inherit org-wide policy packs (base-first; local wins)
+  "extends": ["../../shared/.diffgate.json"],  // path (no npm required) or npm package e.g. "@acme/diffgate-policy"
   "testCommand": "npm test",                 // run for orange changes (the gate)
   "gate": {
     "mode": "working", "failOn": "orange",
