@@ -70,6 +70,10 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
 const TIERS = ["green", "yellow", "orange"];
 const AGENT_MODES = ["advisory", "gated", "off"];
 const TRUST_SOURCES = ["deterministic", "any"];
+const GATE_MODES = ["staged", "working"];
+const EVALUATORS = ["auto", "model", "host"];
+const GRAPH_MODES = ["cli", "off"];
+const GRAPH_PROVIDERS = ["codegraph"];
 
 /** Enforce the enum-valued config fields so a typo fails loudly at load instead of silently
  *  falling back to a default behavior (e.g. agent.mode:"gated2" → silent advisory). */
@@ -79,12 +83,30 @@ function validate(cfg: Config): void {
       throw new Error(`gate config: ${label} must be one of ${allowed.map((a) => `"${a}"`).join(" | ")}, got ${JSON.stringify(val)}`);
     }
   };
+  const boolOrAuto = (label: string, val: unknown) => {
+    if (val !== undefined && val !== true && val !== false && val !== "auto") {
+      throw new Error(`gate config: ${label} must be one of true | false | "auto", got ${JSON.stringify(val)}`);
+    }
+  };
+  oneOf("gate.mode", cfg.gate.mode, GATE_MODES);
   oneOf("failOn", cfg.gate.failOn, TIERS);
   const agent = cfg.gate.agent;
   if (agent) {
     oneOf("agent.mode", agent.mode, AGENT_MODES);
     oneOf("agent.autoFixFloor", agent.autoFixFloor, TIERS);
     oneOf("agent.trustSource", agent.trustSource, TRUST_SOURCES);
+  }
+  const guidelines = cfg.guidelines;
+  if (guidelines) {
+    oneOf("guidelines.evaluator", guidelines.evaluator, EVALUATORS);
+    oneOf("guidelines.tier", guidelines.tier, TIERS);
+  }
+  const graph = cfg.graph;
+  if (graph) {
+    oneOf("graph.mode", graph.mode, GRAPH_MODES);
+    oneOf("graph.provider", graph.provider, GRAPH_PROVIDERS);
+    boolOrAuto("graph.enabled", graph.enabled);
+    boolOrAuto("graph.security", graph.security);
   }
 }
 

@@ -93,11 +93,51 @@ test("config validation of enum fields", async (t) => {
     assert.throws(() => loadConfig(d2), /trustSource must be one of/);
   });
 
+  await t.test("rejects an invalid gate.mode (no silent fallback to working)", () => {
+    const dir = tmp();
+    write(dir, ".diffgate.json", { gate: { mode: "stagedd" } });
+    assert.throws(() => loadConfig(dir), /gate\.mode must be one of/);
+  });
+
+  await t.test("rejects an invalid guidelines.evaluator and tier", () => {
+    const d1 = tmp();
+    write(d1, ".diffgate.json", { guidelines: { evaluator: "modle" } });
+    assert.throws(() => loadConfig(d1), /guidelines\.evaluator must be one of/);
+    const d2 = tmp();
+    write(d2, ".diffgate.json", { guidelines: { tier: "red" } });
+    assert.throws(() => loadConfig(d2), /guidelines\.tier must be one of/);
+  });
+
+  await t.test("rejects an invalid graph.mode and provider", () => {
+    const d1 = tmp();
+    write(d1, ".diffgate.json", { graph: { mode: "clii" } });
+    assert.throws(() => loadConfig(d1), /graph\.mode must be one of/);
+    const d2 = tmp();
+    write(d2, ".diffgate.json", { graph: { provider: "neo4j" } });
+    assert.throws(() => loadConfig(d2), /graph\.provider must be one of/);
+  });
+
+  await t.test("rejects an invalid graph.enabled / security (boolean | \"auto\")", () => {
+    const d1 = tmp();
+    write(d1, ".diffgate.json", { graph: { enabled: "yes" } });
+    assert.throws(() => loadConfig(d1), /graph\.enabled must be one of/);
+    const d2 = tmp();
+    write(d2, ".diffgate.json", { graph: { security: "sometimes" } });
+    assert.throws(() => loadConfig(d2), /graph\.security must be one of/);
+  });
+
   await t.test("accepts valid values", () => {
     const dir = tmp();
-    write(dir, ".diffgate.json", { gate: { failOn: "yellow", agent: { mode: "off", autoFixFloor: "green", trustSource: "any" } } });
+    write(dir, ".diffgate.json", {
+      gate: { mode: "staged", failOn: "yellow", agent: { mode: "off", autoFixFloor: "green", trustSource: "any" } },
+      guidelines: { evaluator: "host", tier: "orange" },
+      graph: { mode: "off", provider: "codegraph", enabled: false, security: "auto" },
+    });
     const { config } = loadConfig(dir);
     assert.equal(config.gate.agent.mode, "off");
+    assert.equal(config.gate.mode, "staged");
+    assert.equal(config.guidelines.evaluator, "host");
+    assert.equal(config.graph.enabled, false);
   });
 });
 
