@@ -90,7 +90,7 @@ diffgate mcp                        # start the MCP stdio server
 
 - **Diff-aware** — uses `git diff` (CLI) or an in-memory LCS diff (editor, accurate on unsaved buffers) to find changed lines, and only reports findings on those lines.
 - **Real AST for JS/TS** — `@babel/parser` powers precise rules: deprecated calls are not matched inside comments or strings, and exported-signature changes are detected structurally.
-- **Language-agnostic pattern rules** — secrets, SQL/schema changes, auth/crypto, dynamic execution, and injection sinks are detected across Python, Go, Java, Ruby, and any text via pattern rules.
+- **Language-agnostic pattern rules** — secrets, SQL/schema changes, auth/crypto, dynamic execution, and injection sinks are detected across Python, Go, Java, Ruby, and any text via pattern rules. These are **comment-aware**: commented-out code (`# os.system(x)`, `// eval(x)`, `-- DROP TABLE`) is not flagged, while a secret committed *inside* a comment still is. (Need cross-file precision for these languages? A code graph adds it — see below.)
 - **Real gate** — when a change is high-impact, DiffGate runs your `testCommand` and shows the actual exit code and output.
 - **Hybrid AI (optional, provider-agnostic)** — the deterministic engine always runs offline; when `ai.enabled` is true it adds plain-English explanations and fix suggestions. Works with **Anthropic, OpenAI, OpenRouter, Groq, Together, LM Studio, Ollama, or any OpenAI-compatible endpoint**.
 - **Cross-file blast radius (optional code graph)** — when a code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph)) is available, public-surface findings carry deterministic impact (caller count, suggested reviewers, test gaps, complexity, stale docs) sourced from a single `pr_context` call per review. DiffGate uses it to **route attention, not add comments**: a public change with callers stays orange and names the reviewers; one nobody calls de-escalates to yellow and stops blocking. For injection-class findings, an optional Pro taint analysis confirms whether user input reaches the sink. Fully optional and graceful — a no-op when no graph is present.
@@ -176,6 +176,7 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 {
   "extends": ["../../shared/.diffgate.json"],  // path (no npm required) or npm package e.g. "@acme/diffgate-policy"
   "testCommand": "npm test",                 // run for orange changes (the gate)
+  "testScope": true,                         // down-tier orange findings in test/fixture files (secrets & destructive schema stay blocking)
   "gate": {
     "mode": "working", "failOn": "orange",
     "agent": { "mode": "advisory", "autoFixFloor": "orange", "maxFixesPerTurn": 3, "escalateAfterTurns": 2, "trustSource": "deterministic" }
@@ -268,6 +269,8 @@ The engine is **provider-agnostic**. Under the hood there are two wire adapters 
 Disable or re-tier any rule via the `rules` key in `.diffgate.json`.
 
 **Native precision (no code graph needed).** Injection and secret findings are refined deterministically from the file's own AST: an XSS sink whose value comes from a recognized sanitizer (`DOMPurify.sanitize`, `escapeHtml`, `encodeURIComponent`, …) is **down-tiered to a yellow "verify" note** rather than blocking, and `hardcoded-secret` drops env/placeholder/low-entropy matches while always keeping — and labeling — known provider key formats. Down-tiering never *suppresses* a security finding, so a missed sanitizer stays blocking (the safe default).
+
+**Test-file noise control (`testScope`, on by default).** Security findings in test, fixture, and mock files are almost always intentional scaffolding (mock SQL, `eval` in a harness, sample payloads), so a 🟠 orange finding there **down-tiers to 🟡 yellow and stops blocking the gate** — surfaced as a review note, never suppressed. The catastrophic-if-real classes stay blocking even in tests: `hardcoded-secret`, `db-schema-destructive`, and the graph-owned public-surface rules. Pin a rule's tier to opt it out, or set `"testScope": false` to gate test code exactly like production.
 
 ---
 

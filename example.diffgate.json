@@ -5,6 +5,10 @@
   "extends": [],
 
   "testCommand": "npm test",
+
+  "//testScope": "Down-tier non-exempt orange findings in test/fixture/mock files (orange → yellow, non-blocking) so intentional test scaffolding (mock SQL, eval in a harness, sample payloads) doesn't block the gate. Exempt — stay blocking even in tests: hardcoded-secret, db-schema-destructive, and the graph-owned public-surface rules. Set false to gate test code exactly like production.",
+  "testScope": true,
+
   "gate": {
     "mode": "working",
     "failOn": "orange",

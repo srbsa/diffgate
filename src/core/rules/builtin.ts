@@ -154,6 +154,7 @@ export const BUILTIN_RULES: Rule[] = [
     blocking: true,
     title: "Hardcoded secret",
     languages: ["*"],
+    scanRaw: true, // a secret committed inside a comment is still a leak — scan raw text
     message: "This looks like a committed credential. Move it to an environment variable or secret manager and rotate the key.",
     patterns: [
       /\bAKIA[0-9A-Z]{16}\b/,
@@ -287,6 +288,7 @@ export const BUILTIN_RULES: Rule[] = [
     title: "TODO / FIXME marker",
     languages: ["*"],
     enabledByDefault: true,
+    scanRaw: true, // markers live in comments by definition — scan raw text
     message: "Tracked work marker — fine to merge, but make sure it's captured somewhere.",
     patterns: [/\b(?:TODO|FIXME|HACK|XXX)\b/],
   },

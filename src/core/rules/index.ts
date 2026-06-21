@@ -123,11 +123,15 @@ function inChange(ctx: RuleContext, line: number): boolean {
 }
 
 function runPattern(rule: PatternRule, ctx: RuleContext, findings: Finding[]): void {
+  // Match against comment-masked text so commented-out code is not flagged — except rules where a
+  // comment hit is still real (secrets, todo markers), which opt into raw scanning.
+  const scan = rule.scanRaw ? ctx.lines : (ctx.scanLines ?? ctx.lines);
   for (let i = 0; i < ctx.lines.length; i++) {
     const lineNo = i + 1;
     if (!inChange(ctx, lineNo)) continue;
-    const text = ctx.lines[i];
+    const text = scan[i];
     if (!text) continue;
+    const realText = ctx.lines[i] ?? text;
     for (const re of rule.patterns) {
       const m = re.exec(text);
       if (m) {
@@ -145,7 +149,7 @@ function runPattern(rule: PatternRule, ctx: RuleContext, findings: Finding[]): v
             column: m.index,
             endLine: lineNo,
             endColumn: m.index + m[0].length,
-            code: text.trim(),
+            code: realText.trim(),
             message,
             tier,
           })

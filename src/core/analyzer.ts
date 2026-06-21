@@ -1,5 +1,7 @@
 import { detectLanguage, hasAstSupport } from "./parsers/index.js";
 import { parseJs } from "./parsers/javascript.js";
+import { maskComments } from "./mask.js";
+import { applyTestScope } from "./testscope.js";
 import { runRules } from "./rules/index.js";
 import { overallTier, tierCounts, TIER_ORDER } from "./tiers.js";
 import { collectExportedSignatures } from "./signatures.js";
@@ -71,7 +73,8 @@ export function analyze({ filePath, content, previousContent = null, changedLine
     }
   }
 
-  const ctx: RuleContext = { filePath, language, lines, changedLines, config: config as Config, ast };
+  const scanLines = maskComments(lines, language);
+  const ctx: RuleContext = { filePath, language, lines, scanLines, changedLines, config: config as Config, ast };
 
   const findings = runRules({ ast, ctx, config });
 
@@ -83,7 +86,9 @@ export function analyze({ filePath, content, previousContent = null, changedLine
     }
   }
 
-  const deduped = dedupe(findings).sort(
+  const scoped = applyTestScope(findings, filePath, config);
+
+  const deduped = dedupe(scoped).sort(
     (a, b) =>
       a.line - b.line ||
       (TIER_ORDER[b.tier] ?? 0) - (TIER_ORDER[a.tier] ?? 0) ||

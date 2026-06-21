@@ -276,6 +276,9 @@ export interface Config {
   guidelines?: GuidelinesConfig;
   graph?: GraphConfig;
   learnings?: LearningsConfig;
+  /** Down-tier non-exempt orange findings in test/fixture files (orange → yellow, non-blocking).
+   *  Secrets, destructive schema, and graph-owned public-surface rules stay at full tier. Default true. */
+  testScope?: boolean;
 }
 
 // Minimal Babel-compatible AST node type
@@ -292,6 +295,9 @@ export interface RuleContext {
   filePath: string;
   language: string;
   lines: string[];
+  /** `lines` with comment regions blanked to spaces (columns preserved). Pattern rules match
+   *  against this so commented-out code is not flagged; rules with `scanRaw` use `lines`. */
+  scanLines?: string[];
   changedLines: Set<number> | null;
   config: Config;
   ast?: AstNode | null;
@@ -329,6 +335,13 @@ interface RuleBase {
   message?: string | ((match: string) => string);
   enabledByDefault?: boolean;
   skipIfAst?: boolean;
+  /**
+   * Match against the RAW line (comments not masked). For rules where a hit inside a comment is
+   * still a real finding — `hardcoded-secret` (a committed secret is leaked even in a comment) and
+   * `todo-marker` (markers live in comments by definition). Default false: pattern rules see
+   * comment-masked text so commented-out code (`// eval(x)`, `# os.system(...)`) stops being noise.
+   */
+  scanRaw?: boolean;
 }
 
 export interface PatternRule extends RuleBase {

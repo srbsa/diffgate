@@ -7,6 +7,25 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+Adoption-friction pass: make DiffGate trivial to install for individuals and teams, raise non-JS/TS precision, and stop the gate from blocking on test scaffolding. (Additive — suggested release: minor bump to 0.5.0.)
+
+### Added
+
+- **Comment-aware pattern rules** ([src/core/mask.ts](src/core/mask.ts)). Non-JS/TS languages match via regex, so commented-out code (`# os.system(x)`, `// eval(x)`, `-- DROP TABLE`) used to trip security rules. Comment regions are now blanked before matching (columns preserved) across Python, Go, Ruby, Java, C/C++, C#, Rust, SQL, shell, HTML, and more. Strings are left intact (secrets and SQL live in strings), and `hardcoded-secret` / `todo-marker` scan raw text via a new `scanRaw` rule flag (a secret in a comment is still a leak; markers live in comments).
+- **Test-context de-escalation** ([src/core/testscope.ts](src/core/testscope.ts), `testScope` config, default `true`). Non-exempt orange findings in test / fixture / mock files down-tier to yellow and stop blocking the gate — test scaffolding (mock SQL, `eval` in a harness, sample payloads) is almost always intentional. Never suppressed (still shown as a review note). Exempt and still blocking: `hardcoded-secret`, `db-schema-destructive`, and the graph-owned public-surface rules (`public-api-change`, `signature-drift`, `deprecated-api`). Opt out per-rule by pinning its tier, or globally with `testScope: false`.
+- **Language-aware CodeGraph nudge** ([src/cli.ts](src/cli.ts) `maybeGraphTip`). A non-JS/TS repo now gets a quiet, fade-out tip that CodeGraph adds cross-file caller/taint precision for its language — previously the tip only fired on JS/TS public-surface findings, so the users who benefit most never saw it.
+- **`diffgate merge-driver`** ([src/core/learnings.ts](src/core/learnings.ts) `mergeLearningStores`). A git merge driver that auto-resolves parallel `learnings.json` verdicts (set-union by id; newer timestamp wins). `diffgate install-hook` registers it automatically (calls `diffgate` on PATH with a node fallback — no fragile `node_modules` path).
+- **Release automation**: `publish-npm.yml`, `publish-ext.yml`, `publish-mcpb.yml` GitHub Actions publish the CLI (npm, with provenance), the VS Code extension (Marketplace + Open VSX), and a `.mcpb` Desktop Extension on a `v*` tag. Extension version is stamped from the tag.
+- **One-click MCP**: `claude mcp add diffgate -- diffgate mcp`; `extension.manifest.json` ships a Desktop Extension manifest. `diffgate init --demo` previews findings on the bundled `mock_project` so first-run is never empty.
+
+### Fixed
+
+- Extension version synced to the CLI (was stuck at 0.1.5) and given the marketplace metadata it was missing (`icon`, `repository`, `homepage`, `bugs`, `keywords`, `galleryBanner`); added a generated PNG icon. Extension `package` script no longer hardcodes a `0.1.2` filename. Removed stale committed `.vsix` artifacts.
+
+---
+
 ## [0.4.2] — 2026-06-21
 
 Hardening of the agent autonomy ladder (0.4.1): make the budget enforceable where a session actually exists, surface trust in the IDE, and close config/CLI footguns.

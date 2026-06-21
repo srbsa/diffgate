@@ -41,6 +41,35 @@ export function loadLearnings(root: string): LearningStore {
   return { version: 1, entries: [] };
 }
 
+/**
+ * Conflict-free merge of two learnings stores (for the git merge driver). Entries dedupe by id;
+ * when the same id appears in both, the newer `at` timestamp wins (`ours` breaks exact ties).
+ * Output is sorted by id so the file is stable across machines. Pure — no I/O.
+ */
+export function mergeLearningStores(ours: LearningStore, theirs: LearningStore): LearningStore {
+  const byId = new Map<string, Learning>();
+  for (const e of theirs.entries) byId.set(e.id, e);
+  for (const e of ours.entries) {
+    const other = byId.get(e.id);
+    // ours wins on tie; theirs wins only if strictly newer.
+    if (other && other.at && e.at && other.at > e.at) continue;
+    byId.set(e.id, e);
+  }
+  const entries = [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { version: 1, entries };
+}
+
+/** Parse a learnings store from a file path, tolerating a missing/corrupt file. */
+export function readStoreFile(file: string): LearningStore {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
+    if (raw && Array.isArray(raw.entries)) return { version: raw.version || 1, entries: raw.entries };
+  } catch {
+    /* missing or corrupt → empty */
+  }
+  return { version: 1, entries: [] };
+}
+
 /** Resolve a shared-learnings entry (repo root, .diffgate dir, or direct file) to a store path. */
 function resolveSharedPath(entry: string, baseDir: string): string {
   const p = path.isAbsolute(entry) ? entry : path.resolve(baseDir, entry);

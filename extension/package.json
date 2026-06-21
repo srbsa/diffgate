@@ -2,9 +2,31 @@
   "name": "diffgate-review",
   "displayName": "DiffGate",
   "description": "Diff-aware, three-tiered code review gate inline in your editor.",
-  "version": "0.1.5",
+  "version": "0.4.2",
   "publisher": "diffgate",
   "license": "Apache-2.0",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/srbsa/diffgate.git"
+  },
+  "homepage": "https://github.com/srbsa/diffgate#readme",
+  "bugs": {
+    "url": "https://github.com/srbsa/diffgate/issues"
+  },
+  "keywords": [
+    "code review",
+    "security",
+    "diff",
+    "secrets",
+    "sql injection",
+    "pre-commit",
+    "gate"
+  ],
+  "galleryBanner": {
+    "color": "#0d1117",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -166,7 +188,7 @@
   "scripts": {
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "package": "npm run build && vsce package --no-dependencies --out diffgate-0.1.2.vsix"
+    "package": "npm run build && vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/vscode": "^1.90.0",

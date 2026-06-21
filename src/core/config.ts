@@ -27,6 +27,7 @@ export const DEFAULT_CONFIG: Config = {
     deepReview: { maxSteps: 6 },
   },
   testCommand: null,
+  testScope: true,
   guidelines: { enabled: true, autoDetect: true, files: [], maxDepth: 3, maxBytesPerFile: 8000, tier: "yellow", blocking: false, evaluator: "auto" },
   graph: {
     enabled: "auto", provider: "codegraph", command: "codegraph-server", mode: "cli",
@@ -107,6 +108,9 @@ function validate(cfg: Config): void {
     oneOf("graph.provider", graph.provider, GRAPH_PROVIDERS);
     boolOrAuto("graph.enabled", graph.enabled);
     boolOrAuto("graph.security", graph.security);
+  }
+  if (cfg.testScope !== undefined && typeof cfg.testScope !== "boolean") {
+    throw new Error(`config: testScope must be true or false, got ${JSON.stringify(cfg.testScope)}`);
   }
 }
 

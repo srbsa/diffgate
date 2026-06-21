@@ -28,6 +28,8 @@ import {
   recordLearning,
   loadLearnings,
   loadMergedLearnings,
+  mergeLearningStores,
+  readStoreFile,
   applyLearnings,
   predictedSignal,
   realizedSignal,
@@ -38,6 +40,7 @@ import {
   shouldShowGraphTip,
   recordGraphTipShown,
   recordTurn,
+  hasAstSupport,
 } from "./core/index.js";
 import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
@@ -236,7 +239,7 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
 
   console.log(formatReport(review.files, review, cwd));
   console.log(c.dim(`\n  diff mode: ${mode}`));
-  maybeGraphTip(allFindings, config, cwd);
+  maybeGraphTip(review.files, config, cwd);
 
   if (flags["deep"]) await printDeepReviews(allFindings, review.files, config, cwd);
   else if (flags["ai"]) await printAiExplanations(allFindings, review.files, config);
@@ -647,18 +650,35 @@ function cmdStats(pos: string[], flags: Record<string, string | true>): void {
   }
 }
 
-// One-line, non-nagging nudge: only when graphing is on, no index exists, AND the diff actually
-// contains a public-surface finding that a code graph would have enriched. CodeGraph is strictly
-// optional (the engine is fully useful without it), so the tip fades out after a few shows.
-function maybeGraphTip(findings: Finding[], config: Config, cwd: string): void {
+// One-line, non-nagging nudge for CodeGraph, fading out after a few shows. Two triggers, because
+// the value is highest in two cases the deterministic core can't fully serve:
+//   1. a public-surface finding (JS/TS) that cross-file blast radius would enrich, or
+//   2. findings in a NON-AST language (Python/Go/Java/…), which only get pattern-rule precision
+//      in-file — exactly the users CodeGraph helps most (cross-file caller/taint across 38+ langs).
+// Only fires when graphing is enabled and there is no index yet.
+function maybeGraphTip(files: AnalyzeResult[], config: Config, cwd: string): void {
   const status = graphStatus(config);
   if (!status.enabled || status.indexed) return;
-  if (!findings.some((f) => IMPACT_RULES.has(f.ruleId))) return;
   const root = repoRoot(cwd) || cwd;
   if (!shouldShowGraphTip(root)) return;
-  const how = status.commandFound ? "diffgate graph index" : "install CodeGraph, then `diffgate graph index`";
-  console.log(c.dim(`\n  💡 Optional: cross-file blast radius is off — ${how} to route reviewers by caller count.`));
+
+  const findings = files.flatMap((f) => f.findings);
+  const hasImpactFinding = findings.some((f) => IMPACT_RULES.has(f.ruleId));
+  const nonAstLangs = [...new Set(files.filter((f) => f.findings.length > 0 && !hasAstSupport(f.language)).map((f) => f.language))];
+  if (!hasImpactFinding && nonAstLangs.length === 0) return;
+
+  const how = status.commandFound ? "`diffgate graph index`" : "install CodeGraph, then `diffgate graph index`";
+  if (!hasImpactFinding && nonAstLangs.length > 0) {
+    const label = nonAstLangs.length === 1 ? cap(nonAstLangs[0]) : "This codebase";
+    console.log(c.dim(`\n  💡 Optional: ${label} gets pattern-rule precision in-file. CodeGraph adds cross-file caller & taint analysis (38+ languages) — ${how}.`));
+  } else {
+    console.log(c.dim(`\n  💡 Optional: cross-file blast radius is off — ${how} to route reviewers by caller count.`));
+  }
   recordGraphTipShown(root);
+}
+
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function cmdGraph(pos: string[], flags: Record<string, string | true>): void {
@@ -710,6 +730,8 @@ function cmdGraph(pos: string[], flags: Record<string, string | true>): void {
 const INIT_TEMPLATE = {
   testCommand: null,
   gate: { mode: "working", failOn: "orange" },
+  "//testScope": "Down-tier non-exempt orange findings in test/fixture files (orange → yellow, non-blocking) so test scaffolding doesn't block the gate. Secrets & destructive schema stay blocking. Set false to gate test code like prod.",
+  testScope: true,
   ai: { enabled: false, model: "claude-sonnet-4-6", apiKeyEnv: "ANTHROPIC_API_KEY" },
   deprecated: [{ pattern: "OldService.legacyMethod", replacedBy: "NewService.method", author: "Your Team", pr: "PR #000" }],
   customPatterns: [{ id: "no-direct-process-env", tier: "yellow", pattern: "process\\.env\\.", message: "Read config through the typed config module, not process.env directly." }],
@@ -788,7 +810,8 @@ fi
   console.log(c.dim("  It runs `diffgate check --staged` before every commit. Bypass with `git commit --no-verify`."));
 
   // Wire the learnings.json merge driver so parallel dismissals on different branches
-  // auto-merge without conflicts.
+  // auto-merge without conflicts. The driver calls `diffgate merge-driver` on PATH (with a
+  // node fallback), so there is no fragile node_modules path to resolve.
   try {
     const attrPath = path.join(root, ".gitattributes");
     const attrLine = ".diffgate/learnings.json merge=diffgate-learnings";
@@ -798,13 +821,23 @@ fi
       console.log(c.green(`✔ Added merge driver attribute to ${path.relative(cwd, attrPath)}`));
     }
     // Register the driver in .git/config (local, not global — no side effects outside this repo).
-    const driverScript = `node "${path.join(root, "node_modules", "diffgate-review", "scripts", "merge-learnings.js")}" %O %A %B`;
+    // %A = ours (written back), %B = theirs. Base (%O) is not needed for a set-union merge.
+    const driverCmd = `sh -c 'if command -v diffgate >/dev/null 2>&1; then diffgate merge-driver "$1" "$2"; else node "${CLI_PATH}" merge-driver "$1" "$2"; fi' --`;
     execSync(`git config merge.diffgate-learnings.name "DiffGate learnings merge driver"`, { cwd: root, stdio: "ignore" });
-    execSync(`git config merge.diffgate-learnings.driver '${driverScript}'`, { cwd: root, stdio: "ignore" });
+    execSync(`git config 'merge.diffgate-learnings.driver' '${driverCmd} %A %B'`, { cwd: root, stdio: "ignore" });
     console.log(c.green(`✔ Registered learnings.json merge driver (auto-merges parallel verdicts)`));
   } catch {
     console.log(c.dim("  Tip: set up the merge driver manually — see README › Team adoption › Step 3."));
   }
+}
+
+/** Git merge driver for .diffgate/learnings.json. Args: <ours> <theirs>. Writes the union to <ours>. */
+function cmdMergeDriver(pos: string[]): void {
+  const [ours, theirs] = pos;
+  if (!ours || !theirs) fail("merge-driver expects: diffgate merge-driver <ours> <theirs>");
+  const merged = mergeLearningStores(readStoreFile(ours), readStoreFile(theirs));
+  fs.writeFileSync(ours, JSON.stringify(merged, null, 2) + "\n");
+  // exit 0 → conflict resolved
 }
 
 function help(): void {
@@ -855,7 +888,7 @@ ${c.bold("Examples")}
 
 async function main(): Promise<void> {
   const [, , maybeCmd, ...rest] = process.argv;
-  const known = ["check", "scan", "watch", "report", "bench", "explain", "guidelines", "feedback", "stats", "graph", "init", "install-hook", "mcp"];
+  const known = ["check", "scan", "watch", "report", "bench", "explain", "guidelines", "feedback", "stats", "graph", "init", "install-hook", "merge-driver", "mcp"];
   let cmd = maybeCmd;
   let argv = rest;
   if (!cmd || cmd.startsWith("-")) {
@@ -884,6 +917,7 @@ async function main(): Promise<void> {
       case "graph": return cmdGraph(pos, flags);
       case "init": return cmdInit(pos, flags);
       case "install-hook": return cmdInstallHook(pos, flags);
+      case "merge-driver": return cmdMergeDriver(pos);
       case "mcp": return runMcpServer();
       default: return help();
     }

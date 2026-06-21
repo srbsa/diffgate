@@ -21,14 +21,27 @@ jobs:
       - name: Build core (extension bundles it)
         run: npm run build
 
+      - name: Stamp version from tag (keeps ext in lockstep with the release)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          node -e "
+            const fs = require('fs');
+            for (const f of ['package.json', 'extension/package.json']) {
+              const p = JSON.parse(fs.readFileSync(f, 'utf8'));
+              p.version = '$VERSION';
+              fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n');
+            }
+          "
+
       - name: Install extension deps + package
         run: npm ci --prefix extension && npm run package --prefix extension
 
       - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish --packagePath extension/diffgate-*.vsix
+        run: npx @vscode/vsce publish --packagePath "extension/diffgate-review-${VERSION}.vsix"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX (Cursor / Windsurf / Gitpod)
-        run: npx ovsx publish extension/diffgate-*.vsix -p ${{ secrets.OVSX_TOKEN }}
+        run: npx ovsx publish "extension/diffgate-review-${VERSION}.vsix" -p ${{ secrets.OVSX_TOKEN }}
         continue-on-error: true  # don't fail the release if Open VSX is temporarily unavailable
