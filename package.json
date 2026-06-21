@@ -26,6 +26,7 @@
     "dist",
     "src",
     "mock_project",
+    "scripts",
     ".github/workflows/diffgate.yml"
   ],
   "scripts": {

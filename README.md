@@ -132,7 +132,7 @@ diffgate feedback <ruleId> <file> <line> --dismiss   # suppress this pattern org
 git add .diffgate/learnings.json && git commit -m "chore: suppress <ruleId> false positive"
 ```
 
-Committed `learnings.json` is automatically applied by every developer and in CI. To merge verdicts from a shared policy repo:
+Committed `learnings.json` is automatically applied by every developer and in CI. `diffgate install-hook` sets up a **git merge driver** that auto-resolves parallel dismissals from different branches — no more merge conflicts on the file. To merge verdicts from a shared policy repo:
 
 ```jsonc
 // .diffgate.json

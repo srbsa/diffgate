@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { execSync } from "child_process";
 import { fileURLToPath } from "url";
 import chokidar from "chokidar";
 import { toSarif } from "./sarif.js";
@@ -785,6 +786,25 @@ fi
   fs.writeFileSync(hookPath, script, { mode: 0o755 });
   console.log(c.green(`✔ Installed pre-commit hook at ${path.relative(cwd, hookPath)}`));
   console.log(c.dim("  It runs `diffgate check --staged` before every commit. Bypass with `git commit --no-verify`."));
+
+  // Wire the learnings.json merge driver so parallel dismissals on different branches
+  // auto-merge without conflicts.
+  try {
+    const attrPath = path.join(root, ".gitattributes");
+    const attrLine = ".diffgate/learnings.json merge=diffgate-learnings";
+    const existing = fs.existsSync(attrPath) ? fs.readFileSync(attrPath, "utf-8") : "";
+    if (!existing.includes(attrLine)) {
+      fs.appendFileSync(attrPath, (existing.endsWith("\n") || existing === "" ? "" : "\n") + attrLine + "\n");
+      console.log(c.green(`✔ Added merge driver attribute to ${path.relative(cwd, attrPath)}`));
+    }
+    // Register the driver in .git/config (local, not global — no side effects outside this repo).
+    const driverScript = `node "${path.join(root, "node_modules", "diffgate-review", "scripts", "merge-learnings.js")}" %O %A %B`;
+    execSync(`git config merge.diffgate-learnings.name "DiffGate learnings merge driver"`, { cwd: root, stdio: "ignore" });
+    execSync(`git config merge.diffgate-learnings.driver '${driverScript}'`, { cwd: root, stdio: "ignore" });
+    console.log(c.green(`✔ Registered learnings.json merge driver (auto-merges parallel verdicts)`));
+  } catch {
+    console.log(c.dim("  Tip: set up the merge driver manually — see README › Team adoption › Step 3."));
+  }
 }
 
 function help(): void {
