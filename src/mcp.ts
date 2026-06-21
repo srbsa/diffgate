@@ -229,7 +229,10 @@ export async function handleAnalyze(
 export async function handleCheckStaged({ cwd: cwdArg, mode = "working" }: { cwd?: string; mode?: string } = {}) {
   const cwd = cwdArg || process.cwd();
   const review = reviewChanges(cwd, { mode });
-  return { ...review, _diffgate: capabilityHint(review.config) };
+  // Omit `config` from the MCP payload: it bloats the agent context window every call and
+  // exposes resolved config (ai.apiKeyEnv, customPatterns, extends paths, …) to the agent.
+  const { config, ...rest } = review;
+  return { ...rest, _diffgate: capabilityHint(config) };
 }
 
 export async function handleCapabilities({ cwd: cwdArg }: { cwd?: string } = {}) {

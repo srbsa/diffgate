@@ -233,6 +233,7 @@ test("handleCheckStaged returns { files, tier, counts, blocking } shape", async 
   assert.ok("counts" in result, "should have counts");
   assert.ok("blocking" in result, "should have blocking");
   assert.ok(result._diffgate, "carries a capability hint");
+  assert.ok(!("config" in result), "omits resolved config from the MCP payload");
 });
 
 // --- handleCapabilities ------------------------------------------------------
