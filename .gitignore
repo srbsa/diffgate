@@ -27,3 +27,4 @@ Thumbs.db
 .claude/settings.local.json
 .claude/output-styles/compressor-slim.md
 AGENTS.md
+codegraph.md
