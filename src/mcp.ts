@@ -28,6 +28,7 @@ import {
   findingFingerprint,
 } from "./core/index.js";
 import type { Finding, Config, FetchFn } from "./core/types.js";
+import { agentVerdict } from "./metrics.js";
 
 declare const __DIFFGATE_VERSION__: string;
 const VERSION = typeof __DIFFGATE_VERSION__ !== "undefined" ? __DIFFGATE_VERSION__ : "0.0.0";
@@ -93,7 +94,9 @@ export const TOOL_DEFS = [
     name: "diffgate_check_staged",
     description:
       "Check all staged (or working-tree) changes in a git repo for DiffGate findings. " +
-      "Returns overall tier, counts, and per-file findings across the whole diff.",
+      "Returns overall tier, counts, and per-file findings across the whole diff, plus a `verdict` block " +
+      "(the agent autonomy ladder: pass/review/blocked overall, with a rung — block/escalate/autofix/advisory — " +
+      "per finding) so you can decide whether to surface the diff without reimplementing the rules.",
     inputSchema: {
       type: "object",
       properties: {
@@ -244,9 +247,14 @@ export async function handleCheckStaged({ cwd: cwdArg, mode = "working" }: { cwd
   // session, surface it so the agent escalates to a human instead of looping. Best-effort.
   try {
     const root = repoRoot(cwd) || cwd;
-    const escalateAfterTurns = config.gate?.agent?.escalateAfterTurns ?? 2;
+    const agentCfg = config.gate?.agent ?? {};
+    const escalateAfterTurns = agentCfg.escalateAfterTurns ?? 2;
     const entries = review.files.flatMap((fr) => fr.findings.map((f) => ({ file: fr.filePath, finding: f })));
     const { overBudget, turns } = recordTurn(root, MCP_SESSION, entries, { escalateAfterTurns });
+    // Autonomy verdict: the same compact pass/review/blocked + rung-per-finding shape the CLI emits via
+    // `check --agent`, so an agent driving DiffGate over MCP doesn't have to reimplement rungFor(). Thread
+    // the same overBudget set (gated on mode like the CLI) so MCP and CLI agree turn-for-turn.
+    out.verdict = agentVerdict(review.files, agentCfg, agentCfg.mode !== "off" ? { overBudget } : {});
     if (overBudget.size > 0) {
       out.agentBudget = {
         escalateAfterTurns,

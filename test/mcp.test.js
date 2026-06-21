@@ -260,6 +260,57 @@ test("handleCheckStaged flags an over-budget finding after escalateAfterTurns ch
   }
 });
 
+test("handleCheckStaged includes an agent autonomy verdict (rung per finding + overall)", async () => {
+  const dir = tmpDir({});
+  execSync("git init -q", { cwd: dir });
+  fs.writeFileSync(path.join(dir, "config.js"), `const key = "sk_live_abcdef0123456789abcd";\n`);
+  try {
+    const r = await handleCheckStaged({ cwd: dir });
+    assert.ok(r.verdict, "carries an autonomy verdict block");
+    assert.equal(r.verdict.mode, "advisory", "advisory-by-default");
+    // hardcoded-secret is a blocking rule → block rung → overall blocked.
+    assert.equal(r.verdict.verdict, "blocked");
+    const vf = r.verdict.findings.find((f) => f.rule === "hardcoded-secret");
+    assert.ok(vf, "the secret appears in the verdict findings");
+    assert.equal(vf.rung, "block");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleCheckStaged verdict is 'pass' with no findings", async () => {
+  const dir = tmpDir({});
+  execSync("git init -q", { cwd: dir });
+  try {
+    const r = await handleCheckStaged({ cwd: dir });
+    assert.ok(r.verdict, "verdict present even on a clean diff");
+    assert.equal(r.verdict.verdict, "pass");
+    assert.deepEqual(r.verdict.findings, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleCheckStaged threads the over-budget set into the verdict (agrees with the CLI)", async () => {
+  const dir = tmpDir({});
+  execSync("git init -q", { cwd: dir });
+  fs.writeFileSync(path.join(dir, "config.js"), `const key = "sk_live_abcdef0123456789abcd";\n`);
+  try {
+    const r1 = await handleCheckStaged({ cwd: dir });
+    assert.equal(r1.verdict.escalations, 0, "1st check: under budget, nothing escalated");
+
+    // 2nd check: the finding outlasts escalateAfterTurns. The SAME overBudget set drives both the
+    // standalone agentBudget alert and the verdict's escalation accounting — so MCP and CLI agree.
+    const r2 = await handleCheckStaged({ cwd: dir });
+    assert.equal(r2.verdict.escalations, 1, "over-budget finding counted in the verdict");
+    const vf = r2.verdict.findings.find((f) => f.rule === "hardcoded-secret");
+    assert.equal(vf.overBudget, true, "the over-budget finding is marked in the verdict");
+    assert.ok(r2.agentBudget, "and the standalone agentBudget alert still fires");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- handleCapabilities ------------------------------------------------------
 
 test("handleCapabilities reports layers, tools, and the agent budget", async () => {
