@@ -17,6 +17,10 @@ extension/dist/
 Thumbs.db
 *.log
 
+# ephemeral local DiffGate state (learnings.json is intentionally NOT ignored — it's team-shared)
+.diffgate/session.json
+.diffgate/state.json
+
 # test scratch
 /tmp/
 .claude/settings.json
