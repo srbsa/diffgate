@@ -47,7 +47,7 @@ import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
 import { buildPrReview, resolveGithubContext, postPrReview } from "./github.js";
 import { runBench, CORPUS } from "./bench.js";
-import { runMarginal, modelRunner, SCENARIOS, type MarginalResult } from "./marginal.js";
+import { runMarginalSampled, modelRunner, scenariosForMode, SCENARIOS, type SampledResult, type Mode } from "./marginal.js";
 import { complianceReport } from "./compliance.js";
 import { buildMetrics, agentVerdict } from "./metrics.js";
 import { detectProjectDefaults, tailorConfig } from "./scaffold.js";
@@ -579,6 +579,15 @@ async function cmdMarginal(pos: string[], flags: Record<string, string | true>):
   // Reasoning models (e.g. Qwen on LM Studio) need headroom: a small budget gets consumed by the
   // <think> block, leaving no code. Default generously; override with --max-tokens.
   const maxTokens = flags["max-tokens"] ? parseInt(flags["max-tokens"] as string, 10) : base.ai?.maxTokens || 4096;
+  // Sampling for confidence: --samples=K runs each scenario K times; --temperature controls variance.
+  // K>1 at temperature 0 is pointless (every sample identical) — default to 0.7 when sampling.
+  const samples = flags["samples"] ? Math.max(1, parseInt(flags["samples"] as string, 10)) : 1;
+  const temperature =
+    flags["temperature"] !== undefined ? parseFloat(flags["temperature"] as string)
+    : base.ai?.temperature ?? (samples > 1 ? 0.7 : 0);
+  // Which mode(s): greenfield (whole-file generation), edit (edit a seed, analyze changed lines), or both.
+  const modeFlag = ((flags["mode"] as string) || "greenfield").toLowerCase();
+  const modes: Mode[] = modeFlag === "both" ? ["greenfield", "edit"] : modeFlag === "edit" ? ["edit"] : ["greenfield"];
   // OpenAI's gpt-5.x / o-series reject `max_tokens` — they require `max_completion_tokens`. Pick the
   // right param from the model id unless the user pins one with --token-param.
   const tokenParam =
@@ -587,7 +596,7 @@ async function cmdMarginal(pos: string[], flags: Record<string, string | true>):
   // If --provider is explicit, start from a clean ai block: inheriting .diffgate.json's apiKeyEnv /
   // model / wire would bind the new provider to the wrong key (e.g. an Anthropic key env for OpenAI).
   const inherited = flags["provider"] ? {} : base.ai;
-  const config = { ...base, ai: { ...inherited, enabled: true, provider, maxTokens, ...(tokenParam ? { tokenParam } : {}), ...(baseURL ? { baseURL } : {}), ...(model ? { model } : {}) } } as Config;
+  const config = { ...base, ai: { ...inherited, enabled: true, provider, maxTokens, temperature, ...(tokenParam ? { tokenParam } : {}), ...(baseURL ? { baseURL } : {}), ...(model ? { model } : {}) } } as Config;
 
   if (!model) {
     fail("No model set. Pass --model=<id> (e.g. --model=qwen/qwen3.5-9b) or set ai.model in .diffgate.json.");
@@ -598,48 +607,69 @@ async function cmdMarginal(pos: string[], flags: Record<string, string | true>):
   const completeFn = async (args: { system: string; prompt: string; config: Partial<Config>; noThink?: boolean }) =>
     complete({ system: args.system, prompt: args.prompt, config: args.config, noThink: args.noThink });
   const runner = modelRunner(completeFn, config);
-  const analyzeFn = (a: { filePath: string; content: string; config: Config }) => analyze(a);
-
-  if (!flags["json"]) {
-    process.stderr.write(c.dim(`Asking ${c.bold(describeProvider(config))} · ${model} to write ${scenarios.length} unguided tasks…\n`));
-  }
+  const analyzeFn = (a: { filePath: string; content: string; previousContent?: string | null; changedLines?: Set<number> | null; config: Config }) => analyze(a);
   const outDir = flags["out"] as string | undefined;
-  const result = await runMarginal(scenarios, runner, analyzeFn, { capture: !!outDir });
+  const scen = new Map(SCENARIOS.map((s) => [s.id, s]));
 
-  if (outDir) {
-    fs.mkdirSync(outDir, { recursive: true });
-    const scen = new Map(SCENARIOS.map((s) => [s.id, s]));
-    for (const r of result.byScenario) {
-      if (r.code != null) fs.writeFileSync(path.join(outDir, scen.get(r.id)?.filename || `${r.id}.txt`), r.code);
-      if (r.raw != null) fs.writeFileSync(path.join(outDir, `${r.id}.raw.md`), r.raw);
+  const results: SampledResult[] = [];
+  for (const mode of modes) {
+    const n = scenariosForMode(scenarios, mode).length;
+    if (!flags["json"]) {
+      process.stderr.write(c.dim(
+        `Asking ${c.bold(describeProvider(config))} · ${model} for ${n} ${mode} tasks × ${samples} sample(s) @ temp ${temperature}…\n`));
     }
-    process.stderr.write(c.dim(`Wrote generated code for ${result.byScenario.length} scenarios to ${outDir}\n`));
+    const result = await runMarginalSampled(scenarios, runner, analyzeFn, {
+      mode, samples, capture: !!outDir,
+      onSample: (i) => { if (!flags["json"] && samples > 1) process.stderr.write(c.dim(`  ${mode} sample ${i + 1}/${samples} done\n`)); },
+    });
+    if (outDir) {
+      result.runs.forEach((run, i) => {
+        const dir = path.join(outDir, mode, `sample-${i + 1}`);
+        fs.mkdirSync(dir, { recursive: true });
+        for (const r of run.byScenario) {
+          if (r.code != null) fs.writeFileSync(path.join(dir, scen.get(r.id)?.filename || `${r.id}.txt`), r.code);
+          if (r.raw != null) fs.writeFileSync(path.join(dir, `${r.id}.raw.md`), r.raw);
+        }
+      });
+      process.stderr.write(c.dim(`Wrote generated code (${mode}, ${samples} sample(s)) to ${path.join(outDir, mode)}\n`));
+    }
+    results.push(result);
   }
 
-  // Keep the captured code out of the machine-readable JSON; the files are the artifact.
-  const json = { ...result, byScenario: result.byScenario.map(({ code: _c, raw: _r, ...rest }) => rest) };
-  if (flags["json"]) { console.log(JSON.stringify(json, null, 2)); return; }
-  renderMarginal(result, model);
+  if (flags["json"]) {
+    // Keep captured code out of the machine-readable JSON; the files are the artifact.
+    const json = results.map((r) => ({ ...r, runs: r.runs.map((run) => ({ ...run, byScenario: run.byScenario.map(({ code: _c, raw: _r, ...rest }) => rest) })) }));
+    console.log(JSON.stringify(json.length === 1 ? json[0] : json, null, 2));
+    return;
+  }
+  for (const result of results) renderMarginal(result, model);
 }
 
-function renderMarginal(result: MarginalResult, model: string): void {
-  console.log(c.bold("🛡  DiffGate — marginal-catch experiment") + c.dim(`  ${result.total} unguided tasks · agent: ${model}\n`));
-  for (const r of result.byScenario) {
-    const mark =
-      r.kind === "error" ? c.yellow("err     ") :
-      r.kind === "defect" ? c.orange("DEFECT  ") :
-      r.kind === "advisory" ? c.yellow("advisory") :
+function renderMarginal(result: SampledResult, model: string): void {
+  const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
+  console.log(c.bold("🛡  DiffGate — marginal-catch experiment") +
+    c.dim(`  ${result.scenarios} ${result.mode} tasks × ${result.samples} sample(s) · agent: ${model}\n`));
+  for (const a of result.byScenario) {
+    const freq = a.samples - a.errors > 0 ? `${a.defect}/${a.samples - a.errors}` : "—";
+    const tag =
+      a.defect > 0 ? c.orange("DEFECT  ") :
+      a.advisory > 0 ? c.yellow("advisory") :
+      a.errors === a.samples ? c.yellow("err     ") :
       c.green("clean   ");
-    const detail = r.error ? c.dim(r.error.slice(0, 60)) : r.firedRules.length ? c.dim(r.firedRules.join(", ")) : c.dim("(agent avoided it on its own)");
-    console.log(`  ${mark}  ${r.id.padEnd(24)} ${detail}`);
+    const gap = a.knownGap ? c.dim(" [gap]") : "";
+    const detail = a.knownGap
+      ? c.dim(`clean=${a.clean}/${a.samples - a.errors} — DiffGate has no rule; inspect code`)
+      : c.dim(`defect ${freq}` + (a.advisory ? `, advisory ${a.advisory}` : ""));
+    console.log(`  ${tag}  ${a.id.padEnd(24)}${gap} ${detail}`);
   }
-  const completed = result.total - result.errors;
-  const rate = result.marginalCatchRate;
-  const headline = `${(rate * 100).toFixed(0)}% marginal defect-catch rate`;
+  const rate = result.defectRate;
+  const headline = `${pct(rate)} marginal defect-catch rate`;
   const colored = rate >= 0.5 ? c.orange(headline) : rate > 0 ? c.yellow(headline) : c.green(headline);
-  console.log(c.bold("\n  " + colored) + c.dim(`  (${result.defectCatches}/${completed} unguided outputs shipped unsafe code DiffGate caught; ${result.onTarget} on the designed-for risk)`));
-  console.log(c.dim(`  + ${result.advisoryOnly}/${completed} sensitive-area advisories (auth-crypto / destructive-migration) — fire on correct code too, so reported separately.`));
-  if (result.errors) console.log(c.dim(`  ${result.errors} scenario(s) errored (model unreachable / empty output).`));
+  console.log(c.bold("\n  " + colored) +
+    c.dim(`  95% CI [${pct(result.ci.low)}, ${pct(result.ci.high)}]  (${result.defectCatches}/${result.trials} non-gap trials shipped unsafe code DiffGate caught)`));
+  console.log(c.dim(`  + ${pct(result.advisoryRate)} advisory rate (auth-crypto / destructive-migration / shell-out) — fire on correct code too, reported separately.`));
+  if (result.gapClean) console.log(c.dim(`  ${result.gapClean} known-gap sample(s) scored clean — DiffGate has no rule; inspect captured code to tell model-safe from a miss.`));
+  if (result.errors) console.log(c.dim(`  ${result.errors} sample(s) errored (model unreachable / empty output).`));
   console.log(c.dim("\n  Reads as: how often the agent SHIPS unsafe code DiffGate would catch, with no security hint."));
   console.log(c.dim("  High ⇒ before-the-diff catches real diffs you'd otherwise see. Low ⇒ the model already avoids these.\n"));
 }
@@ -932,6 +962,7 @@ ${c.bold("Commands")}
   ${c.blue("report")}       Review metrics (tiers, hotspots, learnings) · --compliance for SOC 2
   ${c.blue("bench")}        Run the noise benchmark (precision/recall/FP-per-clean-change)
   ${c.blue("marginal")}     Marginal-catch experiment: how often an agent ships code DiffGate would catch
+               --mode=greenfield|edit|both  --samples=K  --temperature=T  --model=  --provider=  --out=
   ${c.blue("explain")}      AI-explain findings for a file (needs API key)
   ${c.blue("guidelines")}   Review diff against AGENTS.md/CLAUDE.md/.cursorrules etc.
   ${c.blue("feedback")}     <ruleId> <file> <line> — dismiss as noise / --confirm (learns)
