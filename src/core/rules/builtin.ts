@@ -145,6 +145,76 @@ function exportedSymbolName(node: AstNode): string | null {
   return null;
 }
 
+// --- prototype-pollution: unguarded recursive deep-merge detection ----------
+
+const PROTO_POLLUTION_KEYS = ["__proto__", "constructor", "prototype"];
+
+/**
+ * A real prototype-pollution guard names a dangerous key as a *string* — `key === "__proto__"`,
+ * `["__proto__","constructor"].includes(k)`, `key !== "constructor"`. We match string literals
+ * only and deliberately: a `Object.prototype.hasOwnProperty(...)` check is a *member access*, not a
+ * guard, so it must not count — that's the exact partial guard that still pollutes through
+ * `target["__proto__"]`. We also resolve identifiers the body references (e.g. a module-level
+ * `const BLOCKED = ["__proto__", ...]` used as `BLOCKED.includes(key)`) so an out-of-body blocklist
+ * still clears the function. Remaining safe forms we can't see — `Object.create(null)` targets, Maps —
+ * are an accepted recall gap; the finding is a non-blocking review note, not a hard block.
+ */
+function hasProtoKeyGuard(fnBody: AstNode, ctx: RuleContext): boolean {
+  let guarded = false;
+  const checked = new Set<string>();
+  const scan = (root: AstNode): void => {
+    walk(root, (n) => {
+      const node = n as any;
+      const isStr = node.type === "StringLiteral" || (node.type === "Literal" && typeof node.value === "string");
+      if (isStr && PROTO_POLLUTION_KEYS.includes(node.value)) guarded = true;
+      if (node.type === "Identifier" && ctx.ast && !checked.has(node.name)) {
+        checked.add(node.name);
+        const decl = findDeclarationInit(node.name, ctx.ast);
+        if (decl) scan(decl);
+      }
+    });
+  };
+  scan(fnBody);
+  return guarded;
+}
+
+/** Resolve the name a function node is bound to, so we can detect self-recursion and report it. */
+function functionBindingName(node: AstNode, parent: AstNode | null): string | null {
+  const n = node as any;
+  if (n.id && n.id.type === "Identifier") return n.id.name;
+  const p = parent as any;
+  if (p && p.type === "VariableDeclarator" && p.id && p.id.type === "Identifier") return p.id.name;
+  return null;
+}
+
+/**
+ * Inspect a function body for the shape of a recursive deep-merge: (a) it iterates a source's keys
+ * (`for..in`, or `Object.keys|entries|getOwnPropertyNames`); (b) it writes into a computed member
+ * (`target[key] = …`) or recurses with one as an argument; (c) it calls itself by name. All three
+ * together (and no proto-key guard) is the prototype-pollution-prone form.
+ */
+function recursiveMergeShape(fnNode: AstNode, fnName: string): { iterates: boolean; recurses: boolean; computedWrite: boolean } {
+  let iterates = false, recurses = false, computedWrite = false;
+  walk((fnNode as any).body, (n) => {
+    const node = n as any;
+    if (node.type === "ForInStatement") iterates = true;
+    if (node.type === "AssignmentExpression" && node.left?.type === "MemberExpression" && node.left.computed) {
+      computedWrite = true;
+    }
+    if (node.type === "CallExpression") {
+      const callee = memberName(node.callee);
+      if (callee && /^Object\.(keys|entries|getOwnPropertyNames)$/.test(callee)) iterates = true;
+      if (node.callee?.type === "Identifier" && node.callee.name === fnName) {
+        recurses = true;
+        for (const a of node.arguments || []) {
+          if (a && a.type === "MemberExpression" && a.computed) computedWrite = true;
+        }
+      }
+    }
+  });
+  return { iterates, recurses, computedWrite };
+}
+
 export const BUILTIN_RULES: Rule[] = [
   // ---------------------------------------------------------------- secrets
   {
@@ -389,6 +459,8 @@ export const BUILTIN_RULES: Rule[] = [
       "Set `origin` to an explicit allowlist of trusted domains.",
     patterns: [
       /\bcors\s*\(\s*\{[^}]*\borigin\s*:\s*['"`]\*['"`]/i,
+      // `cors()` / `cors({})` — the npm `cors` package with no `origin` defaults to `*` (credentialed any-origin).
+      /\bcors\s*\(\s*(?:\{\s*\})?\s*\)/i,
       /\borigin\s*:\s*['"`]\*['"`]/,
       /['"]Access-Control-Allow-Origin['"]\s*[,)]\s*['"`]\*['"`]/,
       /\.setHeader\s*\(\s*['"]Access-Control-Allow-Origin['"]\s*,\s*['"`]\*['"`]\)/,
@@ -508,6 +580,45 @@ export const BUILTIN_RULES: Rule[] = [
       /\b(?:_\.merge|lodash\.merge)\s*\([^,)]+,\s*(?:req|request|ctx)\.(?:body|query|params)\b/i,
       /\b(?:this\.\w+|[a-zA-Z_$][\w$]*(?:\[.*?\]|\.\w+)+)\s*=\s*\{\s*\.\.\.(?:req|request|ctx)\.(?:body|query|params)\b/i,
     ],
+  },
+  {
+    // Custom recursive deep-merge with no `__proto__`/`constructor` key guard. The regex sinks above
+    // only catch known libraries (`Object.assign`, `_.merge`) — a hand-written `deepMerge` that
+    // recurses into `target[key]` is just as pollutable, and a partial `hasOwnProperty` guard does
+    // NOT help (`JSON.parse` makes `__proto__` an own key; recursion writes through it into
+    // `Object.prototype`). We require self-recursion + computed write so we don't fire on shallow
+    // copies, and we treat a string-literal key check as the guard that clears a safe merge.
+    id: "prototype-pollution",
+    type: "ast",
+    tier: "orange",
+    blocking: false,
+    title: "Prototype pollution sink",
+    languages: JS,
+    message:
+      "This function recursively merges into a computed `target[key]` without rejecting `__proto__`, " +
+      "`constructor`, or `prototype` keys. If it is ever fed attacker-controlled JSON (e.g. `req.body`), " +
+      "`JSON.parse` exposes `__proto__` as an own enumerable key and the recursion writes through it into " +
+      "`Object.prototype`, corrupting every object in the process. A source-side `hasOwnProperty` check " +
+      "does not prevent this. Reject `__proto__`/`constructor`/`prototype` keys before recursing, merge " +
+      "into an `Object.create(null)` target, or use a vetted deep-merge.",
+    visit(node: AstNode, parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
+      if (
+        node.type !== "FunctionDeclaration" &&
+        node.type !== "FunctionExpression" &&
+        node.type !== "ArrowFunctionExpression"
+      ) {
+        return;
+      }
+      const fn = node as any;
+      if (!fn.body || fn.body.type !== "BlockStatement") return; // need a body to inspect
+      if (!Array.isArray(fn.params) || fn.params.length < 2) return; // a merge takes (target, source)
+      const name = functionBindingName(node, parent);
+      if (!name) return; // need a name to detect self-recursion
+      const { iterates, recurses, computedWrite } = recursiveMergeShape(node, name);
+      if (iterates && recurses && computedWrite && !hasProtoKeyGuard(fn.body, ctx)) {
+        emit({ loc: node.loc, symbol: name });
+      }
+    },
   },
 ];
 

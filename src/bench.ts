@@ -57,10 +57,27 @@ export const CORPUS: BenchCase[] = [
     content: "function run(s) { return eval(s); }\n" },
   { name: "prototype-pollution/assign-body", language: "javascript", expected: ["prototype-pollution"],
     content: "Object.assign(target, req.body);\n" },
+  { name: "prototype-pollution/recursive-deepmerge", language: "javascript", expected: ["prototype-pollution"],
+    content:
+      "function deepMerge(target, source) {\n" +
+      "  for (const key in source) {\n" +
+      "    if (!Object.prototype.hasOwnProperty.call(source, key)) continue;\n" +
+      "    if (source[key] && typeof source[key] === 'object') {\n" +
+      "      if (!target[key]) target[key] = {};\n" +
+      "      deepMerge(target[key], source[key]);\n" +
+      "    } else {\n" +
+      "      target[key] = source[key];\n" +
+      "    }\n" +
+      "  }\n" +
+      "  return target;\n" +
+      "}\n" +
+      "deepMerge(config, req.body);\n" },
   { name: "nosql-injection/find-body", language: "javascript", expected: ["nosql-injection"],
     content: "User.find(req.body);\n" },
   { name: "cors/wildcard", language: "javascript", expected: ["permissive-cors"],
     content: "app.use(cors({ origin: '*' }));\n" },
+  { name: "cors/default-permissive", language: "javascript", expected: ["permissive-cors"],
+    content: "app.use(cors());\n" },
   { name: "schema-destructive/drop", language: "sql", expected: ["db-schema-destructive"],
     content: "DROP TABLE users;\n" },
   { name: "schema-destructive/delete-no-where", language: "sql", expected: ["db-schema-destructive"],
@@ -85,6 +102,22 @@ export const CORPUS: BenchCase[] = [
     content: "SELECT id, name FROM users WHERE active = true;\n" },
   { name: "clean/comment-only", language: "javascript", expected: [],
     content: "// refactor: extract the validation step into its own function\nreturn validate(input);\n" },
+  { name: "clean/cors-allowlist", language: "javascript", expected: [],
+    content: "app.use(cors({ origin: allowlist }));\n" },
+  { name: "clean/deepmerge-guarded", language: "javascript", expected: [],
+    content:
+      "function deepMerge(target, source) {\n" +
+      "  for (const key in source) {\n" +
+      "    if (key === '__proto__' || key === 'constructor') continue;\n" +
+      "    if (source[key] && typeof source[key] === 'object') {\n" +
+      "      target[key] = deepMerge(target[key] || {}, source[key]);\n" +
+      "    } else {\n" +
+      "      target[key] = source[key];\n" +
+      "    }\n" +
+      "  }\n" +
+      "  return target;\n" +
+      "}\n" +
+      "deepMerge(config, req.body);\n" },
 ];
 
 function emptyConfig(): Config {
