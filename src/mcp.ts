@@ -38,27 +38,61 @@ const VERSION = typeof __DIFFGATE_VERSION__ !== "undefined" ? __DIFFGATE_VERSION
 // the agent the external "stop re-fixing, escalate" signal it cannot enforce statelessly per call.
 const MCP_SESSION = `mcp:${process.pid}:${Date.now()}`;
 
+// Protocol versions we can speak. Per the spec, on `initialize` the server echoes the client's
+// requested version if it supports it, otherwise replies with its own preferred (latest) version.
+const SUPPORTED_PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+const PREFERRED_PROTOCOL = "2025-06-18";
+
+export function negotiateProtocol(requested: unknown): string {
+  return typeof requested === "string" && SUPPORTED_PROTOCOLS.includes(requested)
+    ? requested
+    : PREFERRED_PROTOCOL;
+}
+
 const SEP = Buffer.from("\r\n\r\n");
 
+// The MCP stdio transport is newline-delimited JSON: "Messages are delimited by newlines, and MUST
+// NOT contain embedded newlines" (modelcontextprotocol.io/specification → Transports → stdio). We
+// emit that. We still *read* the legacy LSP-style `Content-Length:` framing too, so older Claude
+// Code builds (and any lenient client) keep working — the reader auto-detects per message.
 export function createReader(stream: Readable): { onMessage: (fn: (msg: unknown) => void) => void } {
   let buf = Buffer.alloc(0);
   const listeners: Array<(msg: unknown) => void> = [];
+  const emit = (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    let msg: unknown;
+    try { msg = JSON.parse(t); } catch { return; }
+    for (const fn of listeners) fn(msg);
+  };
   stream.on("data", (chunk: Buffer | string) => {
     buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-    while (true) {
-      const sepIdx = buf.indexOf(SEP);
-      if (sepIdx === -1) break;
-      const header = buf.slice(0, sepIdx).toString("ascii");
-      const m = header.match(/Content-Length:\s*(\d+)/i);
-      if (!m) { buf = buf.slice(sepIdx + 4); continue; }
-      const len = parseInt(m[1], 10);
-      const bodyStart = sepIdx + 4;
-      if (buf.length < bodyStart + len) break;
-      const body = buf.slice(bodyStart, bodyStart + len).toString("utf-8");
-      buf = buf.slice(bodyStart + len);
-      let msg: unknown;
-      try { msg = JSON.parse(body); } catch { continue; }
-      for (const fn of listeners) fn(msg);
+    while (buf.length > 0) {
+      // Skip blank-line separators between newline-delimited messages.
+      let start = 0;
+      while (start < buf.length && (buf[start] === 0x0a || buf[start] === 0x0d)) start++;
+      if (start > 0) { buf = buf.slice(start); continue; }
+
+      // Legacy Content-Length framing (LSP-style) — kept for backward compatibility.
+      if (buf.slice(0, 15).toString("ascii").toLowerCase().startsWith("content-length:")) {
+        const sepIdx = buf.indexOf(SEP);
+        if (sepIdx === -1) break; // header not fully arrived yet
+        const header = buf.slice(0, sepIdx).toString("ascii");
+        const m = header.match(/Content-Length:\s*(\d+)/i);
+        if (!m) { buf = buf.slice(sepIdx + 4); continue; }
+        const len = parseInt(m[1], 10);
+        const bodyStart = sepIdx + 4;
+        if (buf.length < bodyStart + len) break; // body not fully arrived yet
+        emit(buf.slice(bodyStart, bodyStart + len).toString("utf-8"));
+        buf = buf.slice(bodyStart + len);
+        continue;
+      }
+
+      // Spec path: one JSON message per line.
+      const nl = buf.indexOf(0x0a);
+      if (nl === -1) break; // message not yet terminated
+      emit(buf.slice(0, nl).toString("utf-8"));
+      buf = buf.slice(nl + 1);
     }
   });
   return { onMessage: (fn) => listeners.push(fn) };
@@ -66,9 +100,8 @@ export function createReader(stream: Readable): { onMessage: (fn: (msg: unknown)
 
 export function createWriter(stream: Writable): (obj: unknown) => void {
   return function send(obj: unknown) {
-    const body = JSON.stringify(obj);
-    const len = Buffer.byteLength(body, "utf-8");
-    stream.write(`Content-Length: ${len}\r\n\r\n${body}`);
+    // Newline-delimited per the MCP stdio spec. JSON.stringify (no indent) never embeds a newline.
+    stream.write(JSON.stringify(obj) + "\n");
   };
 }
 
@@ -361,10 +394,11 @@ export function runMcpServer(): void {
   const reader = createReader(process.stdin as unknown as Readable);
 
   reader.onMessage(async (msg: unknown) => {
-    const { id, method, params } = msg as { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
+    const { id, method, params } = msg as { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown>; protocolVersion?: unknown } };
 
     if (method === "initialize") {
-      send({ jsonrpc: "2.0", id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "diffgate", version: VERSION } } });
+      const protocolVersion = negotiateProtocol(params?.protocolVersion);
+      send({ jsonrpc: "2.0", id, result: { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "diffgate", version: VERSION } } });
       return;
     }
     if (method === "initialized" || method === "notifications/initialized") return;

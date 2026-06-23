@@ -18,6 +18,7 @@ import {
   explainFinding,
   deepReview,
   isAiAvailable,
+  complete,
   aiKeyEnv,
   describeProvider,
   tierCounts,
@@ -46,6 +47,7 @@ import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
 import { runMcpServer } from "./mcp.js";
 import { buildPrReview, resolveGithubContext, postPrReview } from "./github.js";
 import { runBench, CORPUS } from "./bench.js";
+import { runMarginal, modelRunner, SCENARIOS, type MarginalResult } from "./marginal.js";
 import { complianceReport } from "./compliance.js";
 import { buildMetrics, agentVerdict } from "./metrics.js";
 import { detectProjectDefaults, tailorConfig } from "./scaffold.js";
@@ -565,6 +567,83 @@ function pct(n: number): string {
   return (n * 100).toFixed(0).padStart(3) + "%";
 }
 
+async function cmdMarginal(pos: string[], flags: Record<string, string | true>): Promise<void> {
+  const cwd = pos[0] ? path.resolve(pos[0]) : process.cwd();
+  const { config: base } = loadConfig(cwd);
+
+  // Build the agent's model config: start from any .diffgate.json `ai` block, override with flags.
+  // Defaults target a local LM Studio endpoint — most privacy-conscious users run a local model.
+  const provider = (flags["provider"] as string) || base.ai?.provider || "lmstudio";
+  const baseURL = (flags["base-url"] as string) || base.ai?.baseURL || process.env["DIFFGATE_MARGINAL_BASE_URL"] || undefined;
+  const model = (flags["model"] as string) || (typeof base.ai?.model === "string" ? base.ai.model : undefined) || process.env["DIFFGATE_MARGINAL_MODEL"];
+  // Reasoning models (e.g. Qwen on LM Studio) need headroom: a small budget gets consumed by the
+  // <think> block, leaving no code. Default generously; override with --max-tokens.
+  const maxTokens = flags["max-tokens"] ? parseInt(flags["max-tokens"] as string, 10) : base.ai?.maxTokens || 4096;
+  // OpenAI's gpt-5.x / o-series reject `max_tokens` — they require `max_completion_tokens`. Pick the
+  // right param from the model id unless the user pins one with --token-param.
+  const tokenParam =
+    (flags["token-param"] as string) || base.ai?.tokenParam ||
+    (model && /^(gpt-5|o[1-9])/.test(model) ? "max_completion_tokens" : undefined);
+  // If --provider is explicit, start from a clean ai block: inheriting .diffgate.json's apiKeyEnv /
+  // model / wire would bind the new provider to the wrong key (e.g. an Anthropic key env for OpenAI).
+  const inherited = flags["provider"] ? {} : base.ai;
+  const config = { ...base, ai: { ...inherited, enabled: true, provider, maxTokens, ...(tokenParam ? { tokenParam } : {}), ...(baseURL ? { baseURL } : {}), ...(model ? { model } : {}) } } as Config;
+
+  if (!model) {
+    fail("No model set. Pass --model=<id> (e.g. --model=qwen/qwen3.5-9b) or set ai.model in .diffgate.json.");
+    return;
+  }
+
+  const scenarios = flags["limit"] ? SCENARIOS.slice(0, parseInt(flags["limit"] as string, 10)) : SCENARIOS;
+  const completeFn = async (args: { system: string; prompt: string; config: Partial<Config>; noThink?: boolean }) =>
+    complete({ system: args.system, prompt: args.prompt, config: args.config, noThink: args.noThink });
+  const runner = modelRunner(completeFn, config);
+  const analyzeFn = (a: { filePath: string; content: string; config: Config }) => analyze(a);
+
+  if (!flags["json"]) {
+    process.stderr.write(c.dim(`Asking ${c.bold(describeProvider(config))} · ${model} to write ${scenarios.length} unguided tasks…\n`));
+  }
+  const outDir = flags["out"] as string | undefined;
+  const result = await runMarginal(scenarios, runner, analyzeFn, { capture: !!outDir });
+
+  if (outDir) {
+    fs.mkdirSync(outDir, { recursive: true });
+    const scen = new Map(SCENARIOS.map((s) => [s.id, s]));
+    for (const r of result.byScenario) {
+      if (r.code != null) fs.writeFileSync(path.join(outDir, scen.get(r.id)?.filename || `${r.id}.txt`), r.code);
+      if (r.raw != null) fs.writeFileSync(path.join(outDir, `${r.id}.raw.md`), r.raw);
+    }
+    process.stderr.write(c.dim(`Wrote generated code for ${result.byScenario.length} scenarios to ${outDir}\n`));
+  }
+
+  // Keep the captured code out of the machine-readable JSON; the files are the artifact.
+  const json = { ...result, byScenario: result.byScenario.map(({ code: _c, raw: _r, ...rest }) => rest) };
+  if (flags["json"]) { console.log(JSON.stringify(json, null, 2)); return; }
+  renderMarginal(result, model);
+}
+
+function renderMarginal(result: MarginalResult, model: string): void {
+  console.log(c.bold("🛡  DiffGate — marginal-catch experiment") + c.dim(`  ${result.total} unguided tasks · agent: ${model}\n`));
+  for (const r of result.byScenario) {
+    const mark =
+      r.kind === "error" ? c.yellow("err     ") :
+      r.kind === "defect" ? c.orange("DEFECT  ") :
+      r.kind === "advisory" ? c.yellow("advisory") :
+      c.green("clean   ");
+    const detail = r.error ? c.dim(r.error.slice(0, 60)) : r.firedRules.length ? c.dim(r.firedRules.join(", ")) : c.dim("(agent avoided it on its own)");
+    console.log(`  ${mark}  ${r.id.padEnd(24)} ${detail}`);
+  }
+  const completed = result.total - result.errors;
+  const rate = result.marginalCatchRate;
+  const headline = `${(rate * 100).toFixed(0)}% marginal defect-catch rate`;
+  const colored = rate >= 0.5 ? c.orange(headline) : rate > 0 ? c.yellow(headline) : c.green(headline);
+  console.log(c.bold("\n  " + colored) + c.dim(`  (${result.defectCatches}/${completed} unguided outputs shipped unsafe code DiffGate caught; ${result.onTarget} on the designed-for risk)`));
+  console.log(c.dim(`  + ${result.advisoryOnly}/${completed} sensitive-area advisories (auth-crypto / destructive-migration) — fire on correct code too, so reported separately.`));
+  if (result.errors) console.log(c.dim(`  ${result.errors} scenario(s) errored (model unreachable / empty output).`));
+  console.log(c.dim("\n  Reads as: how often the agent SHIPS unsafe code DiffGate would catch, with no security hint."));
+  console.log(c.dim("  High ⇒ before-the-diff catches real diffs you'd otherwise see. Low ⇒ the model already avoids these.\n"));
+}
+
 async function cmdGuidelines(pos: string[], flags: Record<string, string | true>): Promise<void> {
   const cwd = path.resolve(pos[0] || ".");
   const mode = flags["staged"] ? "staged" : "working";
@@ -852,6 +931,7 @@ ${c.bold("Commands")}
   ${c.blue("watch")}        Live review as you edit
   ${c.blue("report")}       Review metrics (tiers, hotspots, learnings) · --compliance for SOC 2
   ${c.blue("bench")}        Run the noise benchmark (precision/recall/FP-per-clean-change)
+  ${c.blue("marginal")}     Marginal-catch experiment: how often an agent ships code DiffGate would catch
   ${c.blue("explain")}      AI-explain findings for a file (needs API key)
   ${c.blue("guidelines")}   Review diff against AGENTS.md/CLAUDE.md/.cursorrules etc.
   ${c.blue("feedback")}     <ruleId> <file> <line> — dismiss as noise / --confirm (learns)
@@ -888,7 +968,7 @@ ${c.bold("Examples")}
 
 async function main(): Promise<void> {
   const [, , maybeCmd, ...rest] = process.argv;
-  const known = ["check", "scan", "watch", "report", "bench", "explain", "guidelines", "feedback", "stats", "graph", "init", "install-hook", "merge-driver", "mcp"];
+  const known = ["check", "scan", "watch", "report", "bench", "marginal", "explain", "guidelines", "feedback", "stats", "graph", "init", "install-hook", "merge-driver", "mcp"];
   let cmd = maybeCmd;
   let argv = rest;
   if (!cmd || cmd.startsWith("-")) {
@@ -910,6 +990,7 @@ async function main(): Promise<void> {
       case "watch": return cmdWatch(pos, flags);
       case "report": return await cmdReport(pos, flags);
       case "bench": return cmdBench(pos, flags);
+      case "marginal": return await cmdMarginal(pos, flags);
       case "explain": return await cmdExplain(pos, flags);
       case "guidelines": return await cmdGuidelines(pos, flags);
       case "feedback": return cmdFeedback(pos, flags);

@@ -13,6 +13,7 @@ import {
   handleCheckStaged,
   handleCapabilities,
   handleDeepReview,
+  negotiateProtocol,
   TOOL_DEFS,
 } from "../dist/mcp.js";
 
@@ -24,11 +25,16 @@ function tmpDir(files) {
   return dir;
 }
 
-// Build a framed MCP message (Content-Length + body) for testing the reader.
+// Build a legacy Content-Length-framed MCP message for testing reader back-compat.
 function frame(obj) {
   const body = JSON.stringify(obj);
   const len = Buffer.byteLength(body, "utf-8");
   return Buffer.from(`Content-Length: ${len}\r\n\r\n${body}`);
+}
+
+// Build a spec-compliant newline-delimited MCP message.
+function line(obj) {
+  return Buffer.from(JSON.stringify(obj) + "\n");
 }
 
 // --- framing tests -----------------------------------------------------------
@@ -61,15 +67,61 @@ test("createReader handles messages split across chunks", (t, done) => {
   stream.push(buf.slice(20));
 });
 
-test("createWriter emits a correct Content-Length frame", () => {
+test("createReader parses spec newline-delimited JSON", (t, done) => {
+  const stream = new PassThrough();
+  const reader = createReader(stream);
+  reader.onMessage((msg) => {
+    assert.equal(msg.method, "initialize");
+    assert.equal(msg.id, 7);
+    done();
+  });
+  stream.push(line({ jsonrpc: "2.0", id: 7, method: "initialize" }));
+});
+
+test("createReader parses newline-delimited messages split across chunks", (t, done) => {
+  const stream = new PassThrough();
+  const reader = createReader(stream);
+  let received = 0;
+  reader.onMessage(() => { if (++received === 2) done(); });
+  const buf = Buffer.concat([
+    line({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    line({ jsonrpc: "2.0", id: 2, method: "ping" }),
+  ]);
+  stream.push(buf.slice(0, 18));
+  stream.push(buf.slice(18));
+});
+
+test("createReader accepts a newline message immediately after a legacy frame", (t, done) => {
+  const stream = new PassThrough();
+  const reader = createReader(stream);
+  const got = [];
+  reader.onMessage((msg) => {
+    got.push(msg.id);
+    if (got.length === 2) { assert.deepEqual(got, [1, 2]); done(); }
+  });
+  stream.push(Buffer.concat([
+    frame({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    line({ jsonrpc: "2.0", id: 2, method: "ping" }),
+  ]));
+});
+
+test("createWriter emits spec newline-delimited JSON (no Content-Length header)", () => {
   const chunks = [];
   const stream = new Writable({ write(c, _e, cb) { chunks.push(c); cb(); } });
   const send = createWriter(stream);
   send({ jsonrpc: "2.0", id: 1, result: { ok: true } });
   const out = chunks.join("");
-  assert.match(out, /Content-Length: \d+\r\n\r\n/);
-  const body = out.replace(/^.*\r\n\r\n/, "");
-  assert.deepEqual(JSON.parse(body), { jsonrpc: "2.0", id: 1, result: { ok: true } });
+  assert.doesNotMatch(out, /Content-Length:/, "must not use LSP framing");
+  assert.ok(out.endsWith("\n"), "message terminated by a newline");
+  assert.equal((out.match(/\n/g) || []).length, 1, "no embedded newlines");
+  assert.deepEqual(JSON.parse(out.trim()), { jsonrpc: "2.0", id: 1, result: { ok: true } });
+});
+
+test("negotiateProtocol echoes a supported version, else falls back to preferred", () => {
+  assert.equal(negotiateProtocol("2025-11-25"), "2025-11-25");
+  assert.equal(negotiateProtocol("2024-11-05"), "2024-11-05");
+  assert.equal(negotiateProtocol("1999-01-01"), "2025-06-18");
+  assert.equal(negotiateProtocol(undefined), "2025-06-18");
 });
 
 // --- tools/list --------------------------------------------------------------
