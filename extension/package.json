@@ -3,7 +3,7 @@
   "displayName": "DiffGate",
   "description": "Diff-aware, three-tiered code review gate inline in your editor.",
   "version": "0.4.2",
-  "publisher": "diffgate",
+  "publisher": "srbsa",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
   "repository": {
