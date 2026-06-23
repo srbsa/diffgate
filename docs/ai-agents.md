@@ -2,9 +2,14 @@
 
 Coding agents (Claude Code, Cursor, Copilot, …) now write a large and growing share of
 diffs. They are fast and confident — and they hallucinate. The missing piece is a
-**deterministic checkpoint** between "the agent wrote code" and "a human sees it": a gate
-that runs offline, gives the same verdict every time, and doesn't itself need a model to be
-trusted. That's DiffGate.
+**deterministic checkpoint** the agent can run on its own work: one that runs offline, gives
+the same verdict every time, and doesn't itself need a model to be trusted. That's DiffGate.
+
+The point isn't to *gate* your agent — it's to let your agent **self-check before a human
+sees the diff**, so you can hand it more autonomy with less worry. Same deterministic verdict
+every time means the agent catches its own footguns before you do, and surfaces what it
+changed instead of silently rewriting (the capability protocol tells it to show both the
+original and corrected version). A trustworthy self-check is what makes more autonomy safe to grant.
 
 ## Two integration points
 

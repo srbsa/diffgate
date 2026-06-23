@@ -14,7 +14,7 @@ It runs two ways from one shared engine:
 
 - **VS Code extension** — inline squiggles on changed lines, hover cards (why · who owns it · quick-fix), a Risk Review tree, a status-bar summary, a verification gate, and **Deep Review** (agentic blast-radius analysis for orange findings).
 - **CLI** — `diffgate check` reviews your diff and exits non-zero on high-impact findings: perfect as a **pre-commit hook** or **CI gate**.
-- **MCP server** — `diffgate mcp` exposes the engine as an MCP tool so coding agents (Claude Code, Cursor, etc.) can check generated code before surfacing it to you.
+- **MCP server** — `diffgate mcp` exposes the engine as an MCP tool so coding agents (Claude Code, Cursor, etc.) **self-check before surfacing a diff** — the same deterministic verdict every time, so you can grant the agent more autonomy instead of reviewing every line yourself.
 
 ---
 
@@ -54,6 +54,8 @@ claude mcp add diffgate -- diffgate mcp
 ```
 
 Or install the **Desktop Extension** for one-click setup: download [`diffgate.mcpb`](https://github.com/srbsa/diffgate/releases/latest) and open it in Claude Desktop.
+
+DiffGate doesn't *gate* your agent — it lets your agent **self-check before you see the diff**, and surface what it corrected (original + fix + why) instead of silently rewriting. A trustworthy, deterministic self-check is what makes it safe to hand the agent more autonomy.
 
 ### VS Code extension
 
