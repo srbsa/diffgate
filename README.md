@@ -25,6 +25,15 @@ DiffGate is tuned to exactly that residue — deterministically, only on the cha
 - **In your agent, via MCP** — it self-checks generated code *before it's written to disk*, returns structured findings (zero LLM tokens), and surfaces the original + the fix so you can grant more autonomy.
 - **In your editor (VS Code / Cursor)** — the same verdict appears as inline squiggles on the diff you're reviewing, so a footgun the model glossed over never rides along unnoticed.
 
+> **By the numbers** — 4 models (local 9B → frontier), no security hint, whole-file *and* edit-an-existing-file modes:
+>
+> | What the model wrote unprompted | From scratch | **When editing existing code** |
+> |---|:--:|:--:|
+> | Textbook OWASP (SQLi · XSS · secrets · `eval`) | 0% | 0% |
+> | Second-order footguns (proto-pollution · `cors()` default) | 0–13% | **13–20%** |
+>
+> Every model — local to frontier — avoids the textbook bugs on its own; the footguns are what slip through, and they slip through *more when editing*, which is most of an agent's work. The frontier model went **0% from scratch → 13% editing**. Reproduce it yourself with `diffgate marginal` (runs the gate over a model's unguided output).
+
 ---
 
 ## Quick start
