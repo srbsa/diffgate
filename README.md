@@ -10,11 +10,20 @@ Most review tooling fires on the whole file and treats every line the same, so y
 | 🟡 **Yellow** | Review — soft dependency | take a look | deprecated APIs, raw SQL, network calls, dependency-manifest edits |
 | 🟠 **Orange** | High-impact — gate it | verify before merge | schema/migrations, hardcoded secrets, auth/crypto, public-API & signature changes, SQL/XSS/path-traversal injection sinks |
 
-It runs two ways from one shared engine:
+It runs three ways from one shared engine:
 
 - **VS Code extension** — inline squiggles on changed lines, hover cards (why · who owns it · quick-fix), a Risk Review tree, a status-bar summary, a verification gate, and **Deep Review** (agentic blast-radius analysis for orange findings).
 - **CLI** — `diffgate check` reviews your diff and exits non-zero on high-impact findings: perfect as a **pre-commit hook** or **CI gate**.
 - **MCP server** — `diffgate mcp` exposes the engine as an MCP tool so coding agents (Claude Code, Cursor, etc.) **self-check before surfacing a diff** — the same deterministic verdict every time, so you can grant the agent more autonomy instead of reviewing every line yourself.
+
+### What it adds over the model's own judgment
+
+Modern coding agents already avoid the textbook bugs. We measured this directly — handing local and frontier models 17 realistic tasks with **no security hint** and running the gate over their output: they wrote parameterized SQL, used `textContent`, and read secrets from env vars on their own. What they still ship are the **second-order footguns** — an unguarded recursive merge (prototype pollution), a bare `cors()` (any-origin by default), a file read with no path-containment check — and they drop these guards *most when editing existing code*, which is most of what an agent does. (A frontier model in our test introduced **zero** issues writing from scratch, but reintroduced the prototype-pollution and CORS footguns when editing a file.)
+
+DiffGate is tuned to exactly that residue — deterministically, only on the changed lines — at **both ends of the workflow**:
+
+- **In your agent, via MCP** — it self-checks generated code *before it's written to disk*, returns structured findings (zero LLM tokens), and surfaces the original + the fix so you can grant more autonomy.
+- **In your editor (VS Code / Cursor)** — the same verdict appears as inline squiggles on the diff you're reviewing, so a footgun the model glossed over never rides along unnoticed.
 
 ---
 
@@ -389,7 +398,7 @@ Agent       User sees
 self-corrects  the code
 ```
 
-Example: the agent writes a function with `` db.query(`SELECT * FROM users WHERE id = ${req.query.id}`) ``. DiffGate returns an orange `sql-injection` finding. The agent revises to `db.query("SELECT * FROM users WHERE id = ?", [req.query.id])` and re-checks — clean result. The user sees only the corrected version.
+Example: asked to add a `deepMerge` helper to an existing utils file, the agent writes a recursive merge with no `__proto__`/`constructor` guard — harmless in isolation, but a prototype-pollution sink the moment it touches `req.body`. DiffGate returns an orange `prototype-pollution` finding; the agent adds the key guard and re-checks — clean. The user sees only the corrected version. This is deliberately *not* a textbook SQL-injection example: agents already parameterize SQL unprompted — it's these second-order footguns, dropped while editing, that DiffGate is tuned to catch (see [the measurement](#what-it-adds-over-the-models-own-judgment)).
 
 The deterministic rules cost **zero LLM tokens** — the agent gets back structured JSON findings, not prose. Token spend only occurs if the agent also calls `diffgate_deep_review` to investigate blast radius.
 
@@ -420,7 +429,7 @@ You'll see green findings (logging), yellow findings (deprecated `StripeClient.c
 ## Tests
 
 ```bash
-npm test    # builds the extension, runs 145 unit/integration tests + the extension smoke test
+npm test    # builds the extension, runs the full unit/integration suite + the extension smoke test
 ```
 
 ## Contributing
