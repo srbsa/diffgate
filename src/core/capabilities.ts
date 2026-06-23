@@ -58,6 +58,9 @@ function buildProtocol(opts: { graph: boolean; llm: boolean; agent: Required<Age
     `Trust the label, not your confidence: act on a finding's 'trust' field. 'confirmed' = real; ` +
       `'cleared' = safe; 'unconfirmed' = flag for a human, don't silently "fix".`,
     `False positives: use diffgate_feedback {verdict:"dismiss"} with a reason rather than changing correct code.`,
+    `Show your work: when you self-correct on a finding, show the human BOTH the original and the ` +
+      `corrected version and why you changed it — never silently rewrite. A silent fix hides the ` +
+      `decision from the person who has to trust it; surfacing it is what lets them grant you more autonomy.`,
   ];
   if (graph) {
     lines.push(

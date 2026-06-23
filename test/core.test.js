@@ -260,6 +260,10 @@ test("buildCapabilities reports layers and gates LLM-only tools", () => {
   assert.equal(caps.agent.mode, "advisory");
   assert.ok(caps.protocol.some((p) => /Loop budget/.test(p)), "protocol carries the loop budget");
   assert.ok(caps.protocol.some((p) => /host mode/.test(p)), "no-LLM protocol warns about host-mode self-review");
+  assert.ok(
+    caps.protocol.some((p) => /both the original and the corrected/i.test(p)),
+    "protocol tells the agent to surface self-corrections transparently"
+  );
 });
 
 test("capabilityHint is a compact 3-field meta", () => {
