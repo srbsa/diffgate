@@ -84,6 +84,14 @@ export const CORPUS: BenchCase[] = [
     content: "DELETE FROM sessions;\n" },
   { name: "auth-crypto/jwt", language: "javascript", expected: ["auth-crypto"],
     content: "const token = jwt.sign({ uid }, process.env.JWT_SECRET);\n" },
+  // Python deserialization / shell-out — the dangerous-exec patterns are language-agnostic; these
+  // ground the marginal harness's Python advisory scenarios (yaml/pickle/os.system) in measured detection.
+  { name: "deserialize/yaml-load", language: "python", expected: ["dangerous-exec"],
+    content: "import yaml\ndef load_config(path):\n    return yaml.load(open(path))\n" },
+  { name: "deserialize/pickle-loads", language: "python", expected: ["dangerous-exec"],
+    content: "import pickle\ndef restore(blob):\n    return pickle.loads(blob)\n" },
+  { name: "command/python-os-system", language: "python", expected: ["dangerous-exec"],
+    content: "import os\ndef disk_usage(path):\n    return os.system('du -sh ' + path)\n" },
 
   // --- negatives: clean changes that must produce NO findings (the noise test) ---
   { name: "clean/parameterized-sql", language: "javascript", expected: [],
@@ -118,6 +126,10 @@ export const CORPUS: BenchCase[] = [
       "  return target;\n" +
       "}\n" +
       "deepMerge(config, req.body);\n" },
+  { name: "clean/yaml-safe-load", language: "python", expected: [],
+    content: "import yaml\ndef load_config(path):\n    return yaml.safe_load(open(path))\n" },
+  { name: "clean/python-pure", language: "python", expected: [],
+    content: "def normalize(name):\n    return name.strip().lower()\n" },
 ];
 
 function emptyConfig(): Config {
