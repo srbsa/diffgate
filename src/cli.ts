@@ -582,9 +582,16 @@ async function cmdMarginal(pos: string[], flags: Record<string, string | true>):
   // Sampling for confidence: --samples=K runs each scenario K times; --temperature controls variance.
   // K>1 at temperature 0 is pointless (every sample identical) — default to 0.7 when sampling.
   const samples = flags["samples"] ? Math.max(1, parseInt(flags["samples"] as string, 10)) : 1;
-  const temperature =
+  let temperature =
     flags["temperature"] !== undefined ? parseFloat(flags["temperature"] as string)
     : base.ai?.temperature ?? (samples > 1 ? 0.7 : 0);
+  // gpt-5.x / o-series reasoning models reject any non-default temperature (only 1 is supported), so a
+  // temp-0 or sampling temp would 400 every call. Force 1 for that family; OpenAI samples then carry
+  // the model's default variance (the local model provides the lower-temperature / tighter-CI anchor).
+  if (model && /^(gpt-5|o[1-9])/.test(model) && temperature !== 1) {
+    if (!flags["json"]) process.stderr.write(c.dim(`(${model} only supports the default temperature — using 1 instead of ${temperature})\n`));
+    temperature = 1;
+  }
   // Which mode(s): greenfield (whole-file generation), edit (edit a seed, analyze changed lines), or both.
   const modeFlag = ((flags["mode"] as string) || "greenfield").toLowerCase();
   const modes: Mode[] = modeFlag === "both" ? ["greenfield", "edit"] : modeFlag === "edit" ? ["edit"] : ["greenfield"];
