@@ -1,5 +1,5 @@
 export { analyze } from "./analyzer.js";
-export { loadConfig, findConfigPath, isIgnored, DEFAULT_CONFIG } from "./config.js";
+export { loadConfig, findConfigPath, loadDotenv, isIgnored, DEFAULT_CONFIG } from "./config.js";
 export {
   getChangedFiles,
   getChangedLinesForFile,

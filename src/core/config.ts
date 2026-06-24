@@ -17,8 +17,10 @@ export const DEFAULT_CONFIG: Config = {
     agent: { mode: "advisory", autoFixFloor: "orange", maxFixesPerTurn: 3, escalateAfterTurns: 2, trustSource: "deterministic" },
   },
   ai: {
+    // No explicit `provider` default: resolveProvider infers it from apiKeyEnv/model
+    // (falling back to anthropic). Hardcoding it here would override a user who sets
+    // only apiKeyEnv/model for another provider, forcing the wrong wire.
     enabled: false,
-    provider: "anthropic",
     model: "claude-sonnet-4-6",
     apiKeyEnv: "ANTHROPIC_API_KEY",
     baseURL: null,
@@ -47,6 +49,43 @@ export function findConfigPath(startDir: string): string | null {
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/**
+ * Load environment variables from a `.env` file into process.env without adding
+ * a dotenv dependency. Existing process.env values win (never clobber a real env
+ * var). Walks up from startDir to find the first `.env`, mirroring findConfigPath.
+ * Returns the path loaded, or null if none was found.
+ */
+export function loadDotenv(startDir: string): string | null {
+  let dir = path.resolve(startDir);
+  let envPath: string | null = null;
+  while (true) {
+    const candidate = path.join(dir, ".env");
+    if (fs.existsSync(candidate)) { envPath = candidate; break; }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  let text: string;
+  try { text = fs.readFileSync(envPath, "utf8"); } catch { return null; }
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    let key = line.slice(0, eq).trim();
+    if (key.startsWith("export ")) key = key.slice(7).trim();
+    if (!key) continue;
+    let val = line.slice(eq + 1).trim();
+    const q = val[0];
+    if ((q === '"' || q === "'") && val[val.length - 1] === q) {
+      val = val.slice(1, -1);
+      if (q === '"') val = val.replace(/\\n/g, "\n").replace(/\\"/g, '"');
+    }
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
+  return envPath;
 }
 
 function normalize(raw: Partial<Config> & Record<string, unknown>): Config {

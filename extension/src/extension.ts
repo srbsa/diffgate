@@ -5,6 +5,7 @@ import path from "path";
 import {
   analyze,
   loadConfig,
+  loadDotenv,
   isIgnored,
   getPreviousContent,
   computeChangedLines,
@@ -1293,6 +1294,10 @@ function reanalyzeOpen(): void {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  // GUI-launched VS Code (Finder/Dock) doesn't inherit shell exports, so an AI
+  // key in a workspace .env would otherwise be invisible. Load it into env.
+  for (const wf of vscode.workspace.workspaceFolders || []) loadDotenv(wf.uri.fsPath);
+
   diagnostics = vscode.languages.createDiagnosticCollection("diffgate");
   aiChannel = vscode.window.createOutputChannel("DiffGate AI");
   gateChannel = vscode.window.createOutputChannel("DiffGate Gate");
