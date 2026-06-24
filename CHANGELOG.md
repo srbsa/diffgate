@@ -7,7 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.5.1] — Unreleased
+## [0.5.1] — 2026-06-24
 
 ### Added
 
@@ -18,6 +18,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **LICENSE** restored to the canonical Apache-2.0 text. The previous file had been reworded — one clause even carried MIT-style "to use, copy, modify, merge, publish, distribute, sublicense" language — which made GitHub classify the repo as `NOASSERTION` ("Other") and was a genuine licensing defect, not just a detection quirk.
+- **AI config now works for non-Anthropic providers** ([src/core/config.ts](src/core/config.ts), [src/core/index.ts](src/core/index.ts), [extension/src/extension.ts](extension/src/extension.ts), [src/cli.ts](src/cli.ts)). Two fixes so "Explain with AI" honors an OpenAI-compatible setup: (1) a zero-dep `loadDotenv()` parses a workspace `.env` into `process.env` (never clobbering real env vars), called at extension activation and CLI startup — GUI-launched VS Code doesn't inherit shell exports, so an `OPENAI_API_KEY` in `.env` was previously invisible; (2) `DEFAULT_CONFIG.ai` no longer hardcodes `provider: "anthropic"`, which `resolveProvider` prioritized over inference and used to override a user who set only `apiKeyEnv`/`model` for another provider. Provider is now inferred from `apiKeyEnv`/`model` (still falling back to anthropic).
 
 ## [0.5.0] — 2026-06-23
 
