@@ -6,7 +6,7 @@ import path from "path";
 import { execFileSync } from "child_process";
 
 import { analyze, DEFAULT_CONFIG } from "../dist/core/index.js";
-import { isIgnored, loadConfig } from "../dist/core/config.js";
+import { isIgnored, loadConfig, loadDotenv } from "../dist/core/config.js";
 import { getChangedLinesForFile, reviewChanges, buildCapabilities, capabilityHint } from "../dist/core/index.js";
 
 const cfg = DEFAULT_CONFIG;
@@ -115,6 +115,31 @@ test("ignore globs match nested node_modules", () => {
   assert.equal(isIgnored("/repo/node_modules/x/index.js", cfg, cwd), true);
   assert.equal(isIgnored("/repo/src/index.js", cfg, cwd), false);
   assert.equal(isIgnored("/repo/a/b/c.min.js", cfg, cwd), true);
+});
+
+test("loadDotenv parses .env into process.env without clobbering existing vars", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diffgate-env-"));
+  fs.writeFileSync(path.join(dir, ".env"), [
+    "# a comment",
+    "",
+    "DG_PLAIN=hello",
+    "export DG_EXPORTED=world",
+    'DG_QUOTED="a b c"',
+    "DG_PREEXISTING=fromfile",
+  ].join("\n"));
+  process.env.DG_PREEXISTING = "fromenv";
+  try {
+    const loaded = loadDotenv(dir);
+    assert.equal(loaded, path.join(dir, ".env"));
+    assert.equal(process.env.DG_PLAIN, "hello");
+    assert.equal(process.env.DG_EXPORTED, "world");
+    assert.equal(process.env.DG_QUOTED, "a b c");
+    assert.equal(process.env.DG_PREEXISTING, "fromenv"); // real env var wins
+  } finally {
+    delete process.env.DG_PLAIN; delete process.env.DG_EXPORTED;
+    delete process.env.DG_QUOTED; delete process.env.DG_PREEXISTING;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- git integration ---------------------------------------------------------

@@ -40,6 +40,49 @@ function ruleAppliesToLanguage(rule: Rule, language: string): boolean {
   return langs.includes("*") || langs.includes(language);
 }
 
+/** A rule as exposed to agents via the MCP `diffgate://rules` resource — metadata only, no matcher. */
+export interface RuleCatalogEntry {
+  id: string;
+  type: Rule["type"];
+  tier: string;
+  blocking: boolean;
+  title: string;
+  /** Human/agent-readable guidance. Empty when the rule's message is computed per match. */
+  description: string;
+  languages: string[];
+  /** The rule pack this belongs to (web-security / compatibility / hygiene), or null. */
+  pack: string | null;
+}
+
+// Enumerate effective rules across representative languages so language-scoped rules (e.g. an
+// AST rule that only applies to javascript) are not omitted from the catalog. Union by id.
+const CATALOG_LANGUAGES = ["javascript", "typescript", "python", "go", "ruby", "java", "rust", "php", "*"];
+
+/** Active rule catalog for this repo's resolved config — reflects tier/enabled overrides and packs. */
+export function ruleCatalog(config: Partial<Config>): RuleCatalogEntry[] {
+  const packOf = (id: string): string | null => {
+    for (const [pack, ids] of Object.entries(RULE_PACKS)) if (ids.includes(id)) return pack;
+    return null;
+  };
+  const byId = new Map<string, RuleCatalogEntry>();
+  for (const lang of CATALOG_LANGUAGES) {
+    for (const rule of getRules(config, lang)) {
+      if (byId.has(rule.id)) continue;
+      byId.set(rule.id, {
+        id: rule.id,
+        type: rule.type,
+        tier: rule.tier,
+        blocking: !!rule.blocking,
+        title: rule.title,
+        description: typeof rule.message === "string" ? rule.message : "",
+        languages: rule.languages || ["*"],
+        pack: packOf(rule.id),
+      });
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
 export function getRules(config: Partial<Config>, language: string): Rule[] {
   const all: Rule[] = [
     ...BUILTIN_RULES,

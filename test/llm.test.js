@@ -5,6 +5,7 @@ import { resolveProvider, selectModel } from "../dist/core/llm/registry.js";
 import { openaiComplete } from "../dist/core/llm/openai.js";
 import { anthropicComplete } from "../dist/core/llm/anthropic.js";
 import { isAiAvailable, explainFinding } from "../dist/core/llm/index.js";
+import { DEFAULT_CONFIG } from "../dist/core/config.js";
 
 function fakeFetch(captured, response) {
   return async (url, opts) => {
@@ -31,6 +32,19 @@ test("resolveProvider selects OpenAI and OpenAI-compatible presets", () => {
 test("resolveProvider infers provider from legacy apiKeyEnv (back-compat)", () => {
   const p = resolveProvider({ ai: { apiKeyEnv: "OPENAI_API_KEY" } });
   assert.equal(p.id, "openai");
+});
+
+test("DEFAULT_CONFIG carries no explicit provider, so apiKeyEnv/model inference wins", () => {
+  // Regression: a hardcoded provider:"anthropic" default used to override a user
+  // who set only apiKeyEnv/model for another provider, forcing the wrong wire.
+  assert.equal(DEFAULT_CONFIG.ai.provider, undefined);
+  // Simulate normalize()'s merge of the default with a user's openai ai block.
+  const merged = { ai: { ...DEFAULT_CONFIG.ai, apiKeyEnv: "OPENAI_API_KEY", model: "gpt-5.4-nano" } };
+  const p = resolveProvider(merged);
+  assert.equal(p.id, "openai");
+  assert.equal(selectModel(merged, "default", p), "gpt-5.4-nano");
+  // The untouched default still resolves to anthropic.
+  assert.equal(resolveProvider({ ai: { ...DEFAULT_CONFIG.ai } }).id, "anthropic");
 });
 
 test("custom baseURL on localhost is treated as a keyless local provider", () => {

@@ -7,7 +7,17 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.5.1] — Unreleased
+
+### Added
+
+- **MCP prompts** ([src/mcp.ts](src/mcp.ts)). The server now answers `prompts/list` / `prompts/get` with three user-invocable playbooks that encode the autonomy ladder so an agent triages findings consistently instead of over-escalating or looping: `review-workflow` (the pre-surface self-check), `triage-finding` (act on one finding by its tier/trust/rung), and `setup-diffgate` (write a low-noise `.diffgate.json`). Prompt text is tailored to the repo's resolved budget and live layers.
+- **MCP resources** ([src/mcp.ts](src/mcp.ts), [src/core/rules/index.ts](src/core/rules/index.ts) `ruleCatalog`). The server answers `resources/list`, `resources/read`, and `resources/templates/list` with read-only context views: `diffgate://capabilities`, `diffgate://rules` (+ the `diffgate://rules/{ruleId}` template), `diffgate://learnings`, and `diffgate://protocol` — so an agent can pre-load the rule catalog, the team's suppressions, and the autonomy protocol without a tool round-trip. `initialize` now advertises `prompts` and `resources` capabilities.
+- **Smithery install** ([smithery.yaml](smithery.yaml)). One-click, zero-config install via `npx @smithery/cli install diffgate-review --client claude`.
+
+### Fixed
+
+- **LICENSE** restored to the canonical Apache-2.0 text. The previous file had been reworded — one clause even carried MIT-style "to use, copy, modify, merge, publish, distribute, sublicense" language — which made GitHub classify the repo as `NOASSERTION` ("Other") and was a genuine licensing defect, not just a detection quirk.
 
 ## [0.5.0] — 2026-06-23
 

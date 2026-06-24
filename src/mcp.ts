@@ -26,7 +26,9 @@ import {
   capabilityHint,
   recordTurn,
   findingFingerprint,
+  ruleCatalog,
 } from "./core/index.js";
+import type { Capabilities } from "./core/index.js";
 import type { Finding, Config, FetchFn } from "./core/types.js";
 import { agentVerdict } from "./metrics.js";
 
@@ -47,6 +49,15 @@ export function negotiateProtocol(requested: unknown): string {
   return typeof requested === "string" && SUPPORTED_PROTOCOLS.includes(requested)
     ? requested
     : PREFERRED_PROTOCOL;
+}
+
+// A JSON-RPC error carrying a protocol error `code` (e.g. -32602 invalid params, -32002 resource
+// not found). Thrown by prompt/resource handlers and surfaced as a proper JSON-RPC `error` object.
+export class RpcError extends Error {
+  constructor(public code: number, message: string, public data?: unknown) {
+    super(message);
+    this.name = "RpcError";
+  }
 }
 
 const SEP = Buffer.from("\r\n\r\n");
@@ -219,6 +230,233 @@ export const TOOL_DEFS = [
     },
   },
 ];
+
+// ---------------------------------------------------------------------------------------------
+// Prompts — user-invocable playbooks (MCP `prompts/*`). These encode the autonomy ladder so an
+// agent triages findings the same way every time instead of over-escalating to a human or looping.
+// ---------------------------------------------------------------------------------------------
+
+export const PROMPT_DEFS = [
+  {
+    name: "review-workflow",
+    title: "DiffGate self-review workflow",
+    description:
+      "The end-to-end self-check to run before surfacing a diff: capabilities → analyze → triage each " +
+      "finding by its rung → escalate or dismiss. Use at the start of a coding task so the human only " +
+      "sees what needs their judgment.",
+    arguments: [
+      { name: "mode", description: "Diff scope for check_staged: 'staged' or 'working'. Default working.", required: false },
+    ],
+  },
+  {
+    name: "triage-finding",
+    title: "Triage one DiffGate finding",
+    description:
+      "Decide what to do with a single finding from its tier/trust/rung — without over-escalating to a " +
+      "human or silently rewriting correct code. Pass the finding's fields.",
+    arguments: [
+      { name: "ruleId", description: "The finding's ruleId.", required: false },
+      { name: "tier", description: "green | yellow | orange.", required: false },
+      { name: "trust", description: "confirmed | unconfirmed | cleared.", required: false },
+      { name: "rung", description: "block | escalate | autofix | advisory (from the verdict block).", required: false },
+    ],
+  },
+  {
+    name: "setup-diffgate",
+    title: "Configure DiffGate for this repo",
+    description:
+      "Write a .diffgate.json and wire the gate (pre-commit hook, MCP, optional AI) with low-noise " +
+      "defaults so the team is not flooded with advisory findings.",
+    arguments: [
+      { name: "aiProvider", description: "Optional: anthropic | openai | local — include AI config for explain/deep-review.", required: false },
+    ],
+  },
+];
+
+function capsFor(cwd: string): Capabilities {
+  const { config } = loadConfig(cwd);
+  return buildCapabilities(config, VERSION);
+}
+
+function promptReviewWorkflow(caps: Capabilities, mode: string): string {
+  const a = caps.agent;
+  const lines = [
+    "Before surfacing code changes for human review, run DiffGate's self-check so the human only sees what needs their judgment.",
+    "",
+    `Repo: graph=${caps.graph.available}, llm=${caps.llm.available}, agentMode=${a.mode}. ` +
+      `Budget: maxFixesPerTurn=${a.maxFixesPerTurn}, escalateAfterTurns=${a.escalateAfterTurns}, autoFixFloor=${a.autoFixFloor}.`,
+    "",
+    "Steps:",
+    "1. Call diffgate_capabilities once to confirm which tools work and your autonomy budget.",
+    "2. After writing/editing a file, call diffgate_analyze (pass `content` for unsaved/generated code) — it only flags lines you changed vs the git baseline.",
+    `3. Before committing, call diffgate_check_staged{mode:"${mode}"} for the repo-wide verdict and the per-finding rung.`,
+    "4. Act on each finding by its rung (see the triage-finding prompt):",
+    "   - block    → a hard rule or graph-confirmed taint. Fix it or stop; never surface as-is.",
+    "   - escalate → high blast radius, or it outlived your budget. Hand to the human with context; do NOT keep re-fixing.",
+    "   - autofix  → tier at/above the floor in code you just wrote. Fix it, then SHOW the human before/after.",
+    "   - advisory → a note. Surface it; don't block.",
+    `5. False positive? Call diffgate_feedback{verdict:"dismiss", note:"why"} instead of editing correct code — it suppresses that exact flag for the whole team. A real catch worth keeping? feedback{verdict:"confirm"}.`,
+    `6. Do NOT loop: cap at ${a.maxFixesPerTurn} DiffGate-driven fixes this turn. If a fix creates a new finding, STOP and report.`,
+  ];
+  lines.push("", "Protocol for this repo:");
+  for (const p of caps.protocol) lines.push(`- ${p}`);
+  return lines.join("\n");
+}
+
+function promptTriageFinding(args: { ruleId?: string; tier?: string; trust?: string; rung?: string }): string {
+  const { ruleId = "(unknown)", tier = "(unknown)", trust = "(unknown)", rung = "(unknown)" } = args;
+  const rungGuide: Record<string, string> = {
+    block: "BLOCK — a hard rule (secret, destructive SQL, injection) or graph-confirmed taint. Fix it before surfacing the diff, or stop and report. Never present this code as ready.",
+    escalate: "ESCALATE — high blast radius, or it survived your fix budget. Hand it to the human with context (callers, why). Do NOT keep re-fixing it.",
+    autofix: "AUTOFIX — at/above the auto-fix floor in code you just wrote. Fix it, then show the human BOTH the original and corrected version and why.",
+    advisory: "ADVISORY — informational. Surface it as a note; do not block the change on it.",
+  };
+  const trustGuide: Record<string, string> = {
+    confirmed: "trust=confirmed: a deterministic signal backs this. Treat it as real.",
+    cleared: "trust=cleared: a signal disproved it (e.g. the graph found no taint path). Safe to leave.",
+    unconfirmed: "trust=unconfirmed: nothing could confirm or deny it. Flag it for a human — do NOT silently 'fix' correct code.",
+  };
+  return [
+    `Finding: ruleId=${ruleId}, tier=${tier}, trust=${trust}, rung=${rung}.`,
+    "",
+    rungGuide[rung] || "No rung supplied — fetch it from diffgate_check_staged's `verdict.findings[]`.",
+    trustGuide[trust] || "No trust supplied — read it from the finding's `trust` field.",
+    "",
+    "If this is a false positive, do NOT edit the code. Record it so it never re-fires for anyone:",
+    `  diffgate_feedback{ ruleId:"${ruleId}", code:"<the flagged line>", verdict:"dismiss", note:"<reason>" }`,
+    'If it is a real issue you fixed, mark it valued: diffgate_feedback{ verdict:"confirm" }.',
+  ].join("\n");
+}
+
+function promptSetupDiffgate(aiProvider?: string): string {
+  const ai = aiProvider
+    ? `,\n  "ai": { "enabled": true, "provider": "${aiProvider}", "model": "${aiProvider === "anthropic" ? "claude-sonnet-4-6" : aiProvider === "openai" ? "gpt-5.5" : "local-model"}" }`
+    : "";
+  return [
+    "Create `.diffgate.json` at the repo root with low-noise defaults:",
+    "",
+    "```json",
+    "{",
+    '  "gate": {',
+    '    "failOn": "orange",',
+    '    "agent": { "mode": "advisory", "escalateAfterTurns": 2, "maxFixesPerTurn": 3 }',
+    `  }${ai}`,
+    "}",
+    "```",
+    "",
+    "Then wire the gate:",
+    "- `diffgate install-hook` — pre-commit gate; only runs your test suite on 🟠 orange changes.",
+    "- `claude mcp add diffgate -- diffgate mcp` — expose the engine to this agent.",
+    "",
+    "Noise control:",
+    "- `mode:\"advisory\"` never hard-blocks on yellow/green — only hard rules and graph-confirmed taint block.",
+    "- Commit `.diffgate/learnings.json` so the team shares dismissals (the git merge driver auto-resolves conflicts).",
+    aiProvider ? "- AI is optional: diffgate_explain / diffgate_deep_review use it; the deterministic gate does not." : "- No AI configured: diffgate_guidelines runs in host mode (you judge — advisory only).",
+  ].join("\n");
+}
+
+export function listPrompts(): { prompts: typeof PROMPT_DEFS } {
+  return { prompts: PROMPT_DEFS };
+}
+
+export function getPrompt(
+  name: string,
+  args: Record<string, unknown> = {},
+  opts: { cwd?: string } = {}
+): { description: string; messages: Array<{ role: string; content: { type: string; text: string } }> } {
+  const cwd = opts.cwd || process.cwd();
+  const def = PROMPT_DEFS.find((p) => p.name === name);
+  if (!def) throw new RpcError(-32602, `Unknown prompt: ${name}`);
+  let text: string;
+  if (name === "review-workflow") {
+    const mode = args.mode === "staged" ? "staged" : "working";
+    text = promptReviewWorkflow(capsFor(cwd), mode);
+  } else if (name === "triage-finding") {
+    text = promptTriageFinding(args as Parameters<typeof promptTriageFinding>[0]);
+  } else {
+    text = promptSetupDiffgate(typeof args.aiProvider === "string" ? args.aiProvider : undefined);
+  }
+  return { description: def.description, messages: [{ role: "user", content: { type: "text", text } }] };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Resources — attachable context (MCP `resources/*`). Read-only views of repo-scoped engine state
+// so an agent can pre-load the rule catalog / suppressions / budget without a tool round-trip.
+// All resources resolve against process.cwd() (the repo the MCP server was launched in), matching
+// how the tools default `cwd`.
+// ---------------------------------------------------------------------------------------------
+
+export const RESOURCE_DEFS = [
+  { uri: "diffgate://capabilities", name: "capabilities", title: "DiffGate capabilities", description: "Active layers (core/graph/llm), callable tools, and the agent autonomy budget for this repo.", mimeType: "application/json" },
+  { uri: "diffgate://rules", name: "rules", title: "Active rule catalog", description: "Every rule DiffGate applies in this repo (id, tier, blocking, pack) after config overrides.", mimeType: "application/json" },
+  { uri: "diffgate://learnings", name: "learnings", title: "Dismissed / confirmed findings", description: "The team's recorded verdicts — noise suppressions and confirmed catches — from .diffgate/learnings.json.", mimeType: "application/json" },
+  { uri: "diffgate://protocol", name: "protocol", title: "Agent autonomy protocol", description: "The trust × rung ladder for acting on findings without over-escalating to a human.", mimeType: "text/markdown" },
+];
+
+export const RESOURCE_TEMPLATE_DEFS = [
+  { uriTemplate: "diffgate://rules/{ruleId}", name: "rule", title: "Single rule detail", description: "Metadata for one rule by id (e.g. diffgate://rules/hardcoded-secret).", mimeType: "application/json" },
+];
+
+function protocolMarkdown(caps: Capabilities): string {
+  const a = caps.agent;
+  const lines = [
+    "# DiffGate agent protocol",
+    "",
+    `Mode **${a.mode}** · auto-fix floor **${a.autoFixFloor}** · max fixes/turn **${a.maxFixesPerTurn}** · escalate after **${a.escalateAfterTurns}** turns.`,
+    "",
+    "## Rungs (what to do with a finding)",
+    "- **block** — hard rule or graph-confirmed taint. Fix or stop; never surface as-is.",
+    "- **escalate** — high blast radius, or it outlived your budget. Hand to a human with context; don't re-fix.",
+    "- **autofix** — tier at/above the floor in code you just wrote. Fix, then show before/after.",
+    "- **advisory** — a note. Surface, don't block.",
+    "",
+    "## Trust (how much to believe it)",
+    "- **confirmed** — a deterministic signal backs it. Real.",
+    "- **cleared** — a signal disproved it (graph found no taint path). Safe.",
+    "- **unconfirmed** — nothing could confirm/deny. Flag for a human; don't silently fix.",
+    "",
+    "## This repo",
+  ];
+  for (const p of caps.protocol) lines.push(`- ${p}`);
+  return lines.join("\n");
+}
+
+export function listResources(): { resources: typeof RESOURCE_DEFS } {
+  return { resources: RESOURCE_DEFS };
+}
+
+export function listResourceTemplates(): { resourceTemplates: typeof RESOURCE_TEMPLATE_DEFS } {
+  return { resourceTemplates: RESOURCE_TEMPLATE_DEFS };
+}
+
+export function readResource(
+  uri: string,
+  opts: { cwd?: string } = {}
+): { contents: Array<{ uri: string; mimeType: string; text: string }> } {
+  const cwd = opts.cwd || process.cwd();
+  const json = (val: unknown) => JSON.stringify(val, null, 2);
+  const text = (mimeType: string, body: string) => ({ contents: [{ uri, mimeType, text: body }] });
+
+  if (uri === "diffgate://capabilities") return text("application/json", json(capsFor(cwd)));
+  if (uri === "diffgate://rules") {
+    const { config } = loadConfig(cwd);
+    return text("application/json", json(ruleCatalog(config)));
+  }
+  if (uri === "diffgate://learnings") {
+    return text("application/json", json(loadLearnings(repoRoot(cwd) || cwd)));
+  }
+  if (uri === "diffgate://protocol") return text("text/markdown", protocolMarkdown(capsFor(cwd)));
+
+  const ruleMatch = /^diffgate:\/\/rules\/([^/]+)$/.exec(uri);
+  if (ruleMatch) {
+    const id = decodeURIComponent(ruleMatch[1]);
+    const { config } = loadConfig(cwd);
+    const entry = ruleCatalog(config).find((r) => r.id === id);
+    if (!entry) throw new RpcError(-32002, `Rule not found: ${id}`, { uri });
+    return text("application/json", json(entry));
+  }
+  throw new RpcError(-32002, `Resource not found: ${uri}`, { uri });
+}
 
 export async function handleAnalyze(
   { filePath, content, cwd: cwdArg }: { filePath: string; content?: string; cwd?: string },
@@ -398,12 +636,43 @@ export function runMcpServer(): void {
 
     if (method === "initialize") {
       const protocolVersion = negotiateProtocol(params?.protocolVersion);
-      send({ jsonrpc: "2.0", id, result: { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "diffgate", version: VERSION } } });
+      send({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          protocolVersion,
+          capabilities: { tools: {}, prompts: {}, resources: {} },
+          serverInfo: { name: "diffgate", version: VERSION },
+        },
+      });
       return;
     }
     if (method === "initialized" || method === "notifications/initialized") return;
     if (method === "ping") { send({ jsonrpc: "2.0", id, result: {} }); return; }
     if (method === "tools/list") { send({ jsonrpc: "2.0", id, result: { tools: TOOL_DEFS } }); return; }
+    if (method === "prompts/list") { send({ jsonrpc: "2.0", id, result: listPrompts() }); return; }
+    if (method === "resources/list") { send({ jsonrpc: "2.0", id, result: listResources() }); return; }
+    if (method === "resources/templates/list") { send({ jsonrpc: "2.0", id, result: listResourceTemplates() }); return; }
+
+    if (method === "prompts/get") {
+      try {
+        send({ jsonrpc: "2.0", id, result: getPrompt(params?.name as string, (params?.arguments as Record<string, unknown>) || {}) });
+      } catch (e) {
+        const code = e instanceof RpcError ? e.code : -32603;
+        send({ jsonrpc: "2.0", id, error: { code, message: (e as Error).message, ...(e instanceof RpcError && e.data ? { data: e.data } : {}) } });
+      }
+      return;
+    }
+
+    if (method === "resources/read") {
+      try {
+        send({ jsonrpc: "2.0", id, result: readResource((params as { uri?: string })?.uri as string) });
+      } catch (e) {
+        const code = e instanceof RpcError ? e.code : -32603;
+        send({ jsonrpc: "2.0", id, error: { code, message: (e as Error).message, ...(e instanceof RpcError && e.data ? { data: e.data } : {}) } });
+      }
+      return;
+    }
 
     if (method === "tools/call") {
       const { name, arguments: args = {} } = params || {};

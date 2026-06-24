@@ -8,6 +8,7 @@ import { toSarif } from "./sarif.js";
 import {
   analyze,
   loadConfig,
+  loadDotenv,
   isIgnored,
   getChangedLinesForFile,
   getPreviousContent,
@@ -1005,6 +1006,7 @@ ${c.bold("Examples")}
 }
 
 async function main(): Promise<void> {
+  loadDotenv(process.cwd());
   const [, , maybeCmd, ...rest] = process.argv;
   const known = ["check", "scan", "watch", "report", "bench", "marginal", "explain", "guidelines", "feedback", "stats", "graph", "init", "install-hook", "merge-driver", "mcp"];
   let cmd = maybeCmd;

@@ -1,0 +1,13 @@
+# Smithery config — one-click install via `npx @smithery/cli install diffgate-review --client claude`.
+# DiffGate is zero-config: the deterministic gate needs no API key. Optional AI (diffgate_explain,
+# diffgate_deep_review) is configured per-repo in .diffgate.json or the environment, not here.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+    required: []
+    additionalProperties: false
+  commandFunction: |-
+    () => ({ command: 'npx', args: ['-y', 'diffgate-review', 'mcp'] })
+  exampleConfig: {}

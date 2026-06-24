@@ -19,6 +19,7 @@ const captured = {
   hoverProvider: null,
   codeActionProvider: null,
   diags: new Map(),
+  wsFolders: [],
 };
 
 class Position {
@@ -114,6 +115,7 @@ const vscode = {
     onDidSaveTextDocument: (fn) => { captured.save.push(fn); return { dispose() {} }; },
     onDidCloseTextDocument: () => ({ dispose() {} }),
     onDidChangeConfiguration: (fn) => { captured.config.push(fn); return { dispose() {} }; },
+    onDidChangeWorkspaceFolders: (fn) => { captured.wsFolders.push(fn); return { dispose() {} }; },
     createFileSystemWatcher: () => ({ onDidChange() {}, onDidCreate() {}, onDidDelete() {}, dispose() {} }),
     asRelativePath: (p) => path.basename(p.fsPath || p),
     openTextDocument: () => Promise.resolve({ getText: () => "" }),
@@ -223,7 +225,71 @@ Promise.resolve().then(() => {
   assert.ok(hoverWithBadge.contents.value.includes("Confirmed risk"), "verdict summary should appear in hover");
   ext.verdictCache.delete(`${docUri}::hardcoded-secret::2`);
 
+  runGitPruneScenario();
+
   fs.rmSync(tmp, { recursive: true, force: true });
   Module._load = origLoad;
   console.log("✔ extension smoke test passed");
 });
+
+// --- regression: sidebar/diagnostics clear after a commit removes a file from the diff -----------
+// Reproduces the reported bug: refreshWorkspace() must prune findings for files that have left the
+// working-tree diff (committed/reverted). Drives the real save + workspace-folders handlers against
+// a real git repo. The first activate() ran with workspaceFolders=[], so no fs.watch exists yet;
+// we point workspaceFolders at the git repo and reuse the captured handlers (no dangling watcher).
+function runGitPruneScenario() {
+  const { execFileSync } = require("child_process");
+  // realpath so the editor-URI path matches git's `--show-toplevel` (which resolves the
+  // /var -> /private/var symlink on macOS); real repos under /Users are not symlinked.
+  const gitTmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "grg-ext-git-")));
+  const g = (args) => execFileSync("git", args, { cwd: gitTmp, stdio: "pipe" });
+  g(["init", "-q"]);
+  g(["config", "user.email", "t@example.com"]);
+  g(["config", "user.name", "t"]);
+  g(["config", "commit.gpgsign", "false"]);
+
+  const gfile = path.join(gitTmp, "svc.js");
+  // Clean baseline (no findings), committed.
+  fs.writeFileSync(gfile, "export function ok() {\n  return 1;\n}\n");
+  g(["add", "."]);
+  g(["commit", "-q", "-m", "base"]);
+
+  // Introduce a secret in the working tree -> now in the diff.
+  const dirty = `export function ok() {\n  const apiKey = "sk_live_abcdef0123456789abcd";\n  return 1;\n}\n`;
+  fs.writeFileSync(gfile, dirty);
+
+  // Point the (already-registered) handlers at the git repo.
+  vscode.workspace.workspaceFolders = [{ uri: vscode.Uri.file(gitTmp) }];
+  captured.folder = gitTmp;
+
+  const gLines = dirty.split("\n");
+  const gdoc = {
+    uri: vscode.Uri.file(gfile),
+    languageId: "javascript",
+    lineCount: gLines.length,
+    getText: () => dirty,
+    lineAt: (n) => ({ range: new Range(n, 0, n, (gLines[n] || "").length) }),
+    isDirty: false,
+    version: 1,
+  };
+
+  // Save handler: analyzeDocument + refreshWorkspace -> finding enters sidebar/diagnostics.
+  captured.save[0](gdoc);
+  const gUri = gdoc.uri.toString();
+  const before = captured.diags.get(gUri);
+  assert.ok(before && before.some((d) => d.code === "hardcoded-secret"),
+    "uncommitted secret should be published as a diagnostic");
+
+  // Commit the change: working tree now matches HEAD -> file leaves the diff.
+  g(["add", "."]);
+  g(["commit", "-q", "-m", "add secret"]);
+
+  // Trigger refreshWorkspace WITHOUT re-analyzing the doc (isolates the prune path).
+  assert.ok(captured.wsFolders.length > 0, "should register a workspace-folders handler");
+  captured.wsFolders[0]({ added: [], removed: [] });
+
+  assert.ok(!captured.diags.has(gUri),
+    "committed file must be pruned from diagnostics after it leaves the diff");
+
+  fs.rmSync(gitTmp, { recursive: true, force: true });
+}

@@ -67,13 +67,16 @@ diffgate install-hook  # adds .git/hooks/pre-commit — does NOT run your test s
 # Claude Code — one command:
 claude mcp add diffgate -- diffgate mcp
 
+# Or one-click via Smithery (zero config):
+npx @smithery/cli install diffgate-review --client claude
+
 # Cursor — add to MCP settings:
 # { "diffgate": { "command": "diffgate", "args": ["mcp"] } }
 ```
 
 Or install the **Desktop Extension** for one-click setup: download [`diffgate.mcpb`](https://github.com/srbsa/diffgate/releases/latest) and open it in Claude Desktop.
 
-DiffGate doesn't *gate* your agent — it lets your agent **self-check before you see the diff**, and surface what it corrected (original + fix + why) instead of silently rewriting. A trustworthy, deterministic self-check is what makes it safe to hand the agent more autonomy.
+DiffGate doesn't *gate* your agent — it lets your agent **self-check before you see the diff**, and surface what it corrected (original + fix + why) instead of silently rewriting. A trustworthy, deterministic self-check is what makes it safe to hand the agent more autonomy. Beyond tools, the MCP server exposes **prompts** (`review-workflow`, `triage-finding`, `setup-diffgate`) and **resources** (`diffgate://rules`, `diffgate://learnings`, `diffgate://capabilities`, `diffgate://protocol`) — see [MCP.md](MCP.md).
 
 ### VS Code extension
 
