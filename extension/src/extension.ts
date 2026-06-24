@@ -492,7 +492,13 @@ class DiffGateFileDecorationProvider implements vscode.FileDecorationProvider {
 function refreshWorkspace(): void {
   const folders = vscode.workspace.workspaceFolders || [];
   const diffMode = settings().get<string>("diffMode", "working");
+
+  // Snapshot which URIs were git-diff-tracked before clearing, so we can prune
+  // stale entries (e.g. files that were just committed).
+  const prevGitUris = new Set(gitFindingsByUri.keys());
   gitFindingsByUri.clear();
+  const nextGitUris = new Set<string>();
+
   for (const wf of folders) {
     const cwd = wf.uri.fsPath;
     if (!isGitRepo(cwd)) continue;
@@ -506,6 +512,7 @@ function refreshWorkspace(): void {
       const uri = vscode.Uri.file(fr.filePath);
       const uriStr = uri.toString();
       gitFindingsByUri.set(uriStr, fr);
+      nextGitUris.add(uriStr);
       if (!findingsByUri.has(uriStr)) {
         diagnostics.set(uri, fr.findings.map((f) => toDiagnostic(f, null)));
         const config = getConfigFor(cwd);
@@ -513,6 +520,18 @@ function refreshWorkspace(): void {
       }
     }
   }
+
+  // Files that left the diff (committed, reverted, etc.): clear sidebar, diagnostics, and verdict cache.
+  for (const uriStr of prevGitUris) {
+    if (!nextGitUris.has(uriStr)) {
+      findingsByUri.delete(uriStr);
+      diagnostics.delete(vscode.Uri.parse(uriStr));
+      for (const key of verdictCache.keys()) {
+        if (key.startsWith(uriStr + "::")) verdictCache.delete(key);
+      }
+    }
+  }
+
   updateTreeData();
   updateStatusBar();
   if (decorationProvider) {
@@ -1435,6 +1454,36 @@ export function activate(context: vscode.ExtensionContext): void {
   cfgWatcher.onDidCreate(onCfg);
   cfgWatcher.onDidDelete(onCfg);
   context.subscriptions.push(cfgWatcher);
+
+  // Watch .git directories for git state changes that alter the diff (commit, stash, reset, checkout).
+  // VS Code's file watcher excludes .git, so we use Node's fs.watch directly.
+  let gitRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleGitRefresh = () => {
+    clearTimeout(gitRefreshTimer);
+    gitRefreshTimer = setTimeout(() => { gitRefreshTimer = undefined; refreshWorkspace(); }, 500);
+  };
+  const gitDirWatchers: import("fs").FSWatcher[] = [];
+  const watchGitDir = (wf: vscode.WorkspaceFolder) => {
+    const gitDir = path.join(wf.uri.fsPath, ".git");
+    if (fs.existsSync(gitDir)) {
+      try {
+        const w = fs.watch(gitDir, (_event, filename) => {
+          // COMMIT_EDITMSG: regular commit. HEAD: checkout/reset/rebase.
+          // index: stage/unstage/stash/checkout-file — all alter the working-tree diff.
+          if (filename === "COMMIT_EDITMSG" || filename === "HEAD" || filename === "index") scheduleGitRefresh();
+        });
+        gitDirWatchers.push(w);
+      } catch { /* not watchable on this platform/fs */ }
+    }
+  };
+  for (const wf of vscode.workspace.workspaceFolders || []) watchGitDir(wf);
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders((e) => {
+      for (const added of e.added) watchGitDir(added);
+      refreshWorkspace();
+    }),
+    { dispose: () => { clearTimeout(gitRefreshTimer); for (const w of gitDirWatchers) w.close(); } }
+  );
 
   reanalyzeOpen();
   refreshWorkspace();
