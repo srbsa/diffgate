@@ -11,7 +11,8 @@ export {
 } from "./git.js";
 export { detectLanguage, hasAstSupport } from "./parsers/index.js";
 export { computeChangedLines } from "./linediff.js";
-export { getRules } from "./rules/index.js";
+export { getRules, ruleCatalog } from "./rules/index.js";
+export type { RuleCatalogEntry } from "./rules/index.js";
 export { runGate, runCommand, shouldGate } from "./checks.js";
 export {
   explainFinding,

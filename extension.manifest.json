@@ -51,6 +51,8 @@
     }
   ],
 
+  "prompts_generated": true,
+
   "user_config": [
     {
       "name": "ANTHROPIC_API_KEY",

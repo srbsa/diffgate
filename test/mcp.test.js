@@ -15,6 +15,15 @@ import {
   handleDeepReview,
   negotiateProtocol,
   TOOL_DEFS,
+  PROMPT_DEFS,
+  RESOURCE_DEFS,
+  RESOURCE_TEMPLATE_DEFS,
+  listPrompts,
+  getPrompt,
+  listResources,
+  listResourceTemplates,
+  readResource,
+  RpcError,
 } from "../dist/mcp.js";
 
 function tmpDir(files) {
@@ -384,6 +393,121 @@ test("diffgate_capabilities is advertised in TOOL_DEFS", () => {
 });
 
 // --- handleDeepReview --------------------------------------------------------
+
+// --- prompts -----------------------------------------------------------------
+
+test("listPrompts advertises the agent-workflow prompts with arguments", () => {
+  const { prompts } = listPrompts();
+  const names = prompts.map((p) => p.name);
+  assert.deepEqual(names.sort(), ["review-workflow", "setup-diffgate", "triage-finding"]);
+  for (const p of prompts) {
+    assert.ok(p.title && p.description, `${p.name} has title + description`);
+    assert.ok(Array.isArray(p.arguments), `${p.name} declares arguments[]`);
+  }
+  assert.equal(PROMPT_DEFS.length, 3);
+});
+
+test("getPrompt(review-workflow) returns a user message tuned to repo capabilities", () => {
+  const dir = tmpDir({});
+  try {
+    const res = getPrompt("review-workflow", { mode: "staged" }, { cwd: dir });
+    assert.ok(res.description);
+    assert.equal(res.messages.length, 1);
+    assert.equal(res.messages[0].role, "user");
+    const text = res.messages[0].content.text;
+    assert.match(text, /diffgate_capabilities/);
+    assert.match(text, /diffgate_check_staged\{mode:"staged"\}/);
+    assert.match(text, /diffgate_feedback/);
+    assert.match(text, /maxFixesPerTurn=3/, "embeds the resolved budget");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("getPrompt(triage-finding) gives rung + trust specific guidance", () => {
+  const res = getPrompt("triage-finding", { ruleId: "sql-injection", tier: "orange", trust: "unconfirmed", rung: "escalate" });
+  const text = res.messages[0].content.text;
+  assert.match(text, /ESCALATE/);
+  assert.match(text, /do NOT silently 'fix'/i);
+  assert.match(text, /diffgate_feedback\{ ruleId:"sql-injection"/);
+});
+
+test("getPrompt(setup-diffgate) includes AI config only when a provider is given", () => {
+  const withAi = getPrompt("setup-diffgate", { aiProvider: "anthropic" }).messages[0].content.text;
+  assert.match(withAi, /"provider": "anthropic"/);
+  assert.match(withAi, /claude-sonnet-4-6/);
+  const noAi = getPrompt("setup-diffgate", {}).messages[0].content.text;
+  assert.doesNotMatch(noAi, /"ai":/);
+  assert.match(noAi, /host mode/);
+});
+
+test("getPrompt throws RpcError(-32602) for an unknown prompt", () => {
+  assert.throws(() => getPrompt("nope", {}), (e) => e instanceof RpcError && e.code === -32602);
+});
+
+// --- resources ---------------------------------------------------------------
+
+test("listResources + listResourceTemplates advertise the context views", () => {
+  const { resources } = listResources();
+  const uris = resources.map((r) => r.uri).sort();
+  assert.deepEqual(uris, ["diffgate://capabilities", "diffgate://learnings", "diffgate://protocol", "diffgate://rules"]);
+  for (const r of resources) assert.ok(r.name && r.title && r.mimeType, `${r.uri} fully described`);
+  const { resourceTemplates } = listResourceTemplates();
+  assert.equal(resourceTemplates[0].uriTemplate, "diffgate://rules/{ruleId}");
+  assert.equal(RESOURCE_DEFS.length, 4);
+  assert.equal(RESOURCE_TEMPLATE_DEFS.length, 1);
+});
+
+test("readResource(diffgate://rules) returns the active rule catalog as JSON", () => {
+  const dir = tmpDir({});
+  try {
+    const res = readResource("diffgate://rules", { cwd: dir });
+    assert.equal(res.contents[0].mimeType, "application/json");
+    const catalog = JSON.parse(res.contents[0].text);
+    assert.ok(Array.isArray(catalog) && catalog.length > 0);
+    const secret = catalog.find((r) => r.id === "hardcoded-secret");
+    assert.equal(secret.tier, "orange");
+    assert.equal(secret.blocking, true);
+    assert.equal(secret.pack, "web-security");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readResource(diffgate://capabilities | protocol | learnings)", () => {
+  const dir = tmpDir({});
+  try {
+    const caps = JSON.parse(readResource("diffgate://capabilities", { cwd: dir }).contents[0].text);
+    assert.equal(caps.core, true);
+
+    const proto = readResource("diffgate://protocol", { cwd: dir });
+    assert.equal(proto.contents[0].mimeType, "text/markdown");
+    assert.match(proto.contents[0].text, /# DiffGate agent protocol/);
+
+    const learnings = JSON.parse(readResource("diffgate://learnings", { cwd: dir }).contents[0].text);
+    assert.ok(Array.isArray(learnings.entries), "learnings store has entries[]");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readResource(diffgate://rules/{id}) resolves the template; missing → RpcError(-32002)", () => {
+  const dir = tmpDir({});
+  try {
+    const one = JSON.parse(readResource("diffgate://rules/hardcoded-secret", { cwd: dir }).contents[0].text);
+    assert.equal(one.id, "hardcoded-secret");
+    assert.throws(
+      () => readResource("diffgate://rules/does-not-exist", { cwd: dir }),
+      (e) => e instanceof RpcError && e.code === -32002
+    );
+    assert.throws(
+      () => readResource("diffgate://bogus", { cwd: dir }),
+      (e) => e instanceof RpcError && e.code === -32002
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("handleDeepReview throws when AI is not configured", async () => {
   const dir = tmpDir({});

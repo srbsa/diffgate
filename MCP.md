@@ -8,6 +8,15 @@ Expose the diffgate engine to any coding agent that supports MCP (Claude Code, C
 npm install -g diffgate-review   # install once globally
 ```
 
+### One-click via Smithery
+
+```bash
+npx @smithery/cli install diffgate-review --client claude
+```
+
+Zero config — the deterministic gate needs no API key. (Optional AI for `diffgate_explain` /
+`diffgate_deep_review` is set per-repo in `.diffgate.json`, see below.)
+
 ### Claude Code (one command)
 
 ```bash
@@ -72,6 +81,33 @@ In Cursor Settings → MCP, add:
 | `diffgate_explain` | Get a concise explanation of any yellow/orange finding |
 | `diffgate_guidelines` | Check the diff against the repo's AGENTS.md/CLAUDE.md coding guidelines |
 | `diffgate_feedback` | Record a dismiss or confirm verdict on a finding (updates learnings) |
+
+## Prompts exposed (`prompts/list`)
+
+User-invocable playbooks that encode the autonomy ladder, so an agent triages findings the same way
+every time instead of over-escalating to a human or looping on a fix.
+
+| Prompt | What it does |
+|---|---|
+| `review-workflow` | The end-to-end self-check before surfacing a diff: capabilities → analyze → triage each finding by rung → escalate or dismiss. Arg: `mode` (`staged`/`working`). |
+| `triage-finding` | Decide what to do with one finding from its `tier`/`trust`/`rung` — without rewriting correct code. Args: `ruleId`, `tier`, `trust`, `rung`. |
+| `setup-diffgate` | Write a low-noise `.diffgate.json` and wire the gate (hook, MCP, optional AI). Arg: `aiProvider`. |
+
+Prompt text is tailored to the repo: the resolved autonomy budget and which layers (graph/LLM) are
+live are baked into the returned message.
+
+## Resources exposed (`resources/list`)
+
+Read-only context views so the agent can pre-load engine state without a tool round-trip. All
+resolve against the repo the MCP server was launched in.
+
+| URI | Content |
+|---|---|
+| `diffgate://capabilities` | Active layers, callable tools, and the autonomy budget (JSON). |
+| `diffgate://rules` | The full active rule catalog — id, tier, blocking, pack — after config overrides (JSON). |
+| `diffgate://rules/{ruleId}` | One rule's metadata (resource template, e.g. `diffgate://rules/hardcoded-secret`). |
+| `diffgate://learnings` | The team's recorded dismissals + confirmed catches from `.diffgate/learnings.json` (JSON). |
+| `diffgate://protocol` | The trust × rung ladder as Markdown — how to act on findings without over-escalating. |
 
 ### diffgate_capabilities
 
