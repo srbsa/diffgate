@@ -3,6 +3,7 @@
 
 import type {
   Config, GraphConfig, ImpactInfo, PrContextInfo, EditContext, SecurityVerdict, ImpactRef,
+  ReachabilityVerdict,
 } from "../types.js";
 import { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir } from "./codegraph.js";
 
@@ -33,6 +34,13 @@ export interface SecurityQuery extends ImpactQuery {
   sink?: string;
 }
 
+export interface ReachabilityQuery extends ImpactQuery {
+  /** Entry-point kinds treated as untrusted taint roots (e.g. ["http_handler", "event_handler"]). */
+  untrustedKinds?: string[];
+  /** Max caller-chain hops to walk before giving up. */
+  maxDepth?: number;
+}
+
 export interface GraphProvider {
   id: string;
   /** One-shot impact lookup. Returns null on any failure — the caller treats null as "no data". */
@@ -45,6 +53,9 @@ export interface GraphProvider {
   editContext?(query: ImpactQuery): EditContext | null;
   /** Graph-aware taint verdict for an injection sink (Pro). null = unavailable/unsure. Optional. */
   security?(query: SecurityQuery): SecurityVerdict | null;
+  /** Community-edition reachability for an injection sink: is it reachable from an untrusted entry
+   *  point? null = unknown (NOT "unreachable"). No Pro binary required. Optional. */
+  reachability?(query: ReachabilityQuery): ReachabilityVerdict | null;
   /** (Re)index the workspace. Returns true on success. Optional. */
   reindex?(opts?: { full?: boolean }): boolean;
 }
@@ -62,6 +73,11 @@ export const DEFAULT_GRAPH_CONFIG: Required<Omit<GraphConfig, "command">> & { co
   editContext: true,
   security: "auto",
   securityDeescalate: false,
+  reachability: "auto",
+  reachabilityDeescalate: false,
+  untrustedEntryKinds: ["http_handler", "event_handler"],
+  reachabilityMaxDepth: 6,
+  reachabilityTimeoutMs: 4000,
 };
 
 export function resolveGraphConfig(config: Partial<Config>): typeof DEFAULT_GRAPH_CONFIG {
@@ -121,6 +137,6 @@ export function graphStatus(config: Partial<Config>): GraphStatus {
 }
 
 export { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir } from "./codegraph.js";
-export { normalizeImpact, normalizePrContext, normalizeEditContext, normalizeSecurity, normalizeTests } from "./normalize.js";
+export { normalizeImpact, normalizePrContext, normalizeEditContext, normalizeSecurity, normalizeTests, normalizeEntryPoints, normalizeAncestors } from "./normalize.js";
 export type { GraphRunner } from "./codegraph.js";
 export type { ImpactInfo };

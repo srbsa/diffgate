@@ -26,11 +26,16 @@ export function trustFor(finding: Finding): NonNullable<Finding["trust"]> {
   // LLM-derived guideline findings are non-deterministic — never auto-trusted.
   if (finding.ruleId === "guideline") return "unconfirmed";
   if (SECURITY_RULES.has(finding.ruleId)) {
-    if (finding.security?.tainted === true) return "confirmed";  // graph traced a taint path
-    if (finding.security?.tainted === false) return "cleared";   // graph proved no taint path
-    return "unconfirmed";                                        // pattern guess, no taint analysis
+    if (finding.security?.tainted === true) return "confirmed";  // Pro graph traced a taint path
+    if (finding.security?.tainted === false) return "cleared";   // Pro graph proved no taint path
+    // Community reachability fills the precision gap when the Pro taint engine is silent.
+    if (finding.reachability) return finding.reachability.reachable ? "reachable" : "unreachable";
+    return "unconfirmed";                                        // pattern guess, no graph analysis
   }
-  // Non-security findings come from deterministic pattern/AST detection — the detection IS the proof.
+  // Broad cross-language advisory rules earn a reachability verdict when a graph is present; surface
+  // it so the agent can treat "reachable" as block-worthy and "unreachable" as advisory.
+  if (finding.reachability) return finding.reachability.reachable ? "reachable" : "unreachable";
+  // Other non-security findings come from deterministic pattern/AST detection — the detection IS proof.
   return "confirmed";
 }
 

@@ -32,11 +32,12 @@ export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier 
 export {
   getGraph, resolveGraphConfig, graphStatus, makeCodeGraphProvider, codeGraphAvailable,
   commandAvailable, graphDbDir, normalizeImpact, normalizePrContext, normalizeEditContext,
-  normalizeSecurity, normalizeTests, DEFAULT_GRAPH_CONFIG,
+  normalizeSecurity, normalizeTests, normalizeEntryPoints, normalizeAncestors, DEFAULT_GRAPH_CONFIG,
 } from "./graph/index.js";
-export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, GraphStatus, GraphRunner } from "./graph/index.js";
+export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, ReachabilityQuery, GraphStatus, GraphRunner } from "./graph/index.js";
 export { attachImpact, IMPACT_RULES } from "./impact.js";
 export { attachSecurity, SECURITY_RULES, labelTrust, trustFor } from "./security.js";
+export { attachReachability, REACHABILITY_RULES } from "./reachability.js";
 export { buildCapabilities, capabilityHint } from "./capabilities.js";
 export type { Capabilities } from "./capabilities.js";
 export { predictedSignal, realizedSignal } from "./signal.js";
@@ -53,6 +54,7 @@ import { loadMergedLearnings as _loadMergedLearnings, applyLearnings as _applyLe
 import { getGraph as _getGraph } from "./graph/index.js";
 import { attachImpact as _attachImpact } from "./impact.js";
 import { attachSecurity as _attachSecurity, labelTrust as _labelTrust } from "./security.js";
+import { attachReachability as _attachReachability } from "./reachability.js";
 import type { GraphProvider } from "./graph/index.js";
 import type { Config, AnalyzeResult } from "./types.js";
 
@@ -86,10 +88,13 @@ export function reviewChanges(cwd: string, opts: { mode?: string; base?: string;
     if (result.findings.length > 0) files.push(result);
   }
 
-  // Cross-file blast radius + graph-aware security (both no-ops when no code graph is available).
+  // Cross-file blast radius + graph-aware security/reachability (all no-ops without a code graph).
+  // Order: security (Pro taint) first so its authoritative verdict wins; community reachability then
+  // fills the precision gap for findings it left unconfirmed; trust labels are derived last.
   const graph = _getGraph(cwd, config, opts.graph !== undefined ? { provider: opts.graph } : {});
   files = _attachImpact(files, { cwd, config, graph, mode });
   files = _attachSecurity(files, { cwd, config, graph });
+  files = _attachReachability(files, { cwd, config, graph });
   files = _labelTrust(files);
 
   const allFindings = files.flatMap((f) => f.findings);

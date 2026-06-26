@@ -37,6 +37,8 @@ export interface Finding {
   tierAdjusted?: "escalated" | "deescalated" | null;
   /** Graph-aware security verdict for injection-class findings (Pro security graph only). */
   security?: SecurityVerdict | null;
+  /** Community-graph reachability verdict: is this sink reachable from an untrusted entry point? */
+  reachability?: ReachabilityVerdict | null;
   /** Pre-edit context (callers/tests/history) for a high-blast finding — MCP analyze only. */
   editContext?: EditContext | null;
   /**
@@ -46,8 +48,12 @@ export interface Finding {
    *  - "cleared"     a high-trust signal disproved it (the graph found no taint path to the sink).
    *  - "unconfirmed" no deterministic signal could confirm/deny it (an injection-class pattern with
    *                  no code graph, or an LLM-derived guideline finding). Treat as advisory.
+   *  - "reachable"   the community code graph proved a path from an untrusted entry point (an HTTP/
+   *                  event handler) to this sink. Strongest non-AST confirmation; block-worthy.
+   *  - "unreachable" the community code graph found no path from an untrusted entry point to this
+   *                  sink. Advisory only — coverage depends on the index, so verify before dismissing.
    */
-  trust?: "confirmed" | "unconfirmed" | "cleared" | null;
+  trust?: "confirmed" | "unconfirmed" | "cleared" | "reachable" | "unreachable" | null;
 }
 
 /** A single location in the codebase (a call site, a missing-test target, etc.). */
@@ -116,6 +122,39 @@ export interface SecurityVerdict {
   /** Which detector produced this (e.g. "detect_injection", "trace_data_flow"). */
   detector?: string;
   source: string;
+}
+
+/** An untrusted entry point (an HTTP/event handler) the reachability pass treats as a taint source. */
+export interface ReachabilityEntryPoint {
+  /** Handler/function name (e.g. "user_route"). */
+  name: string;
+  /** Entry-point kind as classified by the graph (e.g. "http_handler", "event_handler"). */
+  kind: string;
+  /** Route path, when the framework exposes one (e.g. "/user/:id"). */
+  route?: string;
+  /** HTTP method, when known (e.g. "GET"). */
+  method?: string;
+  /** File declaring the handler. */
+  file?: string;
+}
+
+/**
+ * Community-edition reachability verdict for an injection-class finding. Answers the precision
+ * question without the Pro taint engine: is this sink reachable, through the call graph, from an
+ * untrusted entry point? The verdict object is only present when the graph could answer — a null
+ * return from the provider means "unknown" and leaves the finding untouched (fail-safe).
+ */
+export interface ReachabilityVerdict {
+  /** true = a call path from an untrusted entry point reaches the sink; false = none found in the graph. */
+  reachable: boolean;
+  /** Always "codegraph" today. */
+  source: string;
+  /** The untrusted entry point(s) from which the sink is reachable (empty when reachable=false). */
+  entryPoints: ReachabilityEntryPoint[];
+  /** Best-effort sink → … → entry-point hops, when the graph exposes an ordered path. */
+  path?: ImpactRef[];
+  /** Hops from the sink to the nearest entry point (0 = the sink's function is itself the handler). */
+  depth?: number;
 }
 
 export interface AnalyzeResult {
@@ -253,6 +292,18 @@ export interface GraphConfig {
   security?: boolean | "auto";
   /** Allow the security graph to DOWN-tier an injection finding it proves has no taint path. Default false (enrich-only). */
   securityDeescalate?: boolean;
+  /** Use community-edition reachability (entry-point → sink call-path) to escalate cross-language
+   *  injection findings. "auto" (default) = use when a graph is available. No Pro binary required. */
+  reachability?: boolean | "auto";
+  /** Allow reachability to DOWN-tier a finding it proves is unreachable. Default false (fail-safe:
+   *  never auto-clear, because an incomplete index could hide a real, reachable vulnerability). */
+  reachabilityDeescalate?: boolean;
+  /** Entry-point kinds treated as untrusted taint sources. Default ["http_handler", "event_handler"]. */
+  untrustedEntryKinds?: string[];
+  /** Max caller-chain hops to walk from a sink before giving up on reaching an entry point. Default 6. */
+  reachabilityMaxDepth?: number;
+  /** Per-call budget (ms) for reachability graph queries (entry points + caller walk). Default 4000. */
+  reachabilityTimeoutMs?: number;
 }
 
 export interface LearningsConfig {

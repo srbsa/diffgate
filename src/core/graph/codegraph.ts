@@ -14,9 +14,15 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
-import type { GraphConfig, ImpactInfo, PrContextInfo, EditContext, SecurityVerdict, ImpactRef } from "../types.js";
-import type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery } from "./index.js";
-import { normalizeImpact, normalizePrContext, normalizeEditContext, normalizeSecurity, normalizeTests } from "./normalize.js";
+import type {
+  GraphConfig, ImpactInfo, PrContextInfo, EditContext, SecurityVerdict, ImpactRef,
+  ReachabilityVerdict, ReachabilityEntryPoint,
+} from "../types.js";
+import type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, ReachabilityQuery } from "./index.js";
+import {
+  normalizeImpact, normalizePrContext, normalizeEditContext, normalizeSecurity, normalizeTests,
+  normalizeEntryPoints, normalizeAncestors,
+} from "./normalize.js";
 
 const DEFAULT_COMMAND = "codegraph-server";
 const DEFAULT_TIMEOUT = 4000;
@@ -102,18 +108,57 @@ function parseJsonLoose(stdout: string | null): unknown {
   }
 }
 
+/** Last dotted/`#`/`::`-delimited segment of a symbol (UserController#show → show). */
+function bareName(symbol: string): string {
+  const m = symbol.split(/[.#]|::/);
+  return m[m.length - 1] || symbol;
+}
+
+/** Best-effort symbol name from a get_symbol_info / get_detailed_symbol payload. */
+function symbolNameOf(raw: unknown): string | null {
+  if (typeof raw === "string") return raw.trim() || null;
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  for (const k of ["symbol", "name", "function", "enclosing", "enclosingFunction", "enclosing_function", "qualified_name", "qualifiedName"]) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (v && typeof v === "object") {
+      const nm = symbolNameOf(v);
+      if (nm) return nm;
+    }
+  }
+  return null;
+}
+
 export function makeCodeGraphProvider(cwd: string, g: GraphConfig = {}, runner?: GraphRunner): GraphProvider {
   const run = runner || defaultRunner(cwd, g);
   const maxCallers = g.maxCallers ?? 20;
 
   // Run a tool by bare name, retrying with the `codegraph_` namespace if the bare call yields nothing.
-  const call = (tool: string, args: Record<string, unknown>): unknown => {
-    const first = parseJsonLoose(run({ tool, args }));
+  const callWith = (runFn: GraphRunner, tool: string, args: Record<string, unknown>): unknown => {
+    const first = parseJsonLoose(runFn({ tool, args }));
     if (first != null) return first;
     if (!tool.startsWith("codegraph_")) {
-      return parseJsonLoose(run({ tool: `codegraph_${tool}`, args }));
+      return parseJsonLoose(runFn({ tool: `codegraph_${tool}`, args }));
     }
     return null;
+  };
+  const call = (tool: string, args: Record<string, unknown>): unknown => callWith(run, tool, args);
+
+  // Reachability walks (entry points + caller chains) get their own timeout budget. An injected
+  // runner (tests) is shared so canned responses still flow through.
+  const reachTimeout = g.reachabilityTimeoutMs ?? g.timeoutMs ?? DEFAULT_TIMEOUT;
+  const reachRun = runner || defaultRunner(cwd, { ...g, timeoutMs: reachTimeout });
+  const reachCall = (tool: string, args: Record<string, unknown>): unknown => callWith(reachRun, tool, args);
+
+  // find_entry_points is identical for every finding in a review — fetch once, memoize.
+  // `undefined` = not yet fetched; `null` = fetched and unavailable.
+  let entryPointsMemo: ReachabilityEntryPoint[] | null | undefined;
+  const getEntryPoints = (): ReachabilityEntryPoint[] | null => {
+    if (entryPointsMemo !== undefined) return entryPointsMemo;
+    const raw = reachCall("find_entry_points", {});
+    entryPointsMemo = raw == null ? null : normalizeEntryPoints(raw);
+    return entryPointsMemo;
   };
 
   const absUri = (q: { file: string; cwd?: string }): string =>
@@ -158,6 +203,65 @@ export function makeCodeGraphProvider(cwd: string, g: GraphConfig = {}, runner?:
       const raw = call("security_detect_injection", args) ?? call("security_trace_data_flow", args);
       if (raw == null) return null;
       return normalizeSecurity(raw, { source: "codegraph", maxCallers });
+    },
+
+    // Community-edition precision: walk the (deterministic, AST-derived) call graph from the sink
+    // back toward untrusted entry points. No Pro security_* tools required. Any "can't tell" path
+    // returns null (= unknown), never a false "unreachable" — the caller's fail-safe depends on it.
+    reachability(query: ReachabilityQuery): ReachabilityVerdict | null {
+      const kinds = query.untrustedKinds && query.untrustedKinds.length
+        ? query.untrustedKinds
+        : ["http_handler", "event_handler"];
+      const maxDepth = query.maxDepth ?? 6;
+
+      // 1. Untrusted entry points (memoized per review). If the index knows of none, we cannot prove
+      //    reachability either way → unknown (null), never "unreachable".
+      const entryPoints = getEntryPoints();
+      if (!entryPoints || entryPoints.length === 0) return null;
+      const untrusted = entryPoints.filter((ep) => kinds.includes(ep.kind));
+      if (untrusted.length === 0) return null;
+
+      // 2. The sink's enclosing function. Prefer the symbol on the finding; for pattern-only findings
+      //    (no symbol) ask the graph to resolve it from file:line.
+      const uri = absUri(query);
+      let enclosing = query.symbol || "";
+      if (!enclosing) {
+        const info = reachCall("get_symbol_info", { uri, file: uri, line: query.line })
+          ?? reachCall("get_detailed_symbol", { uri, file: uri, line: query.line });
+        enclosing = symbolNameOf(info) || "";
+      }
+
+      // 3. Transitive callers of the sink's function — everyone who can reach this code.
+      const callersRaw =
+        reachCall("get_callers", { uri, file: uri, line: query.line, symbol: enclosing, depth: maxDepth, maxDepth }) ??
+        reachCall("traverse_graph", { uri, file: uri, symbol: enclosing, direction: "incoming", edgeTypes: ["calls"], maxDepth });
+      if (callersRaw == null) return null; // graph could not answer → unknown
+
+      const ancestors = normalizeAncestors(callersRaw, { maxCallers: 100 });
+      const names = new Set<string>();
+      for (const a of ancestors) {
+        if (a.symbol) { names.add(a.symbol); names.add(bareName(a.symbol)); }
+      }
+      // The sink's own function may itself be the handler (sink written directly in the route body).
+      if (enclosing) { names.add(enclosing); names.add(bareName(enclosing)); }
+
+      // 4. Reachable iff an untrusted entry point sits in the ancestor set (or is the sink's function).
+      const matched = untrusted.filter((ep) => names.has(ep.name) || names.has(bareName(ep.name)));
+      const verdict: ReachabilityVerdict = {
+        reachable: matched.length > 0,
+        source: "codegraph",
+        entryPoints: matched.slice(0, maxCallers),
+      };
+      if (verdict.reachable) {
+        const ep = matched[0];
+        const sinkRef: ImpactRef = { file: uri, line: query.line };
+        if (enclosing) sinkRef.symbol = enclosing;
+        const epRef: ImpactRef = { symbol: ep.name };
+        if (ep.file) epRef.file = ep.file;
+        verdict.path = [sinkRef, epRef];
+        verdict.depth = enclosing && (ep.name === enclosing || bareName(ep.name) === bareName(enclosing)) ? 0 : 1;
+      }
+      return verdict;
     },
 
     reindex(opts: { full?: boolean } = {}): boolean {

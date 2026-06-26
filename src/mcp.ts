@@ -20,6 +20,7 @@ import {
   getGraph,
   attachImpact,
   attachSecurity,
+  attachReachability,
   labelTrust,
   resolveGraphConfig,
   buildCapabilities,
@@ -486,10 +487,11 @@ export async function handleAnalyze(
     analyze({ filePath: absPath, content: actualContent, previousContent, changedLines, config }),
     loadLearnings(repoRoot(cwd) || cwd)
   );
-  // Cross-file blast radius + graph-aware security (no-ops when no code graph is available).
+  // Cross-file blast radius + graph-aware security/reachability (no-ops without a code graph).
   const graph = opts.graph !== undefined ? opts.graph : getGraph(cwd, config);
   let [withImpact] = attachImpact([result], { cwd, config, graph, mode: "working" });
   [withImpact] = attachSecurity([withImpact], { cwd, config, graph });
+  [withImpact] = attachReachability([withImpact], { cwd, config, graph });
   [withImpact] = labelTrust([withImpact]);
   // Pre-edit context for the agent: callers/tests/history of the highest-blast finding, so it
   // can fix the call sites before the generated code is ever written to disk.

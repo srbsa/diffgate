@@ -3,7 +3,7 @@
 // read from several plausible key names rather than hard-coding one schema.
 
 import type {
-  ImpactInfo, ImpactRef, PrContextInfo, EditContext, SecurityVerdict, StaleDoc,
+  ImpactInfo, ImpactRef, PrContextInfo, EditContext, SecurityVerdict, StaleDoc, ReachabilityEntryPoint,
 } from "../types.js";
 
 type Raw = Record<string, unknown>;
@@ -170,6 +170,56 @@ export function normalizeEditContext(
     .filter(Boolean)
     .slice(0, max);
   return { callers, tests, history, source: opts.source };
+}
+
+/**
+ * Parse a `find_entry_points` payload into a list of entry points. CodeGraph (community) tags each
+ * with a kind such as "http_handler" / "event_handler"; we read the handler name, kind, and (when
+ * the framework exposes them) the route + method so the reachability trace can name the source.
+ */
+export function normalizeEntryPoints(raw: unknown): ReachabilityEntryPoint[] {
+  const arr = Array.isArray(raw)
+    ? raw
+    : asArray(pick(raw, ["entry_points", "entryPoints", "entrypoints", "handlers", "results", "items", "data"]));
+  const out: ReachabilityEntryPoint[] = [];
+  for (const x of arr) {
+    if (typeof x === "string") {
+      const s = x.trim();
+      if (s) out.push({ name: s, kind: "" });
+      continue;
+    }
+    if (!x || typeof x !== "object") continue;
+    const name = pick(x, ["name", "symbol", "function", "handler", "qualified_name", "qualifiedName"]);
+    if (name == null) continue;
+    const kind = pick(x, ["kind", "type", "entry_type", "entryType", "entrypoint_type", "entrypointType"]);
+    const route = pick(x, ["route", "path", "url", "pattern", "endpoint"]);
+    const method = pick(x, ["method", "http_method", "httpMethod", "verb"]);
+    const file = pick(x, ["file", "uri", "path", "location", "filepath"]);
+    const ep: ReachabilityEntryPoint = { name: String(name), kind: kind != null ? String(kind) : "" };
+    // `path` doubles as route in some payloads; only treat it as a route, not the declaring file.
+    if (route != null) ep.route = String(route);
+    if (method != null) ep.method = String(method).toUpperCase();
+    if (file != null && file !== route) ep.file = String(file).replace(/^file:\/\//, "");
+    out.push(ep);
+  }
+  return out;
+}
+
+/**
+ * Parse a `get_callers` / `traverse_graph` payload into the set of ancestor call sites of a symbol.
+ * Both tools expose the caller list under a handful of keys (and traverse_graph may nest them under
+ * `nodes`); we read whichever is present.
+ */
+export function normalizeAncestors(raw: unknown, opts: { maxCallers?: number } = {}): ImpactRef[] {
+  const max = Math.max(1, opts.maxCallers ?? 50);
+  const arr = Array.isArray(raw)
+    ? raw
+    : asArray(
+        pick(raw, ["callers", "direct_callers", "transitive_callers", "transitiveCallers", "ancestors",
+          "nodes", "references", "callsites", "results", "paths"]) ??
+          pick(pick(raw, ["graph", "result", "data"]), ["callers", "nodes", "ancestors", "references"])
+      );
+  return arr.map(toRef).filter((r): r is ImpactRef => r !== null).slice(0, max);
 }
 
 /** Parse a security_detect_injection / trace_data_flow payload into a taint verdict. */
