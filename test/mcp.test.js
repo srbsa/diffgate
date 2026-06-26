@@ -284,7 +284,9 @@ test("handleAnalyze is a clean no-op when the injected graph is null", async () 
 });
 
 test("handleAnalyze labels trust and embeds a compact capability hint", async () => {
-  const dir = tmpDir({});
+  // Disable the graph in config so the capability hint is deterministic regardless of whether the
+  // host has CodeGraph installed/indexed (codeGraphAvailable now also detects ~/.codegraph/projects).
+  const dir = tmpDir({ ".diffgate.json": JSON.stringify({ graph: { enabled: false } }) });
   const content = `const key = "sk_live_abcdef0123456789abcd";\n`;
   try {
     const result = await handleAnalyze({ filePath: path.join(dir, "config.js"), content, cwd: dir }, { graph: null });
@@ -401,7 +403,8 @@ test("handleCheckStaged threads the over-budget set into the verdict (agrees wit
 // --- handleCapabilities ------------------------------------------------------
 
 test("handleCapabilities reports layers, tools, and the agent budget", async () => {
-  const dir = tmpDir({});
+  // Graph off in config → caps.graph.available is deterministic on any host (incl. one with CodeGraph).
+  const dir = tmpDir({ ".diffgate.json": JSON.stringify({ graph: { enabled: false } }) });
   const caps = await handleCapabilities({ cwd: dir });
   assert.equal(caps.core, true);
   assert.equal(caps.graph.available, false);

@@ -21,7 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { makeCodeGraphProvider } from "../dist/core/index.js";
+import { makeCodeGraphProvider, analyze, attachReachability, labelTrust, DEFAULT_CONFIG } from "../dist/core/index.js";
 
 /** Locate a codegraph-server binary: explicit env, then PATH, then the VS Code extension install. */
 function findBinary() {
@@ -126,4 +126,25 @@ test("live: sink reached only from a CLI command is NOT reachable (no false esca
   assert.ok(v, "verdict produced");
   assert.equal(v.reachable, false, "admin_cli is a cli_command, not an untrusted entry point");
   assert.deepEqual(v.entryPoints, []);
+});
+
+// The whole point of v0.6.0: the broad Python advisory rule earns the right to block ONLY when the
+// graph proves reachability — and the unreachable sibling stays advisory (no false block).
+test("live: full pipeline — reachable Python SQLi escalates to blocking, unreachable stays advisory", { skip: ENABLED ? false : reason }, (t) => {
+  if (!resolves) { t.skip("needs a uri+line-resolvable index"); return; }
+  const content = fs.readFileSync(path.join(dir, "app.py"), "utf-8");
+  const res = analyze({ filePath: path.join(dir, "app.py"), content, config: DEFAULT_CONFIG });
+  const graph = makeCodeGraphProvider(dir, { command: BIN, timeoutMs: 20000, reachabilityTimeoutMs: 20000 });
+  let [out] = attachReachability([res], { cwd: dir, config: DEFAULT_CONFIG, graph });
+  [out] = labelTrust([out]);
+  const inGetUser = out.findings.find((f) => f.line >= 8 && f.line <= 11 && f.reachability);
+  const inHelper = out.findings.find((f) => f.line >= 13 && f.line <= 16 && f.reachability);
+  assert.ok(inGetUser, "an injection finding in get_user was routed through reachability");
+  assert.equal(inGetUser.reachability.reachable, true);
+  assert.equal(inGetUser.blocking, true, "reachable-from-handler → escalated to blocking");
+  assert.equal(inGetUser.tier, "orange");
+  assert.ok(inHelper, "an injection finding in lookup_helper was routed through reachability");
+  assert.equal(inHelper.reachability.reachable, false);
+  assert.equal(inHelper.blocking, false, "unreachable helper stays advisory — no false block");
+  assert.equal(out.blocking, true, "the gate blocks on the reachable sink");
 });

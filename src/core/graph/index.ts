@@ -6,7 +6,7 @@ import type {
   Config, GraphConfig, ImpactInfo, PrContextInfo, EditContext, SecurityVerdict, ImpactRef,
   ReachabilityVerdict,
 } from "../types.js";
-import { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir } from "./codegraph.js";
+import { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir, graphIndexPath } from "./codegraph.js";
 
 export interface ImpactQuery {
   /** Symbol name being changed (e.g. an exported function). */
@@ -144,7 +144,7 @@ export function graphStatus(config: Partial<Config>): GraphStatus {
   const enabled = !(g.enabled === false || g.mode === "off");
   const indexed = enabled && codeGraphAvailable(g);
   const commandFound = commandAvailable(g.command);
-  const dbPath = graphDbDir();
+  const dbPath = graphIndexPath();
   const reachability = enabled && g.reachability !== false;
 
   let indexAgeMs: number | null = null;
@@ -169,7 +169,7 @@ export function graphStatus(config: Partial<Config>): GraphStatus {
   return { enabled, indexed, commandFound, command: g.command, dbPath, reachability, indexAgeMs, reason };
 }
 
-export { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir } from "./codegraph.js";
+export { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir, graphIndexPath } from "./codegraph.js";
 export { normalizeImpact, normalizePrContext, normalizeEditContext, normalizeSecurity, normalizeTests, normalizeEntryPoints, normalizeAncestors } from "./normalize.js";
 export type { GraphRunner } from "./codegraph.js";
 export type { ImpactInfo };

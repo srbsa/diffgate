@@ -31,7 +31,7 @@ export { TOOLS as agentTools } from "./agent/tools.js";
 export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier } from "./tiers.js";
 export {
   getGraph, resolveGraphConfig, graphStatus, makeCodeGraphProvider, codeGraphAvailable,
-  commandAvailable, graphDbDir, normalizeImpact, normalizePrContext, normalizeEditContext,
+  commandAvailable, graphDbDir, graphIndexPath, normalizeImpact, normalizePrContext, normalizeEditContext,
   normalizeSecurity, normalizeTests, normalizeEntryPoints, normalizeAncestors, DEFAULT_GRAPH_CONFIG,
 } from "./graph/index.js";
 export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, ReachabilityQuery, GraphStatus, GraphRunner } from "./graph/index.js";

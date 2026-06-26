@@ -34,6 +34,23 @@ export function graphDbDir(): string {
   return path.join(os.homedir(), ".codegraph", "graph.db");
 }
 
+/**
+ * The on-disk CodeGraph index location, tolerant of layout changes. CodeGraph >= 0.18 stores a
+ * per-project index under `~/.codegraph/projects/<slug>/`; older builds used a single
+ * `~/.codegraph/graph.db`. Returns whichever exists (projects dir preferred), else the legacy
+ * path for display. Used for the availability check and the index-age hint.
+ */
+export function graphIndexPath(): string {
+  const base = path.join(os.homedir(), ".codegraph");
+  const projects = path.join(base, "projects");
+  try {
+    if (fs.existsSync(projects) && fs.readdirSync(projects).length > 0) return projects;
+  } catch {
+    /* fall through to legacy */
+  }
+  return path.join(base, "graph.db");
+}
+
 /** True if `cmd` is an existing absolute path, or resolves on PATH. Cheap, no tool spawn. */
 export function commandAvailable(cmd: string): boolean {
   if (!cmd) return false;
@@ -63,7 +80,10 @@ export function codeGraphAvailable(g: GraphConfig = {}): boolean {
   // An absolute command path that exists is a strong signal regardless of indexing.
   if (path.isAbsolute(cmd) && fs.existsSync(cmd)) return true;
   try {
-    return fs.existsSync(graphDbDir());
+    // Legacy single-graph layout, or the newer per-project layout (~/.codegraph/projects/<slug>/).
+    if (fs.existsSync(graphDbDir())) return true;
+    const projects = path.join(os.homedir(), ".codegraph", "projects");
+    return fs.existsSync(projects) && fs.readdirSync(projects).length > 0;
   } catch {
     return false;
   }

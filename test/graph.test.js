@@ -12,8 +12,12 @@ import {
   commandAvailable,
   getGraph,
   graphStatus,
+  graphIndexPath,
   resolveGraphConfig,
 } from "../dist/core/index.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 // --- normalizeImpact: defensive parsing of varied graph payloads -------------
 
@@ -130,6 +134,26 @@ test("getGraph honors an explicit null provider (host opts out)", () => {
 test("codeGraphAvailable is false when graphing is turned off", () => {
   assert.equal(codeGraphAvailable({ mode: "off" }), false);
   assert.equal(codeGraphAvailable({ enabled: false }), false);
+});
+
+test("codeGraphAvailable detects the newer ~/.codegraph/projects layout, not just graph.db", () => {
+  // os.homedir() honors $HOME on POSIX, so pin it to an empty dir and toggle the index layout.
+  const realHome = process.env.HOME;
+  const realUp = process.env.USERPROFILE;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "dg-home-"));
+  try {
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    assert.equal(codeGraphAvailable({}), false, "no index of either layout → unavailable");
+    // Newer per-project layout: ~/.codegraph/projects/<slug>/
+    fs.mkdirSync(path.join(home, ".codegraph", "projects", "myproj-abcd"), { recursive: true });
+    assert.equal(codeGraphAvailable({}), true, "a non-empty projects/ dir counts as an index");
+    assert.match(graphIndexPath(), /projects$/, "graphIndexPath points at projects/ when it exists");
+  } finally {
+    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+    if (realUp === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = realUp;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("resolveGraphConfig fills defaults and applies overrides", () => {
