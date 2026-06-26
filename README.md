@@ -1,44 +1,24 @@
-# DiffGate Review Engine
+# DiffGate
 
-**Diff-aware, three-tiered code review — in your editor and on the command line.**
+**A deterministic second pair of eyes for AI-generated code: in your agent, your editor, your terminal.**
 
-Most review tooling fires on the whole file and treats every line the same, so you drown in noise and the real risks hide in it. DiffGate reviews only the lines you **changed** (vs the committed baseline) and sorts each change into one of three risk tiers, so trivial edits fly through and high-impact ones get gated:
+The model that wrote the code has the same blind spots reviewing it. DiffGate is a separate, deterministic check that runs on **only the lines that changed** (vs the committed baseline) and sorts each change into one of three risk tiers, so trivial edits fly through and high-impact ones get gated. No model grading its own homework, no whole-file noise.
 
 | Tier | Meaning | What you do | Examples |
 |------|---------|-------------|----------|
 | 🟢 **Green** | Safe / self-contained | merge freely | comments, local logging |
-| 🟡 **Yellow** | Review — soft dependency | take a look | deprecated APIs, raw SQL, network calls, dependency-manifest edits |
-| 🟠 **Orange** | High-impact — gate it | verify before merge | schema/migrations, hardcoded secrets, auth/crypto, public-API & signature changes, SQL/XSS/path-traversal injection sinks |
+| 🟡 **Yellow** | Review (soft dependency) | take a look | deprecated APIs, raw SQL, network calls, dependency edits |
+| 🟠 **Orange** | High-impact, gate it | verify before merge | schema/migrations, hardcoded secrets, auth/crypto, public-API changes, injection sinks |
 
-It runs three ways from one shared engine:
+### What it catches that the model misses
 
-- **VS Code extension** — inline squiggles on changed lines, hover cards (why · who owns it · quick-fix), a Risk Review tree, a status-bar summary, a verification gate, and **Deep Review** (agentic blast-radius analysis for orange findings).
-- **CLI** — `diffgate check` reviews your diff and exits non-zero on high-impact findings: perfect as a **pre-commit hook** or **CI gate**.
-- **MCP server** — `diffgate mcp` exposes the engine as an MCP tool so coding agents (Claude Code, Cursor, etc.) **self-check before surfacing a diff** — the same deterministic verdict every time, so you can grant the agent more autonomy instead of reviewing every line yourself.
+Modern coding agents already avoid the textbook bugs (SQL injection, XSS, hardcoded secrets) unprompted. What they still ship are **second-order footguns**: an unguarded recursive merge (prototype pollution), a bare `cors()` (any-origin by default), a file read with no path-containment check. They drop these guards **most when editing existing code**, which is most of what an agent does.
 
-### What it adds over the model's own judgment
-
-Modern coding agents already avoid the textbook bugs. We measured this directly — handing local and frontier models 17 realistic tasks with **no security hint** and running the gate over their output: they wrote parameterized SQL, used `textContent`, and read secrets from env vars on their own. What they still ship are the **second-order footguns** — an unguarded recursive merge (prototype pollution), a bare `cors()` (any-origin by default), a file read with no path-containment check — and they drop these guards *most when editing existing code*, which is most of what an agent does. (A frontier model in our test introduced **zero** issues writing from scratch, but reintroduced the prototype-pollution and CORS footguns when editing a file.)
-
-DiffGate is tuned to exactly that residue — deterministically, only on the changed lines — at **both ends of the workflow**:
-
-- **In your agent, via MCP** — it self-checks generated code *before it's written to disk*, returns structured findings (zero LLM tokens), and surfaces the original + the fix so you can grant more autonomy.
-- **In your editor (VS Code / Cursor)** — the same verdict appears as inline squiggles on the diff you're reviewing, so a footgun the model glossed over never rides along unnoticed.
-
-> **By the numbers** — 4 models (local 9B → frontier), no security hint, whole-file *and* edit-an-existing-file modes:
->
-> | What the model wrote unprompted | From scratch | **When editing existing code** |
-> |---|:--:|:--:|
-> | Textbook OWASP (SQLi · XSS · secrets · `eval`) | 0% | 0% |
-> | Second-order footguns (proto-pollution · `cors()` default) | 0–13% | **13–20%** |
->
-> Every model — local to frontier — avoids the textbook bugs on its own; the footguns are what slip through, and they slip through *more when editing*, which is most of an agent's work. The frontier model went **0% from scratch → 13% editing**. Reproduce it yourself with `diffgate marginal` (runs the gate over a model's unguided output).
+We measured this: across local-to-frontier models, textbook OWASP issues were introduced **0% of the time**, but the proto-pollution and CORS footguns showed up, and a frontier model that wrote **zero** issues from scratch reintroduced them **when editing a file** (0% → 13%). DiffGate is tuned to exactly that residue. See [the measurement](docs/MEASUREMENT.md).
 
 ---
 
 ## Quick start
-
-**Install once, works everywhere:**
 
 ```bash
 npm install -g diffgate-review
@@ -47,386 +27,105 @@ diffgate init          # auto-detects language + test command, writes .diffgate.
 diffgate check         # review your pending changes right now
 ```
 
-**No uncommitted changes yet?** See what the output looks like before changing anything:
+No uncommitted changes yet? See the output on bundled examples first:
 
 ```bash
-diffgate init --demo   # live scan of bundled examples — no config or git changes needed
+diffgate init --demo   # live scan, no config or git changes needed
 ```
 
-**Pre-commit hook (installs in ~2 seconds, only tests on 🟠 orange):**
+---
 
-```bash
-diffgate install-hook  # adds .git/hooks/pre-commit — does NOT run your test suite on safe edits
-```
+## The three surfaces (one shared engine)
 
-> The hook only runs tests when a change is genuinely high-impact (orange tier). Green and yellow changes pass instantly. The gate is fast because it's selective.
+### 1. In your coding agent (via MCP)
 
-### Coding agent (Claude Code / Cursor)
+The highest-leverage spot: the agent **self-checks generated code before it's written to disk**, gets back structured findings (zero LLM tokens), and surfaces what it corrected (original + fix + why) instead of silently rewriting. A trustworthy, deterministic self-check is what makes it safe to grant the agent more autonomy.
 
 ```bash
 # Claude Code — one command:
 claude mcp add diffgate -- diffgate mcp
 
-# Or one-click via Smithery (zero config):
+# One-click via Smithery (zero config):
 npx @smithery/cli install diffgate-review --client claude
 
 # Cursor — add to MCP settings:
 # { "diffgate": { "command": "diffgate", "args": ["mcp"] } }
 ```
 
-Or install the **Desktop Extension** for one-click setup: download [`diffgate.mcpb`](https://github.com/srbsa/diffgate/releases/latest) and open it in Claude Desktop.
+Or one-click in Claude Desktop: download [`diffgate.mcpb`](https://github.com/srbsa/diffgate/releases/latest) and open it. The server also exposes **prompts** and **resources**; see [MCP.md](MCP.md).
 
-DiffGate doesn't *gate* your agent — it lets your agent **self-check before you see the diff**, and surface what it corrected (original + fix + why) instead of silently rewriting. A trustworthy, deterministic self-check is what makes it safe to hand the agent more autonomy. Beyond tools, the MCP server exposes **prompts** (`review-workflow`, `triage-finding`, `setup-diffgate`) and **resources** (`diffgate://rules`, `diffgate://learnings`, `diffgate://capabilities`, `diffgate://protocol`) — see [MCP.md](MCP.md).
+### 2. In your editor (VS Code / Cursor)
 
-### VS Code extension
+Inline squiggles on changed lines, hover cards (why · who owns it · quick-fix), a Risk Review tree, a status-bar summary, and **Deep Review** (agentic blast-radius analysis for orange findings). The same verdict you'd get from the CLI, on the diff you're reviewing.
 
-Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=diffgate.diffgate-review) or [Open VSX](https://open-vsx.org/extension/diffgate/diffgate-review) (Cursor / Windsurf / Gitpod).
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=srbsa.diffgate-review) or [Open VSX](https://open-vsx.org/extension/srbsa/diffgate-review) (Cursor / Windsurf / Gitpod).
 
----
+### 3. On the command line
 
-### Full command reference
+`diffgate check` reviews your diff and exits non-zero on high-impact findings.
 
 ```bash
-diffgate check                      # review pending changes (the gate)
-diffgate check --staged             # staged-only (pre-commit)
-diffgate check --github             # + emit GitHub Actions inline annotations
-diffgate check --pr                 # CI: post PR review + commit status (gates merge)
-diffgate check --agent              # machine verdict for coding agents
-diffgate watch                      # live review as you edit
-diffgate scan <path>                # analyze files directly (no git needed)
-diffgate report                     # review metrics: tiers, hotspots, learnings
-diffgate report --compliance        # SOC 2 control evidence for the diff
-diffgate bench                      # noise benchmark (precision/recall/false-blocks)
-diffgate guidelines                 # review diff against AGENTS.md/CLAUDE.md etc.
-diffgate feedback <ruleId> <f> <l>  # record a dismiss/confirm verdict
-diffgate stats                      # signal-vs-noise report
-diffgate graph status               # is the code graph enabled / installed / indexed?
-diffgate graph index                # build the cross-file index
-diffgate init                       # write a tailored .diffgate.json
-diffgate install-hook               # add a git pre-commit gate
-diffgate mcp                        # start the MCP stdio server
+diffgate install-hook  # adds .git/hooks/pre-commit; only runs tests on 🟠 orange changes
 ```
+
+The hook is fast because it's selective: green and yellow changes pass instantly; tests only run when a change is genuinely high-impact.
+
+**Common commands:**
+
+```bash
+diffgate check                 # review pending changes (the gate)
+diffgate check --staged        # staged-only (pre-commit)
+diffgate check --agent         # machine verdict for coding agents
+diffgate scan <path>           # analyze files directly (no git needed)
+diffgate watch                 # live review as you edit
+diffgate guidelines            # review diff against AGENTS.md / CLAUDE.md etc.
+diffgate feedback <rule> <f> <l> --dismiss   # suppress a false positive (shared via git)
+diffgate mcp                   # start the MCP stdio server
+```
+
+Run `diffgate --help` for the full list (`report`, `bench`, `stats`, `graph`, `marginal`, …).
 
 ---
 
 ## How it works
 
-- **Diff-aware** — uses `git diff` (CLI) or an in-memory LCS diff (editor, accurate on unsaved buffers) to find changed lines, and only reports findings on those lines.
-- **Real AST for JS/TS** — `@babel/parser` powers precise rules: deprecated calls are not matched inside comments or strings, and exported-signature changes are detected structurally.
-- **Language-agnostic pattern rules** — secrets, SQL/schema changes, auth/crypto, dynamic execution, and injection sinks are detected across Python, Go, Java, Ruby, and any text via pattern rules. These are **comment-aware**: commented-out code (`# os.system(x)`, `// eval(x)`, `-- DROP TABLE`) is not flagged, while a secret committed *inside* a comment still is. (Need cross-file precision for these languages? A code graph adds it — see below.)
-- **Real gate** — when a change is high-impact, DiffGate runs your `testCommand` and shows the actual exit code and output.
-- **Hybrid AI (optional, provider-agnostic)** — the deterministic engine always runs offline; when `ai.enabled` is true it adds plain-English explanations and fix suggestions. Works with **Anthropic, OpenAI, OpenRouter, Groq, Together, LM Studio, Ollama, or any OpenAI-compatible endpoint**.
-- **Cross-file blast radius (optional code graph)** — when a code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph)) is available, public-surface findings carry deterministic impact (caller count, suggested reviewers, test gaps, complexity, stale docs) sourced from a single `pr_context` call per review. DiffGate uses it to **route attention, not add comments**: a public change with callers stays orange and names the reviewers; one nobody calls de-escalates to yellow and stops blocking. For injection-class findings, an optional Pro taint analysis confirms whether user input reaches the sink. Fully optional and graceful — a no-op when no graph is present.
-- **Deep Review** — for orange findings, an agentic loop (grep, read_file, find_references, git_blame) investigates blast radius and returns a `confirmed-risk / likely-safe / needs-human` verdict.
-- **Guideline review** — reviews the diff against your repo's own `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, and similar files. Per-directory scoping; the nearest file wins. No extra API key needed in host mode — the calling agent does the judgment.
-- **Learnings** — `diffgate feedback` records dismiss/confirm verdicts. Dismissed findings (same rule + same code) are suppressed in all future reviews. Stored in `.diffgate/learnings.json` — commit it to share across the team.
+- **Diff-aware:** `git diff` (CLI) or an in-memory LCS diff (editor, accurate on unsaved buffers) finds changed lines; findings only report on those lines.
+- **Real AST for JS/TS:** `@babel/parser` powers precise rules: deprecated calls aren't matched inside comments or strings; exported-signature changes are detected structurally.
+- **Comment-aware pattern rules:** secrets, SQL/schema changes, auth/crypto, dynamic execution, and injection sinks detected across Python, Go, Java, Ruby, and any text. Commented-out code (`# os.system(x)`) isn't flagged; a secret committed *inside* a comment still is.
+- **Real gate:** on a high-impact change, DiffGate runs your `testCommand` and shows the actual exit code and output.
+- **Low noise, provably:** `diffgate bench` runs a versioned corpus offline: **100% precision / 0 false blocks** on clean changes. Reproduce it yourself; that's the point of shipping the corpus. See [BENCHMARK.md](BENCHMARK.md).
+- **Learnings:** `diffgate feedback` records dismiss/confirm verdicts; dismissed findings (same rule + same code) are suppressed everywhere. Stored in `.diffgate/learnings.json`; commit it to share across the team.
+- **Optional add-ons:** a provider-agnostic AI layer (plain-English explanations + fixes) and a cross-file blast-radius pass via an optional code graph. Both are off by default and degrade gracefully.
 
-Engine layout: [`src/core`](src/core) (shared) · [`src/cli.ts`](src/cli.ts) (CLI) · [`src/mcp.ts`](src/mcp.ts) (MCP server) · [`extension/`](extension) (VS Code). Tests: [`test/`](test) and [`extension/test/smoke.cjs`](extension/test/smoke.cjs).
+Engine layout: [`src/core`](src/core) (shared) · [`src/cli.ts`](src/cli.ts) (CLI) · [`src/mcp.ts`](src/mcp.ts) (MCP) · [`extension/`](extension) (VS Code).
 
 ---
 
-## Team adoption
+## Configuration
 
-DiffGate earns trust by being quiet and deterministic, then spreads by living where review actually happens — the pull request.
-
-### Step 1 — Add the GitHub Action (zero infrastructure)
-
-Drop [`.github/workflows/diffgate.yml`](.github/workflows/diffgate.yml) into your repo. On every PR it posts inline review comments + a `diffgate` commit status. Make it a required status check (Settings → Branches → require `diffgate`) and orange findings block merge.
-
-See [docs/github-app.md](docs/github-app.md) for the one-click org-wide App option.
-
-### Step 2 — Provable low noise
-
-Before rolling it out, show the team the numbers. `diffgate bench` runs against a versioned corpus offline — anyone can reproduce it:
-
-```bash
-diffgate bench
-# 100% precision / 100% recall / 0.00 false blocks per clean change
-```
-
-The gate only ever fires on changes that are genuinely high-impact. Safe edits — comments, logging, formatting — are never blocked. See [BENCHMARK.md](BENCHMARK.md).
-
-### Step 3 — Spread noise suppression across the team
-
-When DiffGate flags something that *isn't* actually risky, dismiss it once and it's gone for everyone:
-
-```bash
-diffgate feedback <ruleId> <file> <line> --dismiss   # suppress this pattern org-wide
-git add .diffgate/learnings.json && git commit -m "chore: suppress <ruleId> false positive"
-```
-
-Committed `learnings.json` is automatically applied by every developer and in CI. `diffgate install-hook` sets up a **git merge driver** that auto-resolves parallel dismissals from different branches — no more merge conflicts on the file. To merge verdicts from a shared policy repo:
-
-```jsonc
-// .diffgate.json
-{
-  "learnings": { "shared": ["../shared-policy/.diffgate"] }
-}
-```
-
-### Step 4 — Org-wide policy (no npm package required)
-
-Policy packs can be a local path — no npm publishing needed:
-
-```jsonc
-// repos/<any-repo>/.diffgate.json
-{
-  "extends": ["../../shared/.diffgate.json"]   // relative path to a shared config file
-}
-```
-
-Or an npm package when you're ready to formalize: `"extends": ["@acme/diffgate-policy"]`.
-
-### Step 5 — Metrics for leaders
-
-```bash
-diffgate report            # tier breakdown, hotspot files, noise-reduction trend
-diffgate report --compliance  # SOC 2 control evidence (COMPLIANCE.md)
-diffgate stats             # signal-vs-noise: realized verdicts + predicted ratio
-```
-
-### Guardrail for AI agents
-
-The deterministic core is the trustable checkpoint between agent-written code and a human. An **autonomy ladder** (`gate.agent`) grades each finding into `block` / `escalate` / `autofix` / `advisory` with a per-turn fix budget, so agents only hard-stop on genuine hard rules and surface everything else as `review`. `diffgate_capabilities` tells the agent which layers are live up front. See [docs/ai-agents.md](docs/ai-agents.md).
-
----
-
-## Configuration — `.diffgate.json`
-
-Place it at your repo root (`diffgate init` generates one). See [example.diffgate.json](example.diffgate.json) for the full schema.
+`diffgate init` writes a tailored `.diffgate.json` at your repo root. Minimal example:
 
 ```jsonc
 {
-  "extends": ["../../shared/.diffgate.json"],  // path (no npm required) or npm package e.g. "@acme/diffgate-policy"
-  "testCommand": "npm test",                 // run for orange changes (the gate)
-  "testScope": true,                         // down-tier orange findings in test/fixture files (secrets & destructive schema stay blocking)
-  "gate": {
-    "mode": "working", "failOn": "orange",
-    "agent": { "mode": "advisory", "autoFixFloor": "orange", "maxFixesPerTurn": 3, "escalateAfterTurns": 2, "trustSource": "deterministic" }
-  },                                          // agent autonomy ladder: advisory by default (only hard rules block)
-  "learnings": { "shared": ["../shared-policy"] }, // merge dismiss/confirm verdicts across repos
-  "ai": { "enabled": false, "model": "claude-sonnet-4-6", "apiKeyEnv": "ANTHROPIC_API_KEY" },
-
-  "guidelines": {                            // review diff against AGENTS.md/CLAUDE.md etc.
-    "enabled": true,
-    "autoDetect": true,                      // walk up to find AGENTS.md, CLAUDE.md, GEMINI.md, .cursorrules, etc.
-    "maxDepth": 3,                           // keep nearest 2 + repo-root; drop middle (logged)
-    "tier": "yellow",                        // cap guideline findings here (non-blocking by default)
-    "blocking": false,
-    "evaluator": "auto"                      // "host" = calling agent judges (no API key); "model" = configured provider
-  },
-
-  "deprecated": [                            // drives the deprecated-api rule + quick-fix
-    { "pattern": "StripeClient.charge", "replacedBy": "StripeClient.createPaymentIntent",
-      "author": "Finance Team", "pr": "PR #204" }
-  ],
-
-  "customPatterns": [                        // your own pattern rules
-    { "id": "no-process-env", "tier": "yellow", "pattern": "process\\.env\\.",
-      "message": "Use the typed config module, not process.env." }
-  ],
-
-  "rules": {                                 // tune built-ins
-    "todo-marker": false,                    //  - disable a rule
-    "network-call": { "tier": "green" }      //  - or change its tier
-  },
-
-  "graph": {                                 // optional cross-file blast radius
-    "enabled": "auto",                       //  - "auto": use a code graph when indexed, else no-op
-    "provider": "codegraph",                 //  - github.com/codegraph-ai/CodeGraph
-    "escalateThreshold": 1,                  //  - callers ≥ this keeps a public change orange; 0 callers → yellow
-    "security": "auto",                      //  - use the Pro taint graph for injection findings when present
-    "securityDeescalate": false              //  - allow a proven-clean sink to de-escalate (off = enrich-only)
-  },
-
-  "ignore": ["**/node_modules/**", "**/dist/**"]
+  "testCommand": "npm test",          // run for orange changes (the gate)
+  "gate": { "mode": "working", "failOn": "orange" },
+  "deprecated": [
+    { "pattern": "StripeClient.charge", "replacedBy": "StripeClient.createPaymentIntent" }
+  ]
 }
 ```
 
-### LLM providers
-
-The engine is **provider-agnostic**. Under the hood there are two wire adapters — Anthropic's Messages API and the OpenAI Chat Completions API — and OpenAI's format is spoken by almost everything else.
-
-| `provider` | Key env | Notes |
-|------------|---------|-------|
-| `anthropic` *(default)* | `ANTHROPIC_API_KEY` | Claude models |
-| `openai` | `OPENAI_API_KEY` | any model you have access to |
-| `openrouter` | `OPENROUTER_API_KEY` | model as `vendor/model` |
-| `groq` / `together` | `GROQ_API_KEY` / `TOGETHER_API_KEY` | fast hosted OSS models |
-| `lmstudio` / `ollama` | *(none)* | **local models, no key needed** |
-| `custom` | your `apiKeyEnv` | any OpenAI-compatible server + `baseURL` |
-
-**Multi-model routing by complexity.** `model` can be a per-tier map so cheap edits use a small model and high-impact ones use a strong one:
-
-```jsonc
-"ai": { "enabled": true, "provider": "openai",
-        "model": { "orange": "gpt-5.5", "default": "gpt-5.4-mini" } }
-```
-
-### Built-in rules
-
-| Rule | Tier | Notes |
-|------|------|-------|
-| `hardcoded-secret` | 🟠 blocking | AWS keys, GitHub PATs, Stripe secrets, generic credential patterns |
-| `db-schema-destructive` | 🟠 blocking | `DROP`, `TRUNCATE`, `DELETE` without `WHERE` |
-| `sql-injection` | 🟠 blocking | template literals / concatenation inside SQL calls |
-| `db-schema-change` | 🟠 | `ALTER TABLE`, `ADD COLUMN`, `RENAME` |
-| `auth-crypto` | 🟠 | passport, JWT, bcrypt, session handlers |
-| `dangerous-exec` | 🟠 | `eval()`, `exec()`, `os.system()`, `pickle.loads` |
-| `public-api-change` | 🟠 | exported symbols (JS/TS AST) |
-| `signature-drift` | 🟠 | exported function parameter changes (JS/TS) |
-| `permissive-cors` | 🟠 | `origin: '*'` |
-| `xss-sink` | 🟠 | `innerHTML`, `document.write`, `insertAdjacentHTML` (JS/TS) |
-| `path-traversal` | 🟠 | `path.join/readFile` called with `req.params/query/body` |
-| `nosql-injection` | 🟠 | `$where`, `db.eval`, `Model.find(req.body)` passthrough |
-| `prototype-pollution` | 🟠 | `Object.assign(existing, req.body)`, `_.merge` with request data (JS/TS) |
-| `deprecated-api` | 🟡 | configured via `deprecated[]`, offers a quick-fix |
-| `raw-query` | 🟡 | `db.query()`, bare SQL keywords |
-| `network-call` | 🟡 | `fetch`, `axios`, `requests.*` |
-| `migration-file` | 🟡 | migration file names |
-| `dependency-manifest` | 🟡 | `package.json`, `requirements.txt`, etc. |
-| `leftover-debugger` | 🟡 | `debugger` statement (JS/TS) |
-| `debug-logging` | 🟢 | `console.log`, `fmt.Print`, `System.out.println` |
-| `todo-marker` | 🟢 | `TODO`, `FIXME`, `HACK` |
-
-Disable or re-tier any rule via the `rules` key in `.diffgate.json`.
-
-**Native precision (no code graph needed).** Injection and secret findings are refined deterministically from the file's own AST: an XSS sink whose value comes from a recognized sanitizer (`DOMPurify.sanitize`, `escapeHtml`, `encodeURIComponent`, …) is **down-tiered to a yellow "verify" note** rather than blocking, and `hardcoded-secret` drops env/placeholder/low-entropy matches while always keeping — and labeling — known provider key formats. Down-tiering never *suppresses* a security finding, so a missed sanitizer stays blocking (the safe default).
-
-**Test-file noise control (`testScope`, on by default).** Security findings in test, fixture, and mock files are almost always intentional scaffolding (mock SQL, `eval` in a harness, sample payloads), so a 🟠 orange finding there **down-tiers to 🟡 yellow and stops blocking the gate** — surfaced as a review note, never suppressed. The catastrophic-if-real classes stay blocking even in tests: `hardcoded-secret`, `db-schema-destructive`, and the graph-owned public-surface rules. Pin a rule's tier to opt it out, or set `"testScope": false` to gate test code exactly like production.
+Full schema, the built-in rule table, LLM providers, and per-rule tuning: **[docs/CONFIG.md](docs/CONFIG.md)**.
 
 ---
 
-## Guideline review (AGENTS.md / CLAUDE.md)
+## More
 
-Checks the diff against your repo's coding-agent instruction files.
-
-**Detected automatically:** `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`
-
-**Per-directory scoping** — nearest file wins; deep nesting is capped at `maxDepth` (default 3), keeping the closest files + repo-root. Drops logged.
-
-**`evaluator`** — `"auto"` (default): uses configured provider when available, otherwise returns the guideline text + diff hunks for the calling agent to evaluate with its own model (no API key needed). `"model"`: always uses the configured provider.
-
-```bash
-diffgate guidelines            # run manually
-```
-
-Findings are `yellow` / non-blocking by default (configurable).
-
----
-
-## Cross-file blast radius (code graph)
-
-Most reviewers face a false tradeoff: index the whole repo for cross-file context and you catch breaking changes *but get noisier*; stay diff-scoped and you're quiet *but miss the call sites*. DiffGate resolves it because tiers **route attention instead of emitting comments** — so cross-file context makes the review *quieter and more complete at once*.
-
-When an optional code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph), Apache-2.0) is present, the impact pass enriches public-surface findings (`public-api-change`, `signature-drift`, `deprecated-api`) and adjusts their tier:
-
-| Situation | What DiffGate does |
-|-----------|--------------------|
-| Public change **with callers** | Stays 🟠, message names the caller count, **suggested reviewers**, **untested** call sites, plus complexity and stale-doc flags (`tierAdjusted: escalated`) |
-| Public change **nobody calls** | De-escalates 🟠 → 🟡 and **stops blocking the gate** (`tierAdjusted: deescalated`) |
-| No graph available | Complete no-op — same behavior as before, no subprocess cost |
-
-**How it sources impact.** One `pr_context` call per review covers the whole diff (callers, test gaps, reviewers, stale docs, complexity). Symbols it doesn't cover — or any time it's unavailable — fall back to a per-finding `analyze_impact` lookup, with `find_related_tests` supplying authoritative test-gap data. In the MCP loop, `diffgate_analyze` additionally attaches `get_edit_context` (callers/tests/recent history) to the highest-blast finding so an agent can fix the call sites before writing code.
-
-**Setup** — `diffgate graph status` tells you what's configured; `diffgate graph index` builds the index (or prints install instructions if CodeGraph isn't installed). DiffGate auto-detects the index (`~/.codegraph/graph.db`). The graph indexes committed/disk state, so *who calls a changed symbol* is reliable. To never auto-de-escalate a rule, pin its tier: `"rules": { "signature-drift": { "tier": "orange" } }`.
-
-**Graph-aware security (optional, Pro).** For injection-class findings (`sql-injection`, `xss-sink`, `nosql-injection`, `path-traversal`, …) a CodeGraph Pro taint analysis answers *does user input actually reach this sink?* A confirmed taint path is attached (source → … → sink) and keeps the gate. A proven-clean sink de-escalates **only if you set `graph.securityDeescalate: true`** — enrich-only by default, because a false "no taint" must never silently hide a vulnerability. (Validated against CodeGraph's documented contract, not a live Pro binary.)
-
-Impact surfaces everywhere a finding does: the CLI report, GitHub PR annotations, SARIF `properties`, the MCP `diffgate_analyze` output (so coding agents see blast radius **before code is written to disk**), and the VS Code hover card.
-
----
-
-## Signal report
-
-```bash
-diffgate stats          # realized signal (from your verdicts) + predicted signal (current diff)
-```
-
-*Realized* signal turns the `confirm`/`dismiss` verdicts in `.diffgate/learnings.json` into a ratio of real catches to noise, and lists **chronically-noisy rules** worth disabling. *Predicted* signal scores the current diff (🟠/🟡 = signal, 🟢 = low-signal). Use it to prove — and keep — a low-noise review.
-
----
-
-## Feedback and learnings
-
-```bash
-diffgate feedback <ruleId> <file> <line> --confirm     # real catch — mark it
-diffgate feedback <ruleId> <file> <line> --dismiss     # noise — suppress it in future reviews
-```
-
-Matched by `ruleId` + code hash. Latest verdict wins. Stored in `.diffgate/learnings.json` — commit it to share across the team.
-
----
-
-## CI / pre-commit
-
-```bash
-# Pre-commit hook (installed by `diffgate install-hook`)
-diffgate check --staged
-
-# CI
-diffgate check --fail-on=orange      # exit 1 blocks the build
-diffgate check --json                # machine-readable output
-diffgate check --github              # emit GitHub Actions inline PR annotations
-```
-
-### GitHub Actions
-
-Drop this file into `.github/workflows/diffgate.yml` (also ships ready-made with the package):
-
-```yaml
-on: [pull_request]
-jobs:
-  diffgate:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - run: git reset --mixed "origin/${{ github.base_ref }}"
-      - run: npx diffgate-review@latest check --working --github
-```
-
-## DiffGate for Coding Agents
-
-DiffGate's MCP server enables a workflow that PR-review tools cannot address: catching security issues in **generated code before it is written to disk**.
-
-When a coding agent (Claude Code, Cursor, Continue, etc.) is about to suggest code, it calls `diffgate_analyze` with the generated content directly — no commit, no staged file:
-
-```
-Agent generates code
-        │
-        ▼
-diffgate_analyze(filePath, content)   ← content = the unsaved suggestion
-        │
-  orange finding?
-   ┌────┴────┐
-  yes        no
-   │          │
-   ▼          ▼
-Agent       User sees
-self-corrects  the code
-```
-
-Example: asked to add a `deepMerge` helper to an existing utils file, the agent writes a recursive merge with no `__proto__`/`constructor` guard — harmless in isolation, but a prototype-pollution sink the moment it touches `req.body`. DiffGate returns an orange `prototype-pollution` finding; the agent adds the key guard and re-checks — clean. The user sees only the corrected version. This is deliberately *not* a textbook SQL-injection example: agents already parameterize SQL unprompted — it's these second-order footguns, dropped while editing, that DiffGate is tuned to catch (see [the measurement](#what-it-adds-over-the-models-own-judgment)).
-
-The deterministic rules cost **zero LLM tokens** — the agent gets back structured JSON findings, not prose. Token spend only occurs if the agent also calls `diffgate_deep_review` to investigate blast radius.
-
-**Setup (2 lines):** Add to `~/.claude/mcp.json` (Claude Code) or your Cursor MCP settings:
-
-```json
-{
-  "mcpServers": {
-    "diffgate": { "command": "diffgate", "args": ["mcp"] }
-  }
-}
-```
-
-Without a global install: `{ "command": "node", "args": ["/path/to/diffgate/dist/cli.js", "mcp"] }`
-
-See [MCP.md](MCP.md) for tool descriptions and AI configuration.
+- **[docs/CONFIG.md](docs/CONFIG.md):** full `.diffgate.json` schema, all built-in rules, LLM providers, native precision & test-scope behavior.
+- **[docs/TEAM.md](docs/TEAM.md):** rolling DiffGate out to a team (GitHub Action / PR gate, shared learnings, org-wide policy packs, SOC 2 evidence, metrics for leaders).
+- **[docs/CODE-GRAPH.md](docs/CODE-GRAPH.md):** optional cross-file blast radius (caller counts, suggested reviewers, test gaps, taint analysis).
+- **[docs/MEASUREMENT.md](docs/MEASUREMENT.md):** what agents actually ship unprompted and how to reproduce it (`diffgate marginal`).
+- **[MCP.md](MCP.md):** MCP tools, prompts, resources, and AI configuration.
 
 ---
 
@@ -436,18 +135,14 @@ See [MCP.md](MCP.md) for tool descriptions and AI configuration.
 diffgate scan mock_project
 ```
 
-You'll see green findings (logging), yellow findings (deprecated `StripeClient.charge`), and orange findings (the `DROP COLUMN` migration, a public export).
+You'll see green findings (logging), yellow findings (a deprecated call), and orange findings (a `DROP COLUMN` migration, a public export).
 
 ## Tests
 
 ```bash
-npm test    # builds the extension, runs the full unit/integration suite + the extension smoke test
+npm test    # builds the extension, runs the full unit/integration suite + extension smoke test
 ```
 
-## Contributing
+## Contributing & License
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-Apache 2.0 — see [LICENSE](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Apache 2.0; see [LICENSE](LICENSE).
