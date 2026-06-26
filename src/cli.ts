@@ -814,6 +814,7 @@ function cmdGraph(pos: string[], flags: Record<string, string | true>): void {
     console.log(`  ${dot(status.enabled)} enabled       ${c.dim(status.enabled ? "yes" : "no (graph.enabled=false / mode=off)")}`);
     console.log(`  ${dot(status.commandFound)} ${("`" + status.command + "`").padEnd(20)} ${c.dim(status.commandFound ? "found on PATH" : "not on PATH")}`);
     console.log(`  ${dot(status.indexed)} indexed       ${c.dim(status.indexed ? status.dbPath : "no index")}`);
+    console.log(`  ${dot(status.reachability)} reachability  ${c.dim(status.reachability ? "escalate non-JS injection when reachable from an entry point" : "off")}`);
     console.log(`\n  ${status.indexed ? c.green("✔ " + status.reason) : c.yellow(status.reason)}`);
     return;
   }

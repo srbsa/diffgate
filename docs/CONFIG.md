@@ -42,8 +42,13 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
     "enabled": "auto",
     "provider": "codegraph",
     "escalateThreshold": 1,
-    "security": "auto",
-    "securityDeescalate": false
+    "security": "auto",                       // Pro taint tracing (enrich-only)
+    "securityDeescalate": false,
+    "reachability": "auto",                   // community-edition reachability escalation
+    "reachabilityDeescalate": false,          // never auto-clear "unreachable" (fail-safe)
+    "untrustedEntryKinds": ["http_handler", "event_handler"],
+    "reachabilityMaxDepth": 6,                // caller-chain hops before giving up
+    "reachabilityTimeoutMs": 4000
   },
 
   "ignore": ["**/node_modules/**", "**/dist/**"]
@@ -58,10 +63,10 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 |------|------|-------|
 | `hardcoded-secret` | 🟠 blocking | AWS keys, GitHub PATs, Stripe secrets, generic credential patterns |
 | `db-schema-destructive` | 🟠 blocking | `DROP`, `TRUNCATE`, `DELETE` without `WHERE` |
-| `sql-injection` | 🟠 blocking | template literals / concatenation inside SQL calls |
+| `sql-injection` | 🟠 blocking | template literals / concatenation inside SQL calls (JS/TS AST + JS-shaped regex) |
 | `db-schema-change` | 🟠 | `ALTER TABLE`, `ADD COLUMN`, `RENAME` |
 | `auth-crypto` | 🟠 | passport, JWT, bcrypt, session handlers |
-| `dangerous-exec` | 🟠 | `eval()`, `exec()`, `os.system()`, `pickle.loads` |
+| `dangerous-exec` | 🟠 | `eval()`, `exec()`, `os.system()`, `pickle.loads`, Go `exec.Command`, Ruby `system`/`%x{}` — blocks when reachable |
 | `public-api-change` | 🟠 | exported symbols (JS/TS AST) |
 | `signature-drift` | 🟠 | exported function parameter changes (JS/TS) |
 | `permissive-cors` | 🟠 | `origin: '*'` |
@@ -70,7 +75,8 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 | `nosql-injection` | 🟠 | `$where`, `db.eval`, `Model.find(req.body)` passthrough |
 | `prototype-pollution` | 🟠 | `Object.assign(existing, req.body)`, `_.merge` with request data (JS/TS) |
 | `deprecated-api` | 🟡 | configured via `deprecated[]`, offers a quick-fix |
-| `raw-query` | 🟡 | `db.query()`, bare SQL keywords |
+| `sql-injection-candidate` | 🟡 advisory | non-JS injection idioms (Python f-string/`%`/`.format`, PHP `.`-concat, Ruby `#{}`); **never blocks alone** — escalates to blocking 🟠 only when CodeGraph confirms reachability from an untrusted entry point. JS/TS use the precise AST `sql-injection` rule instead. |
+| `raw-query` | 🟡 | `db.query()`, bare SQL keywords; escalates when reachable |
 | `network-call` | 🟡 | `fetch`, `axios`, `requests.*` |
 | `migration-file` | 🟡 | migration file names |
 | `dependency-manifest` | 🟡 | `package.json`, `requirements.txt`, etc. |

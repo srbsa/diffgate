@@ -324,3 +324,15 @@ test("graphStatus reports disabled and command-resolution states without spawnin
   assert.equal(on.commandFound, false);
   assert.equal(typeof on.reason, "string");
 });
+
+test("graphStatus reports reachability state and an index-age field", () => {
+  // Reachability is on by default when graphing is enabled.
+  assert.equal(graphStatus({ graph: { enabled: "auto" } }).reachability, true);
+  // Explicitly disabled reachability is reflected.
+  assert.equal(graphStatus({ graph: { enabled: "auto", reachability: false } }).reachability, false);
+  // Disabling graphing disables reachability too.
+  assert.equal(graphStatus({ graph: { enabled: false } }).reachability, false);
+  // indexAgeMs is present (null when not indexed) and never negative when indexed.
+  const s = graphStatus({ graph: { enabled: "auto" } });
+  assert.ok(s.indexAgeMs === null || s.indexAgeMs >= 0);
+});

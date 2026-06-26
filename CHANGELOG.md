@@ -7,6 +7,24 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.0] — 2026-06-26
+
+### Added
+
+- **Community-edition reachability — cross-language injection that earns its block** ([src/core/reachability.ts](src/core/reachability.ts), [src/core/graph/codegraph.ts](src/core/graph/codegraph.ts)). DiffGate's injection detection is AST-deep on JS/TS and best-effort regex elsewhere, and the Pro taint engine that made the graph "precision" is absent from the community CodeGraph build — so on Python/PHP/Ruby the precision story was dark exactly where recall was weakest. New `GraphProvider.reachability()` closes this using only **community** tools (`find_entry_points` + `get_callers`/`traverse_graph`): it walks the deterministic, AST-derived call graph from a sink back toward untrusted entry points (HTTP/event handlers). A new `attachReachability` pass routes injection-class findings through it — **reachable from a handler → escalate to a blocking orange** (entry point named, `trust: "reachable"`); **no path found → advisory** (`trust: "unreachable"`, never auto-cleared unless `graph.reachabilityDeescalate: true`); **can't tell → untouched** (`null` = unknown, never a false "unreachable"). Pro taint verdicts still win when present. Core-only behavior is unchanged — a strict no-op without a graph. Entry-point discovery is memoized once per review; reachability has its own depth bound and timeout budget.
+
+- **`sql-injection-candidate` rule + widened `dangerous-exec`** ([src/core/rules/builtin.ts](src/core/rules/builtin.ts)). A broad, **advisory** (yellow, non-blocking) cross-language injection rule for the idioms the JS-shaped blocking rule misses — Python f-string / `%` / `.format`, PHP `.`-concat & `"…$var…"`, Ruby `#{}` — and `dangerous-exec` now covers Go `exec.Command`/`CommandContext` and Ruby `system`/`%x{}`/`IO.popen`/`Open3`/`Process.spawn`/`Kernel.exec`. These never block on their own (and don't fire on parameterized queries); they escalate to blocking **only** via reachability. `skipIfAst` keeps the candidate off JS/TS, where the precise AST rule already owns this. This is the low-noise contract: recall comes from the rule, the right to block comes from the graph.
+
+- **Config + status surface.** New `graph.reachability` / `reachabilityDeescalate` / `untrustedEntryKinds` / `reachabilityMaxDepth` / `reachabilityTimeoutMs` keys ([docs/CONFIG.md](docs/CONFIG.md)). `diffgate graph status` now shows a reachability line and the index age (reachability is only as good as the index; a stale index can make a reachable sink look unreachable). MCP `diffgate_analyze` findings may carry a `reachability` block and `trust: "reachable"/"unreachable"` ([MCP.md](MCP.md)).
+
+- **Docs.** [docs/SCOPE.md](docs/SCOPE.md) and [docs/CODE-GRAPH.md](docs/CODE-GRAPH.md) gain a "Reachability (community edition)" section; the Pro security graph is reframed as an optional enhancement *on top of* community reachability, not a prerequisite.
+
+### Tests
+
+- New `test/reachability.test.js` (22): the `attachReachability` pass with an injected fake graph + the provider's `reachability()` with a canned `GraphRunner` (reachable/unreachable/unknown, `untrustedEntryKinds`, memoization, fail-safe degradation, Pro-wins). `test/scenarios.test.js` promotes the previously-pinned cross-language GAPs to the new covered-by-candidate behavior and the two-step reachability escalation. Full suite 366 green; the clean-corpus false-block rate is unchanged (0.00) — CI has no graph, so nothing new can block.
+
+---
+
 ## [0.5.2] — 2026-06-26
 
 ### Fixed

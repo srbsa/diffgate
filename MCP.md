@@ -133,7 +133,7 @@ respect — rather than discovering missing layers via thrown errors mid-loop.
 
 Returns a structured analysis result. Key fields:
 - `findings[]` — list of findings, each with `{ ruleId, tier, trust, title, message, line, fix? }`
-- `trust` (per finding) — deterministic confidence: `"confirmed"` (a signal backs it) · `"cleared"` (graph proved no taint path) · `"unconfirmed"` (no signal could confirm/deny — flag for a human, don't silently "fix")
+- `trust` (per finding) — deterministic confidence: `"confirmed"` (a signal backs it) · `"cleared"` (graph proved no taint path) · `"reachable"` (community graph proved a path from an untrusted entry point to this sink — **block-worthy**) · `"unreachable"` (no such path in the graph — advisory; verify before dismissing, coverage depends on the index) · `"unconfirmed"` (no signal could confirm/deny — flag for a human, don't silently "fix")
 - `tier` — overall tier: `"green"` | `"yellow"` | `"orange"`
 - `blocking` — true if any finding should block a commit
 - `_diffgate` — compact capability hint `{ graph, llm, agentMode }`
@@ -143,6 +143,7 @@ When a code graph is available, public-surface findings also carry:
 - `tierAdjusted` — `"escalated"` (has callers) or `"deescalated"` (nobody calls it)
 - `editContext` — on the highest-blast finding only: `{ callers[], tests[], history[] }` from `get_edit_context`, so you can update the call sites in the same turn **before writing the code to disk**
 - `security` — on injection-class findings when a Pro taint graph is present: `{ tainted, dataFlow[] }`. `tainted: true` means user input reaches the sink (source → … → sink in `dataFlow`) — **do not ship it**.
+- `reachability` — on cross-language injection findings (`sql-injection-candidate`, `raw-query`, `dangerous-exec`, …) when the community graph answered: `{ reachable, entryPoints[], path[], depth }`. `reachable: true` means the sink is reachable from an untrusted entry point (`entryPoints[].method`/`route`) and the finding has been escalated to blocking — **treat it like a confirmed vuln**. `reachable: false` is advisory only (the graph found no path, but coverage depends on the index).
 
 If a finding is `escalated` with a high `callerCount`, **fix it before surfacing the code** — the change breaks existing call sites. Use `editContext.callers` to find them and `editContext.tests` to update coverage.
 

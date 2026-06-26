@@ -41,11 +41,35 @@ DiffGate auto-detects the index (`~/.codegraph/graph.db`). The graph indexes com
 
 ---
 
-## Graph-aware security (optional, Pro)
+## Reachability (community edition)
 
-For injection-class findings (`sql-injection`, `xss-sink`, `nosql-injection`, `path-traversal`, …) a CodeGraph Pro taint analysis answers *does user input actually reach this sink?* A confirmed taint path is attached (source → … → sink) and keeps the gate. A proven-clean sink de-escalates **only if you set `graph.securityDeescalate: true`**; enrich-only by default, because a false "no taint" must never silently hide a vulnerability. (Validated against CodeGraph's documented contract, not a live Pro binary.)
+The blocking SQL-injection rule is deep on JS/TS (AST); on other languages DiffGate emits broad **advisory** findings (`sql-injection-candidate`, `raw-query`, `dangerous-exec`). Broad regex is recall, not precision, so those never block on their own. Reachability is the **community-tier precision source** that lets them earn a block — no Pro binary required.
 
-The graph is a **precision layer, not a recall layer**: it confirms or clears injection findings the base rules already produced — it does **not** add detections a rule missed. Raising recall is a rule-layer change, not a graph toggle. See [SCOPE.md](SCOPE.md).
+For each such finding, DiffGate walks the call graph from the sink back toward **untrusted entry points**:
+
+1. `find_entry_points` → the set of HTTP/event handlers the framework exposes (e.g. a Flask `@app.route` is tagged `http_handler`). Fetched **once per review** and cached.
+2. `get_callers` / `traverse_graph` (incoming `calls`, bounded by `reachabilityMaxDepth`) → the sink's transitive callers.
+3. If an untrusted entry point is in that ancestor set, the sink is **reachable**.
+
+| Verdict | What DiffGate does | Trust label |
+|---------|--------------------|-------------|
+| **Reachable** from a handler | Escalates 🟡/advisory → blocking 🟠, names the entry point (`GET /user → …`) | `reachable` |
+| **Unreachable** (handlers known, no path) | Left as-is by default; down-tiers **only** with `graph.reachabilityDeescalate: true` | `unreachable` |
+| **Unknown** (no index / no handlers / query failed) | Untouched — never a false "unreachable" | `unconfirmed` |
+
+**Fail-safe posture.** Any uncertainty returns "unknown", never "unreachable" — an incomplete index must never hide a real vulnerability. Default is escalate-can-block, **never auto-clear**. Untrusted roots are `http_handler` + `event_handler` by default (configurable via `graph.untrustedEntryKinds`); `cli_command` / `test` / `main` are not untrusted.
+
+**Framework note.** Decorator routes (Flask `@app.route`) are inline and easy. Frameworks that register routes in separate files (Laravel/Symfony `routes/*.php`, Express router files) need those files in the index for `http_handler` tagging — otherwise the sink degrades to advisory `unconfirmed` (not a false `unreachable`). Keep route-registration files in your index scope. Index freshness matters: a stale index can make a reachable sink look unreachable, so `diffgate graph status` surfaces the index age.
+
+Config keys: `graph.reachability` (`auto` | `true` | `false`), `reachabilityDeescalate`, `untrustedEntryKinds`, `reachabilityMaxDepth`, `reachabilityTimeoutMs` — see [CONFIG.md](CONFIG.md).
+
+---
+
+## Graph-aware security (optional, Pro — an enhancement on top of reachability)
+
+Reachability above is the community floor. A CodeGraph **Pro** taint analysis is an optional precision *upgrade*, not a prerequisite: for injection-class findings it answers *does user input actually reach this sink?* with full data-flow, not just call-graph reachability. A confirmed taint path is attached (source → … → sink) and keeps the gate. A proven-clean sink de-escalates **only if you set `graph.securityDeescalate: true`**; enrich-only by default, because a false "no taint" must never silently hide a vulnerability. When a Pro verdict is present it **wins** over community reachability for that finding. (Validated against CodeGraph's documented contract, not a live Pro binary.)
+
+The graph is a **precision layer, not a recall layer**: it escalates, confirms, or clears injection findings the base rules already produced — it does **not** add detections a rule missed. Raising recall is a rule-layer change. See [SCOPE.md](SCOPE.md).
 
 ---
 

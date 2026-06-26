@@ -1,6 +1,7 @@
 // Optional code-graph layer. Provides deterministic cross-file blast radius when a graph
 // backend is present; returns null (→ no impact data, never an error) when it is not.
 
+import fs from "fs";
 import type {
   Config, GraphConfig, ImpactInfo, PrContextInfo, EditContext, SecurityVerdict, ImpactRef,
   ReachabilityVerdict,
@@ -114,8 +115,24 @@ export interface GraphStatus {
   command: string;
   /** Expected index location. */
   dbPath: string;
+  /** Reachability escalation is enabled (graph.reachability !== false). */
+  reachability: boolean;
+  /** Age of the index (ms since its mtime) when indexed; null otherwise. Reachability is only as
+   *  good as the index — a stale index can make a reachable sink look unreachable. */
+  indexAgeMs: number | null;
   /** A short human-readable explanation of the current state. */
   reason: string;
+}
+
+/** Coarse human age ("3 days", "5 hours", "just now") for a millisecond span. */
+function humanizeAge(ms: number): string {
+  const days = Math.floor(ms / 86_400_000);
+  if (days >= 1) return `${days} day${days === 1 ? "" : "s"}`;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours >= 1) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  const mins = Math.floor(ms / 60_000);
+  if (mins >= 1) return `${mins} min`;
+  return "just now";
 }
 
 /**
@@ -128,12 +145,28 @@ export function graphStatus(config: Partial<Config>): GraphStatus {
   const indexed = enabled && codeGraphAvailable(g);
   const commandFound = commandAvailable(g.command);
   const dbPath = graphDbDir();
+  const reachability = enabled && g.reachability !== false;
+
+  let indexAgeMs: number | null = null;
+  if (indexed) {
+    try {
+      indexAgeMs = Math.max(0, Date.now() - fs.statSync(dbPath).mtimeMs);
+    } catch {
+      indexAgeMs = null;
+    }
+  }
+
   let reason: string;
   if (!enabled) reason = "Graphing is disabled in config (graph.enabled=false or mode=off).";
-  else if (indexed) reason = `Indexed at ${dbPath}.`;
-  else if (commandFound) reason = `${g.command} is installed but no index found — run \`diffgate graph index\`.`;
+  else if (indexed) {
+    const age = indexAgeMs != null ? ` Index is ${humanizeAge(indexAgeMs)} old` : "";
+    const stale = indexAgeMs != null && indexAgeMs > 7 * 86_400_000
+      ? " — run `diffgate graph index` if your diff touches newer files (reachability depends on the index)." : ".";
+    reason = `Indexed at ${dbPath}.${age}${age ? stale : ""}`;
+  } else if (commandFound) reason = `${g.command} is installed but no index found — run \`diffgate graph index\`.`;
   else reason = `${g.command} not found on PATH — install CodeGraph, then run \`diffgate graph index\`.`;
-  return { enabled, indexed, commandFound, command: g.command, dbPath, reason };
+
+  return { enabled, indexed, commandFound, command: g.command, dbPath, reachability, indexAgeMs, reason };
 }
 
 export { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir } from "./codegraph.js";
