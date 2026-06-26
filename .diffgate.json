@@ -1,7 +1,7 @@
 {
   "testCommand": "npm test",
   "gate": { "mode": "working", "failOn": "orange" },
-  "ai": { "enabled": false, "model": "claude-sonnet-4-6", "apiKeyEnv": "ANTHROPIC_API_KEY" },
+  "ai": { "enabled": true, "model": "gpt-5.4-nano", "apiKeyEnv": "OPENAI_API_KEY" },
   "ignore": [
     "**/node_modules/**",
     "**/dist/**",

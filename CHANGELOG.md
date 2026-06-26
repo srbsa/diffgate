@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.2] — unreleased
+
+### Fixed
+
+- **OpenAI GPT-5 / o-series models now work without manual config** ([src/core/llm/registry.ts](src/core/llm/registry.ts), [src/core/llm/index.ts](src/core/llm/index.ts)). The chat/completions contract for reasoning models (e.g. `gpt-5.4-nano`, `gpt-5.4-mini`, `o3`) differs from earlier models: `max_tokens` is rejected in favor of `max_completion_tokens`, and any `temperature` other than the default `1` is rejected. DiffGate sent `max_tokens` + `temperature: 0` for every OpenAI-wire call, so a `gpt-5.4-nano` config (the default `apiKeyEnv: "OPENAI_API_KEY"` setup) always 400'd. A new `isOpenAIReasoningModel()` detects these by model name — across `openai`, `openrouter` (namespaced ids like `openai/gpt-5.4-mini`), and any custom OpenAI-compatible router — and auto-applies the correct param mapping: `max_completion_tokens`, an omitted non-default `temperature`, and a larger default completion budget (reasoning tokens are billed against it, so a small cap could return empty content). Explicit `ai.tokenParam` / `ai.temperature` in `.diffgate.json` still override the auto-mapping.
+
 ## [0.5.1] — 2026-06-24
 
 ### Added

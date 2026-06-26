@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { resolveProvider, selectModel, PROVIDERS } from "./registry.js";
+import { resolveProvider, selectModel, isOpenAIReasoningModel, PROVIDERS } from "./registry.js";
 import { anthropicComplete } from "./anthropic.js";
 import { openaiComplete } from "./openai.js";
 import type { Config, FetchFn, CompleteResult, Finding } from "../types.js";
@@ -43,15 +43,26 @@ export async function complete({ system, prompt, config, tier = "default", model
   if (!model) {
     throw new Error(`No model configured for provider "${p.id}". Set "ai.model" in .diffgate.json.`);
   }
+  // GPT-5/o-series reasoning models need a different chat/completions contract.
+  // Auto-apply the right defaults so they work without manual config; an explicit
+  // ai.tokenParam / ai.temperature in .diffgate.json still wins (config flag override).
+  const reasoning = p.wire === "openai" && isOpenAIReasoningModel(model);
+  // Reasoning tokens are billed against the completion budget, so a small cap can be
+  // fully consumed by thinking and return empty content — give these models more room.
+  const defaultMaxTokens = p.local || reasoning ? 2048 : 700;
+  // These models reject any temperature other than the default (1); omit it (null)
+  // unless the user explicitly set 1, so the request validates.
+  const cfgTemp = config.ai?.temperature ?? 0;
+  const temperature = reasoning && cfgTemp !== 1 ? null : cfgTemp;
   const opts = {
     baseURL: p.baseURL,
     apiKey,
     model,
     system,
     prompt,
-    maxTokens: config.ai?.maxTokens || (p.local ? 2048 : 700),
-    temperature: config.ai?.temperature ?? 0,
-    tokenParam: config.ai?.tokenParam || "max_tokens",
+    maxTokens: config.ai?.maxTokens || defaultMaxTokens,
+    temperature,
+    tokenParam: config.ai?.tokenParam || (reasoning ? "max_completion_tokens" : "max_tokens"),
     extraHeaders: p.extraHeaders,
     // Thinking-suppression uses non-standard params (chat_template_kwargs, /no_think)
     // that strict hosted APIs reject. Realize it only for local templated runtimes

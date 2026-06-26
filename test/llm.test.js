@@ -157,6 +157,60 @@ test("explainFinding honors explicit ai.noThink override on a hosted gateway", a
   delete process.env.OPENAI_API_KEY;
 });
 
+test("GPT-5/o-series reasoning models get max_completion_tokens and no non-default temperature", async () => {
+  process.env.OPENAI_API_KEY = "sk-test";
+  const cap = {};
+  const config = { ai: { enabled: true, provider: "openai", model: "gpt-5.4-nano", temperature: 0, maxTokens: 0 } };
+  const finding = { tier: "yellow", ruleId: "r", title: "T", message: "msg", code: "c-gpt5" };
+  await explainFinding({
+    finding, snippet: "snip-gpt5", language: "javascript", config,
+    fetchImpl: fakeFetch(cap, { model: "gpt-5.4-nano", choices: [{ message: { content: "ok" } }] }),
+  });
+  assert.equal(cap.body.max_tokens, undefined, "must not send max_tokens (GPT-5 rejects it)");
+  assert.equal(typeof cap.body.max_completion_tokens, "number", "must send max_completion_tokens");
+  assert.equal(cap.body.temperature, undefined, "must omit non-default temperature (GPT-5 rejects 0)");
+  delete process.env.OPENAI_API_KEY;
+});
+
+test("namespaced reasoning model id (openrouter) is detected too", async () => {
+  process.env.OPENROUTER_API_KEY = "sk-test";
+  const cap = {};
+  const config = { ai: { enabled: true, provider: "openrouter", model: "openai/gpt-5.4-mini" } };
+  const finding = { tier: "yellow", ruleId: "r", title: "T", message: "msg", code: "c-or5" };
+  await explainFinding({
+    finding, snippet: "snip-or5", language: "javascript", config,
+    fetchImpl: fakeFetch(cap, { model: "x", choices: [{ message: { content: "ok" } }] }),
+  });
+  assert.equal(cap.body.max_tokens, undefined);
+  assert.equal(typeof cap.body.max_completion_tokens, "number");
+  delete process.env.OPENROUTER_API_KEY;
+});
+
+test("non-reasoning OpenAI model keeps max_tokens + temperature, and explicit config overrides win", async () => {
+  process.env.OPENAI_API_KEY = "sk-test";
+  const cap = {};
+  // gpt-4-class model: classic contract.
+  const config = { ai: { enabled: true, provider: "openai", model: "gpt-4.1-mini", temperature: 0 } };
+  const finding = { tier: "yellow", ruleId: "r", title: "T", message: "msg", code: "c-g4" };
+  await explainFinding({
+    finding, snippet: "snip-g4", language: "javascript", config,
+    fetchImpl: fakeFetch(cap, { model: "x", choices: [{ message: { content: "ok" } }] }),
+  });
+  assert.equal(typeof cap.body.max_tokens, "number");
+  assert.equal(cap.body.temperature, 0);
+
+  // Explicit tokenParam/temperature override the reasoning auto-mapping.
+  const cap2 = {};
+  const cfg2 = { ai: { enabled: true, provider: "openai", model: "gpt-5.4-nano", tokenParam: "max_tokens", temperature: 1 } };
+  await explainFinding({
+    finding: { ...finding, code: "c-g4b" }, snippet: "snip-g4b", language: "javascript", config: cfg2,
+    fetchImpl: fakeFetch(cap2, { model: "x", choices: [{ message: { content: "ok" } }] }),
+  });
+  assert.equal(typeof cap2.body.max_tokens, "number", "explicit tokenParam override respected");
+  assert.equal(cap2.body.temperature, 1, "explicit temperature=1 respected");
+  delete process.env.OPENAI_API_KEY;
+});
+
 test("anthropic adapter posts the right shape and parses content", async () => {
   const cap = {};
   const out = await anthropicComplete({
