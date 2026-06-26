@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { execFileSync } from "child_process";
 import { blameLine } from "../git.js";
+import { IGNORE_DIR_NAMES } from "../config.js";
 
 const MAX_GREP = 40;
 const MAX_READ_LINES = 200;
@@ -48,7 +49,9 @@ function jsGrep(cwd: string, pattern: string, maxResults: number): string {
     re = new RegExp(escapeRe(pattern));
   }
   const out: string[] = [];
-  const skip = new Set(["node_modules", ".git", "dist", "build", "coverage"]);
+  // Same build/cache output dirs the rest of the engine skips, so the fallback grep (used when
+  // `git grep` is unavailable) doesn't crawl node_modules/.next/out/__pycache__/target/…
+  const skip = IGNORE_DIR_NAMES;
   const walk = (dir: string): void => {
     if (out.length >= maxResults) return;
     let entries: fs.Dirent[] = [];

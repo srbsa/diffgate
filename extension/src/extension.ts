@@ -10,6 +10,8 @@ import {
   getPreviousContent,
   computeChangedLines,
   isGitRepo,
+  repoRoot,
+  IGNORE_DIR_NAMES,
   blameLine,
   explainFinding,
   isAiAvailable,
@@ -66,9 +68,61 @@ function settings(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration("diffgate");
 }
 
+// repoRoot() shells out to git; cache by directory so per-keystroke analysis and tree grouping
+// don't spawn a process each time. Cleared on workspace-folder / git-state changes.
+const repoRootByDir = new Map<string, string | null>();
+function repoRootForPath(fsPath: string): string | null {
+  const dir = path.dirname(fsPath);
+  if (repoRootByDir.has(dir)) return repoRootByDir.get(dir)!;
+  let root: string | null = null;
+  try { root = repoRoot(dir); } catch { root = null; }
+  repoRootByDir.set(dir, root);
+  return root;
+}
+
+// The analysis base for a file = the git repo that owns it (so config, diff and blame resolve in
+// the right repo, even when the file lives in a nested repo), then the workspace folder, then the
+// containing directory. Fixes nested-repo files being diffed against the wrong root.
 function folderForUri(uri: vscode.Uri): string {
+  const repo = repoRootForPath(uri.fsPath);
+  if (repo) return repo;
   const wf = vscode.workspace.getWorkspaceFolder(uri);
   return wf ? wf.uri.fsPath : path.dirname(uri.fsPath);
+}
+
+function realpath(p: string): string {
+  try { return fs.realpathSync(p); } catch { return p; }
+}
+
+// Discover every git repo reachable from the open workspace folders — each folder's own repo plus
+// nested/sibling repos a couple of levels down — so a workspace that holds several repos behaves
+// like VS Code's Source Control view instead of showing only the first. Bounded depth + skipped
+// build/cache dirs keep this cheap on large trees.
+const MAX_REPO_SCAN_DEPTH = 2;
+function scanForRepos(dir: string, depth: number, roots: Set<string>): void {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (!e.isDirectory() && !e.isSymbolicLink()) continue;
+    if (e.name === ".git") {
+      const r = repoRoot(dir);
+      if (r) roots.add(realpath(r));
+      continue;
+    }
+    if (depth >= MAX_REPO_SCAN_DEPTH) continue;
+    if (IGNORE_DIR_NAMES.has(e.name) || e.name.startsWith(".")) continue;
+    scanForRepos(path.join(dir, e.name), depth + 1, roots);
+  }
+}
+
+function discoverRepos(): string[] {
+  const roots = new Set<string>();
+  for (const wf of vscode.workspace.workspaceFolders || []) {
+    const base = wf.uri.fsPath;
+    try { const own = repoRoot(base); if (own) roots.add(realpath(own)); } catch { /* not a repo */ }
+    scanForRepos(base, 0, roots);
+  }
+  return [...roots];
 }
 
 function getConfigFor(folder: string): Config {
@@ -181,7 +235,7 @@ function updateTreeData(): void {
 function analyzeDocument(document: vscode.TextDocument): void {
   if (!settings().get("enable", true)) return;
   if (document.uri.scheme !== "file") return;
-  if (document.getText().length > MAX_BYTES) return;
+  if (Buffer.byteLength(document.getText(), "utf8") > MAX_BYTES) return;
 
   const folder = folderForUri(document.uri);
   const config = getConfigFor(folder);
@@ -401,15 +455,24 @@ const codeActionProvider: vscode.CodeActionProvider = {
 };
 
 // --- risk tree view ----------------------------------------------------------
-interface TreeNode { kind: string; item: vscode.TreeItem; file?: AnalyzeResult; }
+interface TreeNode { kind: string; item: vscode.TreeItem; file?: AnalyzeResult; repo?: string; }
 
 class RiskTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private files: AnalyzeResult[] = [];
+  private groups = new Map<string, AnalyzeResult[]>();
   private _emitter = new vscode.EventEmitter<TreeNode | undefined>();
   readonly onDidChangeTreeData = this._emitter.event;
 
   setData(files: AnalyzeResult[]): void {
     this.files = files;
+    // Group by owning repo so a multi-repo workspace renders one section per repo, like the SCM view.
+    this.groups = new Map();
+    for (const f of files) {
+      const root = repoRootForPath(f.filePath) || "";
+      const list = this.groups.get(root) || [];
+      list.push(f);
+      this.groups.set(root, list);
+    }
     this._emitter.fire(undefined);
   }
   getTreeItem(el: TreeNode): vscode.TreeItem { return el.item; }
@@ -420,13 +483,31 @@ class RiskTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         item.iconPath = new vscode.ThemeIcon("pass");
         return [{ kind: "empty", item }];
       }
-      return this.files.map((f) => this.fileNode(f));
+      // One repo (or none) → flat file list, unchanged UX. Multiple → group under repo nodes.
+      if (this.groups.size <= 1) return this.files.map((f) => this.fileNode(f));
+      return [...this.groups.keys()]
+        .sort((a, b) => path.basename(a).localeCompare(path.basename(b)))
+        .map((root) => this.repoNode(root, this.groups.get(root)!));
+    }
+    if (el.kind === "repo" && el.repo !== undefined) {
+      return (this.groups.get(el.repo) || []).map((f) => this.fileNode(f, el.repo));
     }
     if (el.kind === "file" && el.file) return el.file.findings.map((fd) => this.findingNode(el.file!, fd));
     return [];
   }
-  private fileNode(file: AnalyzeResult): TreeNode {
-    const rel = vscode.workspace.asRelativePath(file.filePath);
+  private repoNode(root: string, files: AnalyzeResult[]): TreeNode {
+    const all = files.flatMap((f) => f.findings);
+    const counts = tierCounts(all);
+    const item = new vscode.TreeItem(root ? path.basename(root) : "(outside any repo)", vscode.TreeItemCollapsibleState.Expanded);
+    item.description = `${TIER_META[overallTier(all)].icon} ${counts.orange}/${counts.yellow}/${counts.green}`;
+    item.tooltip = root || "Files not in a git repository";
+    item.iconPath = new vscode.ThemeIcon("repo");
+    if (root) item.resourceUri = vscode.Uri.file(root);
+    return { kind: "repo", repo: root, item };
+  }
+  private fileNode(file: AnalyzeResult, repoRootPath?: string): TreeNode {
+    // Inside a repo group, show the path relative to that repo; otherwise relative to the workspace.
+    const rel = repoRootPath ? path.relative(repoRootPath, file.filePath) : vscode.workspace.asRelativePath(file.filePath);
     const item = new vscode.TreeItem(rel, vscode.TreeItemCollapsibleState.Expanded);
     const { green, yellow, orange } = file.counts;
     item.description = `${TIER_META[file.tier].icon} ${orange}/${yellow}/${green}`;
@@ -490,9 +571,38 @@ class DiffGateFileDecorationProvider implements vscode.FileDecorationProvider {
 }
 
 // --- workspace review --------------------------------------------------------
+// fs.watch handles on each discovered repo's .git, keyed by repo root. Set in activate().
+let scheduleGitRefresh: () => void = () => {};
+const gitDirWatchers = new Map<string, import("fs").FSWatcher>();
+
+// Add/remove .git watchers so commits/stashes in *any* discovered repo refresh the view, not just
+// the workspace folder's own repo.
+function syncGitWatchers(roots: string[]): void {
+  const wanted = new Set(roots);
+  for (const [root, w] of gitDirWatchers) {
+    if (!wanted.has(root)) { try { w.close(); } catch { /* already gone */ } gitDirWatchers.delete(root); }
+  }
+  for (const root of wanted) {
+    if (gitDirWatchers.has(root)) continue;
+    const gitDir = path.join(root, ".git");
+    // .git is a file (not a dir) for worktrees/submodules — fs.watch needs a directory.
+    let isDir = false;
+    try { isDir = fs.statSync(gitDir).isDirectory(); } catch { /* missing */ }
+    if (!isDir) continue;
+    try {
+      const w = fs.watch(gitDir, (_event, filename) => {
+        if (filename === "COMMIT_EDITMSG" || filename === "HEAD" || filename === "index") scheduleGitRefresh();
+      });
+      gitDirWatchers.set(root, w);
+    } catch { /* not watchable on this platform/fs */ }
+  }
+}
+
 function refreshWorkspace(): void {
-  const folders = vscode.workspace.workspaceFolders || [];
   const diffMode = settings().get<string>("diffMode", "working");
+  repoRootByDir.clear();
+  const repos = discoverRepos();
+  syncGitWatchers(repos);
 
   // Snapshot which URIs were git-diff-tracked before clearing, so we can prune
   // stale entries (e.g. files that were just committed).
@@ -500,12 +610,10 @@ function refreshWorkspace(): void {
   gitFindingsByUri.clear();
   const nextGitUris = new Set<string>();
 
-  for (const wf of folders) {
-    const cwd = wf.uri.fsPath;
-    if (!isGitRepo(cwd)) continue;
+  for (const root of repos) {
     let review: ReturnType<typeof reviewChanges>;
     try {
-      review = reviewChanges(cwd, { mode: diffMode });
+      review = reviewChanges(root, { mode: diffMode });
     } catch {
       continue;
     }
@@ -516,8 +624,8 @@ function refreshWorkspace(): void {
       nextGitUris.add(uriStr);
       if (!findingsByUri.has(uriStr)) {
         diagnostics.set(uri, fr.findings.map((f) => toDiagnostic(f, null)));
-        const config = getConfigFor(cwd);
-        findingsByUri.set(uriStr, { res: fr, folder: cwd, config });
+        const config = getConfigFor(root);
+        findingsByUri.set(uriStr, { res: fr, folder: root, config });
       }
     }
   }
@@ -1453,41 +1561,29 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  // The config watcher must skip node_modules/cache dirs, or a vendored .diffgate.json deep in a
+  // dependency triggers a full config-cache clear + re-analysis on every change there.
   const cfgWatcher = vscode.workspace.createFileSystemWatcher("**/.diffgate.json");
-  const onCfg = () => { configCache.clear(); reanalyzeOpen(); refreshWorkspace(); };
+  const onCfg = (uri: vscode.Uri) => {
+    if (isIgnored(uri.fsPath, getConfigFor(folderForUri(uri)), folderForUri(uri))) return;
+    configCache.clear(); reanalyzeOpen(); refreshWorkspace();
+  };
   cfgWatcher.onDidChange(onCfg);
   cfgWatcher.onDidCreate(onCfg);
   cfgWatcher.onDidDelete(onCfg);
   context.subscriptions.push(cfgWatcher);
 
-  // Watch .git directories for git state changes that alter the diff (commit, stash, reset, checkout).
-  // VS Code's file watcher excludes .git, so we use Node's fs.watch directly.
+  // Watch each discovered repo's .git for state changes that alter the diff (commit, stash, reset,
+  // checkout). VS Code's file watcher excludes .git, so we use Node's fs.watch directly.
+  // refreshWorkspace() (re)discovers repos and calls syncGitWatchers — wire its debounce here.
   let gitRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-  const scheduleGitRefresh = () => {
+  scheduleGitRefresh = () => {
     clearTimeout(gitRefreshTimer);
     gitRefreshTimer = setTimeout(() => { gitRefreshTimer = undefined; refreshWorkspace(); }, 500);
   };
-  const gitDirWatchers: import("fs").FSWatcher[] = [];
-  const watchGitDir = (wf: vscode.WorkspaceFolder) => {
-    const gitDir = path.join(wf.uri.fsPath, ".git");
-    if (fs.existsSync(gitDir)) {
-      try {
-        const w = fs.watch(gitDir, (_event, filename) => {
-          // COMMIT_EDITMSG: regular commit. HEAD: checkout/reset/rebase.
-          // index: stage/unstage/stash/checkout-file — all alter the working-tree diff.
-          if (filename === "COMMIT_EDITMSG" || filename === "HEAD" || filename === "index") scheduleGitRefresh();
-        });
-        gitDirWatchers.push(w);
-      } catch { /* not watchable on this platform/fs */ }
-    }
-  };
-  for (const wf of vscode.workspace.workspaceFolders || []) watchGitDir(wf);
   context.subscriptions.push(
-    vscode.workspace.onDidChangeWorkspaceFolders((e) => {
-      for (const added of e.added) watchGitDir(added);
-      refreshWorkspace();
-    }),
-    { dispose: () => { clearTimeout(gitRefreshTimer); for (const w of gitDirWatchers) w.close(); } }
+    vscode.workspace.onDidChangeWorkspaceFolders(() => { repoRootByDir.clear(); refreshWorkspace(); }),
+    { dispose: () => { clearTimeout(gitRefreshTimer); for (const w of gitDirWatchers.values()) w.close(); gitDirWatchers.clear(); } }
   );
 
   reanalyzeOpen();

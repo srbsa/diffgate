@@ -395,7 +395,7 @@ export interface CompleteOptions {
   system?: string;
   prompt: string;
   maxTokens?: number;
-  temperature?: number;
+  temperature?: number | null;
   tokenParam?: string;
   extraHeaders?: Record<string, string>;
   noThink?: boolean;

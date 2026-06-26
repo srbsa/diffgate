@@ -7,6 +7,20 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.2] — 2026-06-26
+
+### Fixed
+
+- **`package.json` / manifest findings no longer linger** ([src/core/rules/index.ts](src/core/rules/index.ts)). `FILE`-type rules (`dependency-manifest`, `migration-file`) bypassed the diff gate and emitted on any open file even when it had no pending changes — after committing or reverting `package.json`, the yellow "Dependency manifest change" stayed in the sidebar. Root cause: `runFile` fell back to line 1 instead of suppressing when `changedLines` was an empty Set (tracked-but-unchanged file), unlike `pattern`/`ast` rules which already self-suppress via `inChange`. Fixed with an early-return matching that behavior. A `changedLines: null` (untracked/new file) still fires correctly.
+
+- **Multi-repo workspaces now show all repos** ([extension/src/extension.ts](extension/src/extension.ts)). The extension treated each workspace folder as exactly one repo (`repoRoot(folder)`) and rendered a flat file list, so only the outermost git root was visible. It now discovers every git repo reachable from the open workspace folders — the folder's own root plus nested/sibling repos up to depth 2, matching VS Code Source Control's `git.autoRepositoryDetection` behavior. Each repo is reviewed independently, its `.git` directory is watched for commits/stashes/resets, and the DiffGate Risk sidebar groups findings by repo when more than one is present (single-repo UX is unchanged). Nested-repo files also now use the correct repo root for `.diffgate.json` config, `git diff`, and `git blame`.
+
+- **Redundant cache-folder reads eliminated** ([src/core/config.ts](src/core/config.ts), [src/cli.ts](src/cli.ts), [src/core/agent/tools.ts](src/core/agent/tools.ts)). Three independent walkers (CLI `scan`/`watch`, the Deep-Review agent grep fallback) had three incomplete skip lists — none covered framework build/cache output dirs (`.next`, `out`, `__pycache__`, `target`, `.turbo`, `.cache`, `.svelte-kit`, etc.). Introduced `HARD_IGNORE` (always-on: `node_modules`/`.git`/`.diffgate`) and `DEFAULT_IGNORE` (extends HARD with all common output caches) in `config.ts`. `isIgnored` now always applies `HARD_IGNORE` even when a user overrides `ignore` in `.diffgate.json`, so deps/VCS/state are never re-read. The CLI watcher, CLI scan walker, and agent grep walker share the same policy. The git-diff path already honored `.gitignore` via `--exclude-standard` and was not affected.
+
+- **Miscellaneous plugin fixes** ([extension/src/extension.ts](extension/src/extension.ts)). The `.diffgate.json` file watcher used `**/.diffgate.json` which matches inside `node_modules`, triggering spurious config-cache clears and full re-analysis on every dep install. The handler now skips paths that fail `isIgnored`. The `MAX_BYTES` guard compared VS Code's UTF-16 string length against a byte threshold — now uses `Buffer.byteLength` for correctness on non-ASCII files.
+
+- **OpenAI GPT-5 / o-series models now work without manual config** ([src/core/llm/registry.ts](src/core/llm/registry.ts), [src/core/llm/index.ts](src/core/llm/index.ts)). The chat/completions contract for reasoning models (e.g. `gpt-5.4-nano`, `gpt-5.4-mini`, `o3`) differs from earlier models: `max_tokens` is rejected in favor of `max_completion_tokens`, and any `temperature` other than the default `1` is rejected. DiffGate sent `max_tokens` + `temperature: 0` for every OpenAI-wire call, so a `gpt-5.4-nano` config (the default `apiKeyEnv: "OPENAI_API_KEY"` setup) always 400'd. A new `isOpenAIReasoningModel()` detects these by model name — across `openai`, `openrouter` (namespaced ids like `openai/gpt-5.4-mini`), and any custom OpenAI-compatible router — and auto-applies the correct param mapping: `max_completion_tokens`, an omitted non-default `temperature`, and a larger default completion budget (reasoning tokens are billed against it, so a small cap could return empty content). Explicit `ai.tokenParam` / `ai.temperature` in `.diffgate.json` still override the auto-mapping.
+
 ## [0.5.1] — 2026-06-24
 
 ### Added

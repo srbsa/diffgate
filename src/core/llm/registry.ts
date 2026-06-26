@@ -46,6 +46,20 @@ export function resolveProvider(config: Partial<Config>): ResolvedProvider {
   };
 }
 
+/**
+ * OpenAI's GPT-5 / o-series reasoning models changed the chat/completions contract:
+ *   - `max_tokens` is rejected; you must send `max_completion_tokens`.
+ *   - `temperature` only accepts the default (1); any other value 400s.
+ * Detect them by model name so the wire defaults are correct with zero config,
+ * across any OpenAI-compatible router (openai, openrouter, azure, custom). The
+ * leading-segment strip handles namespaced ids like "openai/gpt-5.4-mini".
+ */
+export function isOpenAIReasoningModel(model: string | null | undefined): boolean {
+  if (!model) return false;
+  const m = model.toLowerCase().split("/").pop() || "";
+  return /^gpt-5/.test(m) || /^o[1-9]/.test(m);
+}
+
 export function selectModel(config: Partial<Config>, tier: string, provider: ResolvedProvider): string | null {
   const m = config?.ai?.model;
   if (m && typeof m === "object") {

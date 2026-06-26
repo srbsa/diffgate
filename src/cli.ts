@@ -404,7 +404,9 @@ function cmdWatch(pos: string[], _flags: Record<string, string | true>): void {
   console.log(c.gray("  " + "─".repeat(70)));
 
   const watcher = chokidar.watch(cwd, {
-    ignored: [/(^|[\/\\])\../, "**/node_modules/**", "**/.git/**", "**/dist/**"],
+    // Share the engine's ignore policy so we don't watch build/cache output dirs (.next, out,
+    // __pycache__, target, …). The leading-dot regex covers ad-hoc dot-dirs as a backstop.
+    ignored: [/(^|[\/\\])\../, ...(config.ignore || [])],
     ignoreInitial: true,
     persistent: true,
   });
