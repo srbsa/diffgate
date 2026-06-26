@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { analyze, DEFAULT_CONFIG } from "../dist/core/index.js";
+import { analyze, attachReachability, labelTrust, DEFAULT_CONFIG } from "../dist/core/index.js";
 
 // Code-scenario depth tests: every shipped rule exercised with a true-positive and a
 // false-positive guard, plus the cross-language behavior of the language-agnostic (`["*"]`)
@@ -128,4 +128,57 @@ test("javascript baseline: template-literal SQLi, innerHTML XSS, and path traver
   assert.equal(fired("q.js", "db.query(`SELECT * FROM u WHERE id = ${req.params.id}`)\n", "sql-injection"), true);
   assert.equal(fired("v.js", "el.innerHTML = userInput;\n", "xss-sink"), true);
   assert.equal(fired("f.js", "fs.readFile(req.query.path)\n", "path-traversal"), true);
+});
+
+// =====================================================================================
+// Reachability-gated escalation (Strategy A). The broad cross-language advisory rules that
+// already fire (raw-query, dangerous-exec) earn the right to BLOCK only when the community code
+// graph proves a path from an untrusted entry point to the sink. Without a graph they are exactly
+// as advisory as before — this is the mechanism that buys recall without unconditional regex.
+// =====================================================================================
+
+const byId = (res, id) => res.findings.find((f) => f.ruleId === id);
+function withReach(filePath, content, verdict, overrides = {}) {
+  const config = { ...cfg, ...overrides };
+  const res = analyze({ filePath, content, config });
+  const graph = { id: "fake", impact: () => null, reachability: () => verdict };
+  const [out] = attachReachability([res], { cwd: "/repo", config, graph });
+  return labelTrust([out])[0];
+}
+const reachableFrom = (route, method = "GET") => ({
+  reachable: true,
+  source: "codegraph",
+  entryPoints: [{ name: "handler", kind: "http_handler", route, method }],
+});
+const unreachable = { reachable: false, source: "codegraph", entryPoints: [] };
+
+test("reachability A: python f-string raw-query blocks ONLY when reachable from a handler", () => {
+  const content = 'def get_user(uid):\n    cursor.execute(f"SELECT * FROM u WHERE id = {uid}")\n';
+  // No graph → advisory only (the low-noise guarantee: never blocks unconditionally).
+  const base = finding("dao.py", content, "raw-query");
+  assert.equal(base.tier, "yellow");
+  assert.equal(base.blocking, false);
+  // Reachable from GET /user → escalates to a blocking orange, trust "reachable".
+  const hot = byId(withReach("dao.py", content, reachableFrom("/user")), "raw-query");
+  assert.equal(hot.tier, "orange");
+  assert.equal(hot.blocking, true);
+  assert.equal(hot.tierAdjusted, "escalated");
+  assert.equal(hot.trust, "reachable");
+  assert.match(hot.message, /GET \/user/);
+  // Unreachable → stays advisory (fail-safe: no de-escalation by default), labelled "unreachable".
+  const cold = byId(withReach("dao.py", content, unreachable), "raw-query");
+  assert.equal(cold.tier, "yellow");
+  assert.equal(cold.blocking, false);
+  assert.equal(cold.trust, "unreachable");
+});
+
+test("reachability A: python os.system dangerous-exec becomes blocking when reachable", () => {
+  const content = "import os\ndef handler(req):\n    os.system(req.args.get('cmd'))\n";
+  // dangerous-exec is orange but NON-blocking on its own.
+  const base = finding("run.py", content, "dangerous-exec");
+  assert.equal(base.tier, "orange");
+  assert.equal(base.blocking, false);
+  const hot = byId(withReach("run.py", content, reachableFrom("/run", "POST")), "dangerous-exec");
+  assert.equal(hot.blocking, true, "a reachable shell-out blocks the gate");
+  assert.equal(hot.tierAdjusted, "escalated");
 });
