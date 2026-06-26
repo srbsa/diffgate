@@ -172,8 +172,15 @@ export function makeCodeGraphProvider(cwd: string, g: GraphConfig = {}, runner?:
     return entryPointsMemo;
   };
 
-  const absUri = (q: { file: string; cwd?: string }): string =>
+  // The absolute filesystem path of a finding's file (for display / the reachability trace).
+  const absPath = (q: { file: string; cwd?: string }): string =>
     path.isAbsolute(q.file) ? q.file : path.join(q.cwd || cwd, q.file);
+  // CodeGraph's uri+line lookups (get_callers, get_symbol_info, analyze_impact, …) require a
+  // `file://` URI — a bare path resolves to "Could not find starting node". Always scheme it.
+  const absUri = (q: { file: string; cwd?: string }): string => {
+    const p = absPath(q);
+    return p.startsWith("file://") ? p : `file://${p}`;
+  };
 
   return {
     id: "codegraph",
@@ -251,6 +258,14 @@ export function makeCodeGraphProvider(cwd: string, g: GraphConfig = {}, runner?:
       }
 
       const ancestors = normalizeAncestors(callersRaw, { maxCallers: 100 });
+
+      // Fail-safe: if CodeGraph could neither resolve the sink's enclosing function (no symbol on the
+      // finding, no echoed `symbol_name`, no get_symbol_info) NOR return any caller, it could not
+      // locate the sink at all — e.g. a cold / partially-built index answering "Could not find
+      // starting node". That is UNKNOWN (null), never a false "unreachable". (A function the graph
+      // *did* resolve which genuinely has no callers is a legitimate reachable:false below.)
+      if (!enclosing && ancestors.length === 0) return null;
+
       const names = new Set<string>();
       for (const a of ancestors) {
         if (a.symbol) { names.add(a.symbol); names.add(bareName(a.symbol)); }
@@ -267,7 +282,7 @@ export function makeCodeGraphProvider(cwd: string, g: GraphConfig = {}, runner?:
       };
       if (verdict.reachable) {
         const ep = matched[0];
-        const sinkRef: ImpactRef = { file: uri, line: query.line };
+        const sinkRef: ImpactRef = { file: absPath(query), line: query.line };
         if (enclosing) sinkRef.symbol = enclosing;
         const epRef: ImpactRef = { symbol: ep.name };
         if (ep.file) epRef.file = ep.file;
