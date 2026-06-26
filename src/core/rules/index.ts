@@ -204,6 +204,11 @@ function runPattern(rule: PatternRule, ctx: RuleContext, findings: Finding[]): v
 }
 
 function runFile(rule: FileRule, ctx: RuleContext, findings: Finding[]): void {
+  // Honor the diff gate: a tracked file with an empty changed-line set is *in scope* but has
+  // no pending change, so file-level rules (dependency-manifest, migration-file) must stay quiet —
+  // otherwise they linger on an unchanged file. `null` means "no diff info" (new/untracked file or
+  // whole-file mode), where firing is correct. Mirrors `inChange` for pattern/ast rules.
+  if (ctx.changedLines && ctx.changedLines.size === 0) return;
   rule.detect(ctx, (partial: FindingEmitArg) => {
     const line = partial.line || firstChangedLine(ctx);
     const text = ctx.lines[line - 1] || "";

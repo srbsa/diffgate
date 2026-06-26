@@ -91,6 +91,20 @@ test("is diff-aware: ignores findings outside changed lines", () => {
   assert.equal(res.findings.length, 0);
 });
 
+test("FILE rules honor the diff gate (no lingering manifest finding)", () => {
+  const content = `{\n  "name": "x",\n  "dependencies": { "left-pad": "^1.0.0" }\n}\n`;
+  // changed: dependency-manifest fires
+  const changed = analyze({ filePath: "package.json", content, changedLines: new Set([3]), config: cfg });
+  assert.ok(find(changed, "dependency-manifest"), "manifest finding when the file changed");
+  // tracked but unchanged (empty diff): must stay quiet, else it lingers
+  const unchanged = analyze({ filePath: "package.json", content, changedLines: new Set(), config: cfg });
+  assert.equal(find(unchanged, "dependency-manifest"), undefined, "no manifest finding on an unchanged file");
+  assert.equal(unchanged.findings.length, 0);
+  // new/untracked file (no diff info): fires on the whole file
+  const fresh = analyze({ filePath: "package.json", content, changedLines: null, config: cfg });
+  assert.ok(find(fresh, "dependency-manifest"), "manifest finding on a brand-new file");
+});
+
 test("language-agnostic rules work on Python", () => {
   const res = analyze({
     filePath: "tool.py",
@@ -115,6 +129,23 @@ test("ignore globs match nested node_modules", () => {
   assert.equal(isIgnored("/repo/node_modules/x/index.js", cfg, cwd), true);
   assert.equal(isIgnored("/repo/src/index.js", cfg, cwd), false);
   assert.equal(isIgnored("/repo/a/b/c.min.js", cfg, cwd), true);
+});
+
+test("ignore policy covers build/cache output dirs (bug 3)", () => {
+  const cwd = "/repo";
+  for (const p of [
+    "/repo/.next/server/page.js", "/repo/out/index.js", "/repo/.turbo/x.js",
+    "/repo/__pycache__/m.pyc", "/repo/target/debug/x.rs", "/repo/.cache/y.js",
+  ]) {
+    assert.equal(isIgnored(p, cfg, cwd), true, `expected ${p} ignored`);
+  }
+  // HARD_IGNORE applies even when a user replaces `ignore` with a list that omits deps/state
+  const custom = { ...cfg, ignore: ["**/secrets/**"] };
+  assert.equal(isIgnored("/repo/node_modules/x/i.js", custom, cwd), true);
+  assert.equal(isIgnored("/repo/.diffgate/state.json", custom, cwd), true);
+  assert.equal(isIgnored("/repo/.git/config", custom, cwd), true);
+  // but a project that overrides `ignore` can still review its own out/ source
+  assert.equal(isIgnored("/repo/out/real-source.js", custom, cwd), false);
 });
 
 test("loadDotenv parses .env into process.env without clobbering existing vars", () => {

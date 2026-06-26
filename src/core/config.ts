@@ -2,6 +2,28 @@ import fs from "fs";
 import path from "path";
 import type { Config } from "./types.js";
 
+// Directory names that are virtually never reviewable source: VCS internals, dependencies, and
+// DiffGate's own state dir. Always skipped by `isIgnored`, even when a user overrides `ignore`,
+// so we never read them back. Kept tiny on purpose — see DEFAULT_IGNORE for the override-able list.
+export const HARD_IGNORE = ["**/node_modules/**", "**/.git/**", "**/.diffgate/**"];
+
+// Build/cache output dirs across the common JS/TS/Python/Rust/Java toolchains. These are the
+// "redundant cache folders" the non-diff walkers (scan/watch, agent grep) and the editor's
+// per-document path would otherwise read. The git-diff path already skips them via .gitignore.
+export const DEFAULT_IGNORE = [
+  ...HARD_IGNORE,
+  "**/dist/**", "**/build/**", "**/coverage/**", "**/vendor/**", "**/out/**", "**/target/**",
+  "**/.next/**", "**/.nuxt/**", "**/.svelte-kit/**", "**/.turbo/**", "**/.cache/**",
+  "**/.output/**", "**/.parcel-cache/**", "**/.angular/**",
+  "**/__pycache__/**", "**/.pytest_cache/**", "**/.mypy_cache/**", "**/.venv/**", "**/.tox/**",
+  "**/.gradle/**", "**/*.min.js",
+];
+
+// Bare directory names derived from DEFAULT_IGNORE, for walkers that compare against `dirent.name`.
+export const IGNORE_DIR_NAMES = new Set(
+  DEFAULT_IGNORE.map((g) => g.replace(/^\*\*\//, "").replace(/\/\*\*$/, "")).filter((n) => !n.includes("*") && !n.includes("/")),
+);
+
 export const DEFAULT_CONFIG: Config = {
   deprecated: [
     { pattern: "UserService.getLegacyAvatar", replacedBy: "UserService.getUser().avatarUrl", author: "Dave (Senior Codeowner)", pr: "PR #412" },
@@ -10,7 +32,7 @@ export const DEFAULT_CONFIG: Config = {
   ],
   rules: {},
   customPatterns: [],
-  ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**", "**/coverage/**", "**/vendor/**", "**/*.min.js"],
+  ignore: DEFAULT_IGNORE,
   gate: {
     mode: "working",
     failOn: "orange",
@@ -245,7 +267,8 @@ export function isIgnored(filePath: string, config: Config, cwd: string): boolea
   let rel = path.relative(cwd, filePath).split(path.sep).join("/");
   if (rel.startsWith("../") || rel === "") rel = path.basename(filePath);
   const base = path.basename(filePath);
-  for (const glob of config.ignore || []) {
+  // HARD_IGNORE always applies (even if a user replaced `ignore`), so we never read VCS/deps/state.
+  for (const glob of [...HARD_IGNORE, ...(config.ignore || [])]) {
     const re = globToRegExp(glob);
     if (re.test(rel)) return true;
     if (!glob.includes("/") && re.test(base)) return true;
