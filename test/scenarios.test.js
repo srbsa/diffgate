@@ -93,31 +93,87 @@ test("hardcoded secrets are detected regardless of language (Python, Go)", () =>
 });
 
 // =====================================================================================
-// Cross-language injection — DOCUMENTED GAPS (pinned). The sql-injection regex is JS-shaped
-// (template literals + `+` concat), so several idiomatic non-JS injection vectors are NOT
-// flagged as the blocking sql-injection. The weaker yellow `raw-query` advisory still fires for
-// the cases that hit a known DB sink, but it does not block. Fixing these is a deliberate
-// detection-rule change (false-positive sensitive) — tracked, not silently patched.
+// Cross-language injection — now CAUGHT by the advisory `sql-injection-candidate` rule (Strategy B).
+// The blocking `sql-injection` rule is still JS-shaped (intentionally — widening it with looser regex
+// would block on guesses), so the idiomatic non-JS vectors are caught as a YELLOW, NON-BLOCKING
+// candidate instead. The candidate only becomes a blocking orange when CodeGraph confirms the sink
+// is reachable from an untrusted entry point (see the Strategy-B escalation tests below). On its own
+// it never blocks — the low-noise contract. The previously-pinned GAPs are now covered, not silent.
 // =====================================================================================
 
-test("GAP: python f-string SQL injection is NOT blocked (only the yellow raw-query advisory fires)", () => {
+test("candidate: python f-string SQLi → advisory candidate (not the blocking sql-injection)", () => {
   const got = ids("dao.py", 'cursor.execute(f"SELECT * FROM u WHERE id = {uid}")\n');
-  assert.equal(got.includes("sql-injection"), false, "f-string SQLi is currently missed by the blocking rule");
-  assert.equal(got.includes("raw-query"), true, "raw-query still gives a weaker (non-blocking) signal");
+  assert.equal(got.includes("sql-injection"), false, "still not the JS-shaped blocking rule");
+  assert.equal(got.includes("sql-injection-candidate"), true, "caught as a yellow candidate");
+  const c = finding("dao.py", 'cursor.execute(f"SELECT * FROM u WHERE id = {uid}")\n', "sql-injection-candidate");
+  assert.equal(c.tier, "yellow");
+  assert.equal(c.blocking, false, "never blocks on its own");
 });
 
-test("GAP: python %-format and .format() SQL injection are NOT blocked", () => {
-  assert.equal(fired("a.py", 'cursor.execute("SELECT * FROM u WHERE id = %s" % uid)\n', "sql-injection"), false);
-  assert.equal(fired("a.py", 'cursor.execute("SELECT * FROM u WHERE id = {}".format(uid))\n', "sql-injection"), false);
+test("candidate: python %-format and .format() SQLi → advisory candidate, never blocking", () => {
+  for (const src of [
+    'cursor.execute("SELECT * FROM u WHERE id = %s" % uid)\n',
+    'cursor.execute("SELECT * FROM u WHERE id = {}".format(uid))\n',
+  ]) {
+    assert.equal(fired("a.py", src, "sql-injection"), false, "not the blocking rule");
+    const c = finding("a.py", src, "sql-injection-candidate");
+    assert.ok(c, "candidate fires");
+    assert.equal(c.blocking, false);
+  }
 });
 
-test("GAP: Go exec.Command shell-out is NOT flagged (regex expects a `.exec(` sink)", () => {
-  assert.equal(fired("main.go", 'exec.Command("sh", "-c", userInput)\n', "dangerous-exec"), false);
-});
-
-test("GAP: PHP `.`-concatenation and Ruby `#{}` interpolation SQL injection are NOT flagged", () => {
+test("candidate: PHP `.`-concat and Ruby `#{}` SQLi → advisory candidate (previously missed entirely)", () => {
+  const php = finding("db.php", '$db->query("SELECT * FROM u WHERE id = " . $id);\n', "sql-injection-candidate");
+  assert.ok(php, "PHP concatenation now caught");
+  assert.equal(php.blocking, false);
+  const rb = finding("user.rb", 'User.where("name = \'#{params[:name]}\'")\n', "sql-injection-candidate");
+  assert.ok(rb, "Ruby interpolation now caught");
+  assert.equal(rb.blocking, false);
+  // The blocking sql-injection rule still does not fire on either (no false blocks from widening).
   assert.equal(fired("db.php", '$db->query("SELECT * FROM u WHERE id = " . $id);\n', "sql-injection"), false);
   assert.equal(fired("user.rb", 'User.where("name = \'#{params[:name]}\'")\n', "sql-injection"), false);
+});
+
+test("candidate: low-noise — does NOT fire on a parameterized (placeholder) query", () => {
+  assert.equal(fired("ok.py", 'cursor.execute("SELECT * FROM u WHERE id = ?", [uid])\n', "sql-injection-candidate"), false);
+  assert.equal(fired("ok.py", 'cursor.execute("SELECT * FROM u WHERE id = %s", (uid,))\n', "sql-injection-candidate"), false);
+});
+
+test("candidate: never runs on JS/TS (the precise AST sql-injection rule owns those)", () => {
+  const got = ids("q.js", "db.query(`SELECT * FROM u WHERE id = ${req.params.id}`)\n");
+  assert.equal(got.includes("sql-injection-candidate"), false, "skipIfAst keeps it off JS");
+  assert.equal(got.includes("sql-injection"), true, "the AST rule still blocks here");
+});
+
+test("dangerous-exec: now catches Go exec.Command and Ruby system (advisory orange, non-blocking)", () => {
+  const go = finding("main.go", 'exec.Command("sh", "-c", userInput)\n', "dangerous-exec");
+  assert.ok(go, "Go exec.Command now flagged");
+  assert.equal(go.tier, "orange");
+  assert.equal(go.blocking, false, "advisory until reachable");
+  assert.equal(fired("r.rb", 'system("rm -rf #{path}")\n', "dangerous-exec"), true);
+  assert.equal(fired("r.rb", "out = %x{ls #{dir}}\n", "dangerous-exec"), true);
+});
+
+// --- Strategy B: the candidate earns a blocking orange ONLY when reachable --------------------
+
+test("reachability B: sql-injection-candidate blocks ONLY when reachable from a handler", () => {
+  const php = '$db->query("SELECT * FROM u WHERE id = " . $id);\n';
+  // No graph → yellow advisory, trust "unconfirmed" (an honest guess, not false confidence).
+  const base = labelTrust([analyze({ filePath: "db.php", content: php, config: cfg })])[0];
+  const bc = byId(base, "sql-injection-candidate");
+  assert.equal(bc.tier, "yellow");
+  assert.equal(bc.blocking, false);
+  assert.equal(bc.trust, "unconfirmed");
+  // Reachable from POST /users → blocking orange, trust "reachable".
+  const hot = byId(withReach("db.php", php, reachableFrom("/users", "POST")), "sql-injection-candidate");
+  assert.equal(hot.tier, "orange");
+  assert.equal(hot.blocking, true);
+  assert.equal(hot.trust, "reachable");
+  // Unreachable (e.g. a helper only a CLI command calls) → stays yellow advisory.
+  const cold = byId(withReach("db.php", php, unreachable), "sql-injection-candidate");
+  assert.equal(cold.tier, "yellow");
+  assert.equal(cold.blocking, false);
+  assert.equal(cold.trust, "unreachable");
 });
 
 // =====================================================================================

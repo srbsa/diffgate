@@ -170,10 +170,16 @@ test("attachReachability: only queries REACHABILITY_RULES findings", () => {
   assert.equal(g.calls(), 0);
 });
 
-test("attachReachability: one reachability call per finding (cached)", () => {
+test("attachReachability: one reachability call per (file,line,rule) finding", () => {
+  // execResult has exactly one reachability-eligible finding (dangerous-exec).
   const g = reachGraph(REACHABLE);
-  attachReachability([rawQueryResult()], { cwd: "/repo", config: cfg, graph: g.graph });
+  attachReachability([execResult()], { cwd: "/repo", config: cfg, graph: g.graph });
   assert.equal(g.calls(), 1);
+  // The Python f-string yields two distinct injection rules on one line (raw-query +
+  // sql-injection-candidate) → one (cached) call each, never more.
+  const g2 = reachGraph(REACHABLE);
+  attachReachability([rawQueryResult()], { cwd: "/repo", config: cfg, graph: g2.graph });
+  assert.equal(g2.calls(), 2);
 });
 
 test("attachReachability: a Pro security verdict wins — reachability is not consulted", () => {

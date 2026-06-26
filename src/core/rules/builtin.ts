@@ -313,6 +313,12 @@ export const BUILTIN_RULES: Rule[] = [
       /\.exec(?:Sync|File|FileSync)?\s*\(/,
       /\bspawn(?:Sync)?\s*\(/,
       /\b(?:os\.system|subprocess\.(?:run|call|Popen|check_output)|pickle\.loads|yaml\.load|__import__)\s*\(/,
+      // Go shell-out: exec.Command(...) / exec.CommandContext(...).
+      /\bexec\.Command(?:Context)?\s*\(/,
+      // Ruby/Perl/PHP process spawns: system("…"), and Ruby's process helpers / %x{…} command literal.
+      /\bsystem\s*\(\s*["'`]/,
+      /\b(?:IO\.popen|Open3\.\w+|Process\.spawn|Kernel\.(?:system|exec))\b/,
+      /%x[{(\[]/,
     ],
   },
   {
@@ -445,6 +451,40 @@ export const BUILTIN_RULES: Rule[] = [
         }
       }
     },
+  },
+  {
+    // Cross-language injection CANDIDATE. DiffGate's blocking sql-injection rule is JS-shaped
+    // (template literals + `+` concat); the idiomatic non-JS vectors — Python f-string / `%` / `.format`,
+    // PHP `.`-concat or `"…$var…"` interpolation, Ruby `#{}` — slip past it. This rule catches those,
+    // but ships ADVISORY (yellow, non-blocking) on purpose: a broad regex must never block on its own.
+    // It earns a blocking orange ONLY when `attachReachability` proves a path from an untrusted entry
+    // point to the sink (see REACHABILITY_RULES). `skipIfAst` keeps it off JS/TS, where the precise
+    // AST rule already owns this. That is the whole low-noise contract: recall from the regex, the
+    // right to block from the graph.
+    id: "sql-injection-candidate",
+    type: "pattern",
+    tier: "yellow",
+    blocking: false,
+    title: "Possible SQL injection (cross-language)",
+    languages: ["*"],
+    skipIfAst: true,
+    message:
+      "A SQL statement appears to be built from a dynamic value (interpolation, concatenation, or a " +
+      "format string) rather than a parameterized query. If any part is user-controlled this is a SQL " +
+      "injection. Use bound parameters / placeholders. Advisory until a code graph confirms it is " +
+      "reachable from an untrusted entry point — then it blocks.",
+    patterns: [
+      // Python f-string carrying SQL with an interpolation: f"… SELECT … {x} …".
+      /\bf["'][^"'\n]*\b(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|FROM|WHERE)\b[^"'\n]*\{[^}\n]*\}/i,
+      // Python %-format: "… SELECT … %s" % value.
+      /["'][^"'\n]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^"'\n]*["']\s*%\s*[\w(]/i,
+      // Python .format(): "… SELECT … {}".format(value).
+      /["'][^"'\n]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^"'\n]*["']\s*\.\s*format\s*\(/i,
+      // SQL string concatenated with a variable: "… SELECT …" . $id  (PHP)  /  "… SELECT …" + var.
+      /["'][^"'\n]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^"'\n]*["']\s*[.+]\s*\$?\w/i,
+      // Interpolation inside a string passed to a query sink: Ruby `#{}`, PHP `"…$var…"`.
+      /\b(?:where|find_by_sql|query|exec|execute|prepare|raw)\s*\(\s*["'][^\n]*?(?:#\{|\$\w)/i,
+    ],
   },
   {
     id: "permissive-cors",

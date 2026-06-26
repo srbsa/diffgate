@@ -25,16 +25,15 @@ export const SECURITY_RULES = new Set([
 export function trustFor(finding: Finding): NonNullable<Finding["trust"]> {
   // LLM-derived guideline findings are non-deterministic — never auto-trusted.
   if (finding.ruleId === "guideline") return "unconfirmed";
-  if (SECURITY_RULES.has(finding.ruleId)) {
-    if (finding.security?.tainted === true) return "confirmed";  // Pro graph traced a taint path
-    if (finding.security?.tainted === false) return "cleared";   // Pro graph proved no taint path
-    // Community reachability fills the precision gap when the Pro taint engine is silent.
-    if (finding.reachability) return finding.reachability.reachable ? "reachable" : "unreachable";
-    return "unconfirmed";                                        // pattern guess, no graph analysis
-  }
-  // Broad cross-language advisory rules earn a reachability verdict when a graph is present; surface
-  // it so the agent can treat "reachable" as block-worthy and "unreachable" as advisory.
+  // Pro taint verdict is authoritative when present.
+  if (finding.security?.tainted === true) return "confirmed";  // graph traced a taint path
+  if (finding.security?.tainted === false) return "cleared";   // graph proved no taint path
+  // Community reachability fills the precision gap when the Pro taint engine is silent. Surface it
+  // so the agent treats "reachable" as block-worthy and "unreachable" as advisory.
   if (finding.reachability) return finding.reachability.reachable ? "reachable" : "unreachable";
+  // Injection-class patterns and the broad cross-language candidate are guesses until a graph
+  // confirms reachability — honest "unconfirmed", not the false confidence of "confirmed".
+  if (SECURITY_RULES.has(finding.ruleId) || finding.ruleId === "sql-injection-candidate") return "unconfirmed";
   // Other non-security findings come from deterministic pattern/AST detection — the detection IS proof.
   return "confirmed";
 }
