@@ -92,6 +92,16 @@ export const CORPUS: BenchCase[] = [
     content: "import pickle\ndef restore(blob):\n    return pickle.loads(blob)\n" },
   { name: "command/python-os-system", language: "python", expected: ["dangerous-exec"],
     content: "import os\ndef disk_usage(path):\n    return os.system('du -sh ' + path)\n" },
+  // Cross-language injection caught by the advisory candidate / widened dangerous-exec (v0.6.0).
+  // These measure RECALL of the broad rule; the reachability-gated ESCALATION to a blocking finding
+  // needs a code graph and is covered in test/reachability.test.js (no graph here, so they stay
+  // advisory — which is exactly why they don't show up as false blocks on the clean cases below).
+  { name: "sql-injection-candidate/php-concat", language: "php", expected: ["sql-injection-candidate"],
+    content: '$result = $db->query("SELECT * FROM users WHERE id = " . $id);\n' },
+  { name: "sql-injection-candidate/ruby-interp", language: "ruby", expected: ["sql-injection-candidate"],
+    content: "User.where(\"name = '#{params[:name]}'\")\n" },
+  { name: "command/go-exec-command", language: "go", expected: ["dangerous-exec"],
+    content: 'out, err := exec.Command("sh", "-c", userInput).Output()\n' },
 
   // --- negatives: clean changes that must produce NO findings (the noise test) ---
   { name: "clean/parameterized-sql", language: "javascript", expected: [],
@@ -130,6 +140,11 @@ export const CORPUS: BenchCase[] = [
     content: "import yaml\ndef load_config(path):\n    return yaml.safe_load(open(path))\n" },
   { name: "clean/python-pure", language: "python", expected: [],
     content: "def normalize(name):\n    return name.strip().lower()\n" },
+  // The candidate must NOT fire on safe parameterized / typed forms (low-noise guarantee per language).
+  { name: "clean/php-prepared", language: "php", expected: [],
+    content: '$stmt = $db->prepare("SELECT * FROM users WHERE id = ?");\n$stmt->execute([$id]);\n' },
+  { name: "clean/ruby-activerecord", language: "ruby", expected: [],
+    content: "User.where(name: params[:name])\n" },
 ];
 
 function emptyConfig(): Config {
