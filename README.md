@@ -91,7 +91,7 @@ Run `diffgate --help` for the full list (`report`, `bench`, `stats`, `graph`, `m
 
 - **Diff-aware:** `git diff` (CLI) or an in-memory LCS diff (editor, accurate on unsaved buffers) finds changed lines; findings only report on those lines.
 - **Real AST for JS/TS:** `@babel/parser` powers precise rules: deprecated calls aren't matched inside comments or strings; exported-signature changes are detected structurally.
-- **Comment-aware pattern rules:** secrets, SQL/schema changes, auth/crypto, dynamic execution, and injection sinks detected across Python, Go, Java, Ruby, and any text. Commented-out code (`# os.system(x)`) isn't flagged; a secret committed *inside* a comment still is.
+- **Comment-aware pattern rules:** secrets, SQL/schema changes, auth/crypto, dynamic execution, and raw queries across Python, Go, Java, Ruby, and any text. Commented-out code (`# os.system(x)`) isn't flagged; a secret committed *inside* a comment still is. Injection-sink rules are deepest on JS/TS (real AST) and best-effort elsewhere — see **[docs/SCOPE.md](docs/SCOPE.md)** for the per-language coverage tiers.
 - **Real gate:** on a high-impact change, DiffGate runs your `testCommand` and shows the actual exit code and output.
 - **Low noise, provably:** `diffgate bench` runs a versioned corpus offline: **100% precision / 0 false blocks** on clean changes. Reproduce it yourself; that's the point of shipping the corpus. See [BENCHMARK.md](BENCHMARK.md).
 - **Learnings:** `diffgate feedback` records dismiss/confirm verdicts; dismissed findings (same rule + same code) are suppressed everywhere. Stored in `.diffgate/learnings.json`; commit it to share across the team.
@@ -121,6 +121,7 @@ Full schema, the built-in rule table, LLM providers, and per-rule tuning: **[doc
 
 ## More
 
+- **[docs/SCOPE.md](docs/SCOPE.md):** per-language coverage tiers (deep AST vs. pattern vs. text-only) and what the code graph does and doesn't do.
 - **[docs/CONFIG.md](docs/CONFIG.md):** full `.diffgate.json` schema, all built-in rules, LLM providers, native precision & test-scope behavior.
 - **[docs/TEAM.md](docs/TEAM.md):** rolling DiffGate out to a team (GitHub Action / PR gate, shared learnings, org-wide policy packs, SOC 2 evidence, metrics for leaders).
 - **[docs/CODE-GRAPH.md](docs/CODE-GRAPH.md):** optional cross-file blast radius (caller counts, suggested reviewers, test gaps, taint analysis).

@@ -2,7 +2,7 @@
   "name": "diffgate-review",
   "displayName": "DiffGate",
   "description": "Diff-aware, three-tiered code review gate inline in your editor.",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "publisher": "srbsa",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -108,6 +108,20 @@
           "command": "diffgate.analyzeWorkspace",
           "when": "view == diffgateRisk",
           "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "diffgate.explainWithAI",
+          "when": "false"
+        },
+        {
+          "command": "diffgate.deepReview",
+          "when": "false"
+        },
+        {
+          "command": "diffgate.ignoreRule",
+          "when": "false"
         }
       ]
     },

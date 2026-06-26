@@ -626,12 +626,10 @@ const DISPATCH: Record<string, (args: Record<string, unknown>, opts?: unknown) =
   diffgate_feedback: (args) => handleFeedback(args as Parameters<typeof handleFeedback>[0]),
 };
 
-export function runMcpServer(): void {
-  process.stderr.write("[diffgate mcp] server started\n");
-  const send = createWriter(process.stdout as unknown as Writable);
-  const reader = createReader(process.stdin as unknown as Readable);
-
-  reader.onMessage(async (msg: unknown) => {
+// The full JSON-RPC routing for a single inbound message, factored out of the transport so it can
+// be driven directly in tests (no subprocess, no stream timing) and reused by any transport. `send`
+// is the writer; it is called once per request (notifications — id == null — get no reply).
+export async function dispatchMessage(msg: unknown, send: (obj: unknown) => void): Promise<void> {
     const { id, method, params } = msg as { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown>; protocolVersion?: unknown } };
 
     if (method === "initialize") {
@@ -693,7 +691,12 @@ export function runMcpServer(): void {
     if (id != null) {
       send({ jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } });
     }
-  });
+}
 
+export function runMcpServer(): void {
+  process.stderr.write("[diffgate mcp] server started\n");
+  const send = createWriter(process.stdout as unknown as Writable);
+  const reader = createReader(process.stdin as unknown as Readable);
+  reader.onMessage((msg: unknown) => { void dispatchMessage(msg, send); });
   process.stdin.resume();
 }

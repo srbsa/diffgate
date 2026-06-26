@@ -232,7 +232,20 @@ function updateTreeData(): void {
   riskTree.setData(collectAllResults());
 }
 
-function analyzeDocument(document: vscode.TextDocument): void {
+// Wipe every surface DiffGate publishes to: editor diagnostics, the sidebar, decorations, and the
+// deep-review verdict cache. Used when the extension is disabled (diffgate.enable=false) so the
+// flag actually turns everything off instead of leaving stale findings behind.
+function clearAll(): void {
+  diagnostics.clear();
+  findingsByUri.clear();
+  gitFindingsByUri.clear();
+  verdictCache.clear();
+  updateTreeData();
+  updateStatusBar();
+  if (decorationProvider) decorationProvider.fire();
+}
+
+function analyzeDocument(document: vscode.TextDocument, opts: { runGate?: boolean } = {}): void {
   if (!settings().get("enable", true)) return;
   if (document.uri.scheme !== "file") return;
   if (Buffer.byteLength(document.getText(), "utf8") > MAX_BYTES) return;
@@ -294,7 +307,10 @@ function analyzeDocument(document: vscode.TextDocument): void {
     decorationProvider.fire();
   }
 
-  if (settings().get("runGateOnSave", false) && res.findings.some((f) => f.tier === "orange")) {
+  // Only fire the verification gate from a real save (opts.runGate) — never on open or on every
+  // debounced keystroke, which would re-run the project's testCommand continuously while typing
+  // near an orange finding. The setting is named runGateOn*Save* for exactly this reason.
+  if (opts.runGate && settings().get("runGateOnSave", false) && res.findings.some((f) => f.tier === "orange")) {
     runGateForFolder(folder, config, res.findings);
   }
 }
@@ -599,6 +615,7 @@ function syncGitWatchers(roots: string[]): void {
 }
 
 function refreshWorkspace(): void {
+  if (!settings().get("enable", true)) return;
   const diffMode = settings().get<string>("diffMode", "working");
   repoRootByDir.clear();
   const repos = discoverRepos();
@@ -879,6 +896,9 @@ async function cmdDeepReview(uriStr: string, ruleId: string, line: number): Prom
 }
 
 function cmdIgnoreRule(folder: string, ruleId: string): void {
+  // Invoked from a finding's quick-fix/hover with both args. Guard the degenerate case (e.g. a
+  // stray Command-Palette invocation) so path.join doesn't throw on an undefined folder.
+  if (!folder || !ruleId) return;
   const cfgPath = path.join(folder, ".diffgate.json");
   let raw: Record<string, unknown> = {};
   try {
@@ -1542,7 +1562,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((d) => analyzeDocument(d)),
     vscode.workspace.onDidChangeTextDocument((e) => debouncedAnalyze(e.document)),
-    vscode.workspace.onDidSaveTextDocument((d) => { analyzeDocument(d); refreshWorkspace(); }),
+    vscode.workspace.onDidSaveTextDocument((d) => { analyzeDocument(d, { runGate: true }); refreshWorkspace(); }),
     vscode.workspace.onDidCloseTextDocument((_d) => { /* keep diagnostics for tree */ }),
     vscode.window.onDidChangeActiveTextEditor((ed) => {
       if (!ed) return;
@@ -1557,7 +1577,13 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("diffgate")) { configCache.clear(); reanalyzeOpen(); refreshWorkspace(); }
+      if (!e.affectsConfiguration("diffgate")) return;
+      configCache.clear();
+      // Toggling diffgate.enable off must immediately clear every published finding, not just stop
+      // future analysis (refreshWorkspace/analyzeDocument already short-circuit when disabled).
+      if (!settings().get("enable", true)) { clearAll(); return; }
+      reanalyzeOpen();
+      refreshWorkspace();
     })
   );
 

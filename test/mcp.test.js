@@ -4,15 +4,19 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { Readable, Writable, PassThrough } from "stream";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   createReader,
   createWriter,
+  dispatchMessage,
   handleAnalyze,
   handleCheckStaged,
   handleCapabilities,
   handleDeepReview,
+  handleGuidelines,
+  handleFeedback,
   negotiateProtocol,
   TOOL_DEFS,
   PROMPT_DEFS,
@@ -25,6 +29,28 @@ import {
   readResource,
   RpcError,
 } from "../dist/mcp.js";
+
+// Drive dispatchMessage and capture everything it writes back (one entry per `send`).
+async function dispatch(msg) {
+  const sent = [];
+  await dispatchMessage(msg, (obj) => sent.push(obj));
+  return sent;
+}
+
+// A throwaway git repo with committed baseline files, so working-tree edits form a real diff.
+function gitRepo(committed = {}) {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "grg-mcp-git-")));
+  const g = (args) => execSync(`git ${args}`, { cwd: dir, stdio: "pipe" });
+  g("init -q");
+  g("config user.email t@example.com");
+  g("config user.name t");
+  g("config commit.gpgsign false");
+  for (const [name, content] of Object.entries(committed)) {
+    fs.writeFileSync(path.join(dir, name), content);
+  }
+  if (Object.keys(committed).length) { g("add -A"); g('commit -q -m base'); }
+  return dir;
+}
 
 function tmpDir(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grg-mcp-"));
@@ -547,4 +573,217 @@ test("handleDeepReview uses injected fetchImpl and returns verdict", async () =>
     delete process.env.OPENAI_API_KEY;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- dispatchMessage: the JSON-RPC routing the transport feeds every client message into ---------
+// The handlers are unit-tested above; these exercise the *wiring* (method routing, error codes,
+// the tools/call result envelope) that every MCP client actually drives.
+
+test("dispatch initialize → negotiated protocol + serverInfo + capabilities", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].id, 1);
+  assert.equal(sent[0].result.protocolVersion, "2024-11-05", "echoes a supported requested version");
+  assert.equal(sent[0].result.serverInfo.name, "diffgate");
+  for (const cap of ["tools", "prompts", "resources"]) {
+    assert.ok(cap in sent[0].result.capabilities, `advertises ${cap} capability`);
+  }
+});
+
+test("dispatch ping → empty result", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 9, method: "ping" });
+  assert.deepEqual(sent, [{ jsonrpc: "2.0", id: 9, result: {} }]);
+});
+
+test("dispatch tools/list → the full TOOL_DEFS", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  assert.equal(sent[0].result.tools.length, TOOL_DEFS.length);
+  assert.deepEqual(sent[0].result.tools.map((t) => t.name).sort(), TOOL_DEFS.map((t) => t.name).sort());
+});
+
+test("dispatch initialized / notifications are silent (no id → no reply)", async () => {
+  assert.deepEqual(await dispatch({ jsonrpc: "2.0", method: "initialized" }), []);
+  assert.deepEqual(await dispatch({ jsonrpc: "2.0", method: "notifications/initialized" }), []);
+  // An unknown *notification* (e.g. cancellation) must NOT draw a "method not found" error.
+  assert.deepEqual(await dispatch({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 1 } }), []);
+});
+
+test("dispatch unknown method WITH an id → -32601 Method not found", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 5, method: "totally/unknown" });
+  assert.equal(sent[0].error.code, -32601);
+  assert.match(sent[0].error.message, /Method not found/);
+});
+
+test("dispatch tools/call unknown tool → -32601 Unknown tool", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "diffgate_nope", arguments: {} } });
+  assert.equal(sent[0].error.code, -32601);
+  assert.match(sent[0].error.message, /Unknown tool: diffgate_nope/);
+});
+
+test("dispatch tools/call success → text-content envelope with isError:false", async () => {
+  const dir = tmpDir({});
+  const sent = await dispatch({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "diffgate_capabilities", arguments: { cwd: dir } } });
+  assert.equal(sent[0].result.isError, false);
+  assert.equal(sent[0].result.content[0].type, "text");
+  const payload = JSON.parse(sent[0].result.content[0].text);
+  assert.ok(payload.version, "capabilities payload round-trips through the envelope");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("dispatch tools/call where the handler throws → graceful isError:true (no crash)", async () => {
+  // diffgate_analyze with no filePath / nonexistent file: the handler throws; the loop must
+  // convert it to a tool error envelope, never let it escape and kill the server.
+  const dir = tmpDir({});
+  const sent = await dispatch({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "diffgate_analyze", arguments: { filePath: path.join(dir, "does-not-exist.js"), cwd: dir } } });
+  assert.equal(sent[0].result.isError, true);
+  assert.match(sent[0].result.content[0].text, /^Error:/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("dispatch tools/call diffgate_analyze with NO filePath → isError, not a thrown crash", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "diffgate_analyze", arguments: {} } });
+  assert.equal(sent[0].result.isError, true);
+});
+
+test("dispatch tools/call with no params at all → unknown-tool error, no throw", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 12, method: "tools/call" });
+  assert.equal(sent[0].error.code, -32601);
+});
+
+test("dispatch prompts/get unknown → RpcError(-32602) surfaced as a JSON-RPC error", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 13, method: "prompts/get", params: { name: "no-such-prompt" } });
+  assert.equal(sent[0].error.code, -32602);
+});
+
+test("dispatch resources/read unknown uri → RpcError(-32002)", async () => {
+  const sent = await dispatch({ jsonrpc: "2.0", id: 14, method: "resources/read", params: { uri: "diffgate://nope" } });
+  assert.equal(sent[0].error.code, -32002);
+});
+
+test("dispatch prompts/list and resources/list route to the catalogs", async () => {
+  const p = await dispatch({ jsonrpc: "2.0", id: 15, method: "prompts/list" });
+  assert.ok(Array.isArray(p[0].result.prompts) && p[0].result.prompts.length > 0);
+  const r = await dispatch({ jsonrpc: "2.0", id: 16, method: "resources/list" });
+  assert.equal(r[0].result.resources.length, RESOURCE_DEFS.length);
+  const rt = await dispatch({ jsonrpc: "2.0", id: 17, method: "resources/templates/list" });
+  assert.equal(rt[0].result.resourceTemplates.length, RESOURCE_TEMPLATE_DEFS.length);
+});
+
+// KNOWN GAP (flagged, not fixed): we advertise 2024-11-05 / 2025-03-26, which permit JSON-RPC
+// batch *arrays*. createReader parses one and hands the array to dispatchMessage, which reads
+// method=undefined / id=undefined and drops it silently. 2025-06-18 (our preferred) removed
+// batching, so modern clients never hit this — but this test pins the current behavior so the
+// decision (handle batches vs. drop pre-2025-06-18 from SUPPORTED_PROTOCOLS) is deliberate.
+test("dispatch of a JSON-RPC batch array is currently a silent no-op (documented limitation)", async () => {
+  const batch = [
+    { jsonrpc: "2.0", id: 1, method: "ping" },
+    { jsonrpc: "2.0", id: 2, method: "tools/list" },
+  ];
+  assert.deepEqual(await dispatch(batch), [], "batching is not yet supported");
+});
+
+// --- the three tools that had no direct coverage --------------------------------------------------
+
+test("handleGuidelines: host mode (no AI) returns groups for the agent to self-evaluate", async () => {
+  const dir = gitRepo({ "AGENTS.md": "# Rules\n- Never log secrets.\n" });
+  try {
+    fs.writeFileSync(path.join(dir, "app.js"), "function f() {\n  console.log(secret);\n}\n");
+    const res = await handleGuidelines({ cwd: dir, mode: "working" });
+    assert.equal(res.mode, "host", "no provider configured → self-review (host) mode");
+    assert.ok(res.payload.groups.length >= 1, "the changed file is grouped under its guideline set");
+    assert.match(res.payload.groups[0].guidelines, /Never log secrets/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleGuidelines: clean repo with no guideline files → model mode, no findings", async () => {
+  const dir = gitRepo();
+  try {
+    const res = await handleGuidelines({ cwd: dir, mode: "working" });
+    assert.equal(res.mode, "model");
+    assert.deepEqual(res.findings, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleFeedback: 'dismiss' records a learning and persists it to .diffgate/learnings.json", async () => {
+  const dir = gitRepo();
+  try {
+    const out = await handleFeedback({ ruleId: "hardcoded-secret", code: 'const k = "x";', verdict: "dismiss", note: "test key", cwd: dir });
+    assert.ok(out.recorded, "returns the recorded entry");
+    assert.equal(out.recorded.ruleId, "hardcoded-secret");
+    assert.equal(out.recorded.verdict, "dismiss");
+    const learnings = JSON.parse(fs.readFileSync(path.join(dir, ".diffgate", "learnings.json"), "utf-8"));
+    assert.ok(learnings.entries.some((e) => e.ruleId === "hardcoded-secret"), "persisted to disk");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleFeedback round-trips through dispatch tools/call", async () => {
+  const dir = gitRepo();
+  try {
+    const sent = await dispatch({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "diffgate_feedback", arguments: { ruleId: "sql-injection", code: "q", verdict: "confirm", cwd: dir } } });
+    assert.equal(sent[0].result.isError, false);
+    const payload = JSON.parse(sent[0].result.content[0].text);
+    assert.equal(payload.recorded.verdict, "confirm");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- createReader: malformed / adversarial framing ------------------------------------------------
+
+test("createReader silently drops a non-JSON line and still parses the next valid one", (t, done) => {
+  const stream = new PassThrough();
+  const reader = createReader(stream);
+  const got = [];
+  reader.onMessage((msg) => {
+    got.push(msg.id);
+    // Only the valid message should ever surface; the garbage line must not throw or emit.
+    assert.equal(msg.id, 99);
+    done();
+  });
+  stream.push(Buffer.from("this is not json\n"));
+  stream.push(line({ jsonrpc: "2.0", id: 99, method: "ping" }));
+});
+
+// --- real subprocess: the actual `diffgate mcp` binary over stdio ---------------------------------
+// Proves runMcpServer wires stdin→reader→dispatch→writer→stdout for real, not just the extracted
+// function. Guards against transport regressions (framing, buffering, process not staying alive).
+test("runMcpServer subprocess: initialize + tools/list over real stdio", (t, done) => {
+  const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+  const proc = spawn(process.execPath, [cliPath, "mcp"], { stdio: ["pipe", "pipe", "pipe"], cwd: tmpDir({}) });
+  const responses = [];
+  let buf = "";
+  const timer = setTimeout(() => { proc.kill(); done(new Error("MCP subprocess did not respond within 10s")); }, 10000);
+
+  proc.stdout.on("data", (d) => {
+    buf += d.toString();
+    let nl;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const s = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (s) responses.push(JSON.parse(s));
+    }
+    if (responses.length >= 2) {
+      clearTimeout(timer);
+      try {
+        const init = responses.find((r) => r.id === 1);
+        const tools = responses.find((r) => r.id === 2);
+        assert.equal(init.result.serverInfo.name, "diffgate");
+        assert.ok(Array.isArray(tools.result.tools) && tools.result.tools.length > 0);
+        done();
+      } catch (e) {
+        done(e);
+      } finally {
+        proc.kill();
+      }
+    }
+  });
+
+  proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }) + "\n");
+  proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
 });

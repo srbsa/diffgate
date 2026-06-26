@@ -45,6 +45,8 @@ DiffGate auto-detects the index (`~/.codegraph/graph.db`). The graph indexes com
 
 For injection-class findings (`sql-injection`, `xss-sink`, `nosql-injection`, `path-traversal`, …) a CodeGraph Pro taint analysis answers *does user input actually reach this sink?* A confirmed taint path is attached (source → … → sink) and keeps the gate. A proven-clean sink de-escalates **only if you set `graph.securityDeescalate: true`**; enrich-only by default, because a false "no taint" must never silently hide a vulnerability. (Validated against CodeGraph's documented contract, not a live Pro binary.)
 
+The graph is a **precision layer, not a recall layer**: it confirms or clears injection findings the base rules already produced — it does **not** add detections a rule missed. Raising recall is a rule-layer change, not a graph toggle. See [SCOPE.md](SCOPE.md).
+
 ---
 
 ## Deep Review
