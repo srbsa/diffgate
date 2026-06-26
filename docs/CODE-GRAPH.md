@@ -33,7 +33,7 @@ diffgate graph status   # is the code graph enabled / installed / indexed?
 diffgate graph index    # build the cross-file index (or prints install instructions)
 ```
 
-DiffGate auto-detects the index (`~/.codegraph/graph.db`). The graph indexes committed/disk state, so *who calls a changed symbol* is reliable. To never auto-de-escalate a rule, pin its tier:
+DiffGate auto-detects the index — the legacy `~/.codegraph/graph.db` or the newer per-project `~/.codegraph/projects/<slug>/` (CodeGraph ≥ 0.18). The graph indexes committed/disk state, so *who calls a changed symbol* is reliable. DiffGate **reads** the index via one-shot queries; the index itself is built and kept fresh by CodeGraph (its VS Code extension / daemon, or `diffgate graph index`). If reachability quietly returns no escalation, check `diffgate graph status` — a cold or partially-built index can't resolve a sink's callers (it degrades to advisory `unconfirmed`, never a false block). To never auto-de-escalate a rule, pin its tier:
 
 ```jsonc
 "rules": { "signature-drift": { "tier": "orange" } }
