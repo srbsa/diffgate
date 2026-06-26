@@ -19,9 +19,21 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 - **Docs.** [docs/SCOPE.md](docs/SCOPE.md) and [docs/CODE-GRAPH.md](docs/CODE-GRAPH.md) gain a "Reachability (community edition)" section; the Pro security graph is reframed as an optional enhancement *on top of* community reachability, not a prerequisite.
 
+### Fixed — validated against a live CodeGraph (the integration was dark)
+
+The graph normalizers had been written against hand-authored JSON shapes that do **not** match the real community CodeGraph (v0.18.6). Driving the engine's real CLI provider against a live `codegraph-server` surfaced that **both** the v0.6.0 reachability path and the older blast-radius path only ever worked against self-authored fakes:
+
+- **Symbol names were `"[object Object]"`** ([src/core/graph/normalize.ts](src/core/graph/normalize.ts)). `find_entry_points`/`get_callers`/`traverse_graph` nest the symbol name under `symbol.name` and the entry kind under `entry_type`; the normalizer read the top level. Because both the entry-point set and the ancestor set collapsed to the same `"[object Object]"` string, they *matched each other* → any non-JS injection finding whose function had any caller falsely escalated to blocking. Now reads the nested envelope (shared `symbolNameOf` digging `symbol.name`).
+- **`analyze_impact` read 0 callers** — real callers are under `impacted` with the count under `direct_impacted`/`total_impacted` (keys the normalizer never read), so a 7-caller breaking change read as 0 callers and `attachImpact` **de-escalated it through the gate** (fail-dangerous). Fixed; `normalizePrContext` reworked for the real `function_details` + flat caller-edge-list shape.
+- **Bare paths instead of `file://` URIs** ([src/core/graph/codegraph.ts](src/core/graph/codegraph.ts)). CodeGraph's uri+line lookups require a `file://` URI; the provider sent a bare path → "Could not find starting node" → reachability + impact silently dead even after the shape fix. `absUri` now schemes the path.
+- **Cold-index fail-safe.** A partially-built index answers `get_callers` with `{callers:[], message:"Could not find starting node"}` — the provider read that as "no callers → unreachable". `reachability()` now returns `null` (unknown) when CodeGraph can neither resolve the enclosing function nor return any caller — never a false "unreachable".
+- **Availability detected the wrong layout** — `codeGraphAvailable()` only checked the legacy `~/.codegraph/graph.db`, but CodeGraph ≥ 0.18 stores per-project indexes under `~/.codegraph/projects/<slug>/`, so the graph read as unavailable on real installs. Now recognizes both.
+
+Verified end-to-end against the real binary on a Flask fixture: a Python f-string SQLi reachable from an `@app.route` handler escalates to a blocking orange (with the sink→handler trace), while the identical sink reached only from a CLI command stays advisory.
+
 ### Tests
 
-- New `test/reachability.test.js` (22): the `attachReachability` pass with an injected fake graph + the provider's `reachability()` with a canned `GraphRunner` (reachable/unreachable/unknown, `untrustedEntryKinds`, memoization, fail-safe degradation, Pro-wins). `test/scenarios.test.js` promotes the previously-pinned cross-language GAPs to the new covered-by-candidate behavior and the two-step reachability escalation. Full suite 366 green; the clean-corpus false-block rate is unchanged (0.00) — CI has no graph, so nothing new can block.
+- New `test/reachability.test.js` (22): the `attachReachability` pass with an injected fake graph + the provider's `reachability()` with a canned `GraphRunner` (reachable/unreachable/unknown, `untrustedEntryKinds`, memoization, fail-safe degradation, Pro-wins). `test/graph-shapes.test.js` (9): the normalizers + provider against **real captured CodeGraph JSON** ([test/fixtures/codegraph-real.json](test/fixtures/codegraph-real.json)) — the regression guard the flat fakes could not be. `test/codegraph-e2e.test.js` (`npm run test:e2e`, gated by `DIFFGATE_CODEGRAPH_E2E=1`): drives the real binary on a Flask fixture. `test/scenarios.test.js` promotes the previously-pinned cross-language GAPs to the new covered-by-candidate behavior and the two-step reachability escalation. Full suite **377 green**; the clean-corpus false-block rate is unchanged (0.00) — CI has no graph, so nothing new can block.
 
 ---
 
