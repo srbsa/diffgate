@@ -114,6 +114,17 @@ function bareName(symbol: string): string {
   return m[m.length - 1] || symbol;
 }
 
+/** The enclosing function CodeGraph resolved for a file:line query — get_callers / get_callees
+ *  echo it back as `symbol_name` (after their nearest-symbol fallback), so we can name the sink's
+ *  function without a separate get_symbol_info round-trip. */
+function enclosingNameOf(raw: unknown): string {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const v = (raw as Record<string, unknown>)["symbol_name"];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
 /** Best-effort symbol name from a get_symbol_info / get_detailed_symbol payload. */
 function symbolNameOf(raw: unknown): string | null {
   if (typeof raw === "string") return raw.trim() || null;
@@ -221,21 +232,23 @@ export function makeCodeGraphProvider(cwd: string, g: GraphConfig = {}, runner?:
       const untrusted = entryPoints.filter((ep) => kinds.includes(ep.kind));
       if (untrusted.length === 0) return null;
 
-      // 2. The sink's enclosing function. Prefer the symbol on the finding; for pattern-only findings
-      //    (no symbol) ask the graph to resolve it from file:line.
+      // 2. Transitive callers of the sink's function — everyone who can reach this code. CodeGraph
+      //    resolves the enclosing function from file:line (nearest-symbol fallback) and echoes its
+      //    name as `symbol_name`, so callers + the enclosing name come back in one call.
       const uri = absUri(query);
-      let enclosing = query.symbol || "";
+      const callersRaw =
+        reachCall("get_callers", { uri, file: uri, line: query.line, depth: maxDepth, maxDepth }) ??
+        reachCall("traverse_graph", { uri, file: uri, direction: "incoming", edgeTypes: ["calls"], maxDepth });
+      if (callersRaw == null) return null; // graph could not answer → unknown
+
+      // 3. The sink's enclosing function: the finding's own symbol, else the name CodeGraph resolved,
+      //    else a direct symbol lookup. Needed so a sink written straight in a handler body matches.
+      let enclosing = query.symbol || enclosingNameOf(callersRaw);
       if (!enclosing) {
         const info = reachCall("get_symbol_info", { uri, file: uri, line: query.line })
           ?? reachCall("get_detailed_symbol", { uri, file: uri, line: query.line });
         enclosing = symbolNameOf(info) || "";
       }
-
-      // 3. Transitive callers of the sink's function — everyone who can reach this code.
-      const callersRaw =
-        reachCall("get_callers", { uri, file: uri, line: query.line, symbol: enclosing, depth: maxDepth, maxDepth }) ??
-        reachCall("traverse_graph", { uri, file: uri, symbol: enclosing, direction: "incoming", edgeTypes: ["calls"], maxDepth });
-      if (callersRaw == null) return null; // graph could not answer → unknown
 
       const ancestors = normalizeAncestors(callersRaw, { maxCallers: 100 });
       const names = new Set<string>();

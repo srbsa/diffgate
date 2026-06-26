@@ -26,21 +26,56 @@ function asArray(v: unknown): unknown[] {
   return [];
 }
 
+/**
+ * A symbol's display name from a string, a `{ name | qualified_name | ... }` object, or a wrapper
+ * `{ symbol: { name, ... } }`. Real CodeGraph nests the name under `symbol.name` (entry points,
+ * callers, traverse nodes, get_symbol_info), so a flat `String(x)` would yield "[object Object]".
+ */
+function symbolNameOf(x: unknown): string | null {
+  if (typeof x === "string") return x.trim() || null;
+  if (!x || typeof x !== "object") return null;
+  const o = x as Raw;
+  for (const k of ["name", "qualified_name", "qualifiedName", "symbol", "function", "caller", "handler"]) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (v && typeof v === "object") {
+      const nm = symbolNameOf(v);
+      if (nm) return nm;
+    }
+  }
+  return null;
+}
+
+/** Last dotted/`#`/`::`-delimited segment of a symbol (StripeClient.charge → charge). */
+function bareName(symbol: string): string {
+  const m = symbol.split(/[.#]|::/);
+  return m[m.length - 1] || symbol;
+}
+
 function toRef(x: unknown): ImpactRef | null {
   if (typeof x === "string") {
     const s = x.trim();
     return s ? { symbol: s } : null;
   }
   if (!x || typeof x !== "object") return null;
-  const file = pick(x, ["file", "uri", "path", "location", "filepath"]);
-  const lineRaw = pick(x, ["line", "lineno", "row", "start_line", "startLine"]);
-  const symbol = pick(x, ["symbol", "name", "function", "caller", "qualified_name", "qualifiedName"]);
+  const o = x as Raw;
+  const symbol = symbolNameOf(pick(o, ["symbol", "name", "function", "caller", "qualified_name", "qualifiedName"]));
+  // Location may be flat on the object, a string under `location`, or nested under
+  // `location` / `call_site` / `symbol.location` (CodeGraph's envelope).
+  const symObj = o["symbol"] && typeof o["symbol"] === "object" ? (o["symbol"] as Raw) : undefined;
+  const locObj = pick(o, ["location", "call_site", "callSite"]) ?? (symObj ? pick(symObj, ["location"]) : undefined);
+  const file =
+    pick(o, ["file", "uri", "path", "filepath"]) ??
+    (typeof locObj === "string" ? locObj : pick(locObj, ["file", "uri", "path", "filepath"]));
+  const lineRaw =
+    pick(o, ["line", "lineno", "row", "start_line", "startLine", "line_start", "lineStart"]) ??
+    pick(locObj, ["line", "lineno", "row", "start_line", "startLine", "line_start", "lineStart"]);
   if (file == null && symbol == null) return null;
   const ref: ImpactRef = {};
   if (file != null) ref.file = String(file).replace(/^file:\/\//, "");
   if (typeof lineRaw === "number") ref.line = lineRaw;
   else if (typeof lineRaw === "string" && /^\d+$/.test(lineRaw)) ref.line = Number(lineRaw);
-  if (symbol != null) ref.symbol = String(symbol);
+  if (symbol != null) ref.symbol = symbol;
   return ref;
 }
 
@@ -91,17 +126,23 @@ export function normalizeImpact(
   if (!raw || typeof raw !== "object") return null;
   const max = Math.max(1, opts.maxCallers ?? 20);
 
-  // Callers may sit at the top level or nested under impact/blast_radius.
+  // Callers may sit at the top level, nested under impact/blast_radius, or — for real
+  // analyze_impact — under `impacted` (each entry { name, path, line_start, impact_type }).
   const nested = (pick(raw, ["impact", "blast_radius", "blastRadius", "result", "data"]) as Raw) || (raw as Raw);
-  const callersRaw = asArray(
-    pick(raw, ["callers", "direct_callers", "affected_callers", "affectedCallers", "callsites", "references"]) ??
-      pick(nested, ["callers", "direct_callers", "affected_callers", "affectedCallers", "callsites", "references"])
-  );
+  const callerListRaw = pick(raw, ["callers", "direct_callers", "affected_callers", "affectedCallers", "callsites", "references", "impacted"]) ??
+    pick(nested, ["callers", "direct_callers", "affected_callers", "affectedCallers", "callsites", "references", "impacted"]);
+  const callersRaw = asArray(callerListRaw);
   const callers = callersRaw.map(toRef).filter((r): r is ImpactRef => r !== null);
 
-  const explicitCount = pick(raw, ["caller_count", "callerCount", "direct_caller_count", "directCallerCount", "impacted_count"]) ??
-    pick(nested, ["caller_count", "callerCount", "direct_caller_count", "directCallerCount"]);
-  const callerCount = typeof explicitCount === "number" ? explicitCount : callers.length;
+  // Count: an explicit numeric field wins (real analyze_impact: direct_impacted/total_impacted;
+  // pr_context function_details: a numeric `callers`). A `callers` that is itself a list is ignored
+  // here (it fell through to callers.length).
+  const explicitCount =
+    numberOf(raw, ["caller_count", "callerCount", "direct_caller_count", "directCallerCount", "impacted_count",
+      "direct_impacted", "directImpacted", "total_impacted", "totalImpacted"]) ??
+    numberOf(nested, ["caller_count", "callerCount", "direct_caller_count", "directCallerCount", "direct_impacted", "total_impacted"]) ??
+    (typeof callerListRaw === "number" ? callerListRaw : (typeof pick(raw, ["callers"]) === "number" ? (pick(raw, ["callers"]) as number) : null));
+  const callerCount = explicitCount != null ? explicitCount : callers.length;
 
   const testGapsRaw = asArray(
     pick(raw, ["test_gaps", "testGaps", "untested", "missing_tests", "missingTests", "uncovered"]) ??
@@ -189,17 +230,25 @@ export function normalizeEntryPoints(raw: unknown): ReachabilityEntryPoint[] {
       continue;
     }
     if (!x || typeof x !== "object") continue;
-    const name = pick(x, ["name", "symbol", "function", "handler", "qualified_name", "qualifiedName"]);
+    const o = x as Raw;
+    // Real CodeGraph nests the handler name + declaring file under `symbol` (`symbol.name`,
+    // `symbol.location.file`) and tags the entry kind as `entry_type`. Older flat shapes put
+    // name/kind/route at the top level; read both.
+    const name = symbolNameOf(pick(o, ["name", "symbol", "function", "handler", "qualified_name", "qualifiedName"]));
     if (name == null) continue;
-    const kind = pick(x, ["kind", "type", "entry_type", "entryType", "entrypoint_type", "entrypointType"]);
-    const route = pick(x, ["route", "path", "url", "pattern", "endpoint"]);
-    const method = pick(x, ["method", "http_method", "httpMethod", "verb"]);
-    const file = pick(x, ["file", "uri", "path", "location", "filepath"]);
-    const ep: ReachabilityEntryPoint = { name: String(name), kind: kind != null ? String(kind) : "" };
-    // `path` doubles as route in some payloads; only treat it as a route, not the declaring file.
+    // `entry_type` must win over the nested `symbol.kind` ("Function"), so check it before `kind`.
+    const kind = pick(o, ["entry_type", "entryType", "entrypoint_type", "entrypointType", "kind", "type"]);
+    const route = pick(o, ["route", "url", "pattern", "endpoint"]) ?? pick(o, ["path"]);
+    const method = pick(o, ["method", "http_method", "httpMethod", "verb"]);
+    const symObj = o["symbol"] && typeof o["symbol"] === "object" ? (o["symbol"] as Raw) : undefined;
+    const file =
+      pick(o, ["file", "uri", "filepath"]) ??
+      (symObj ? pick(symObj, ["location", "file", "uri"]) : undefined);
+    const fileStr = file != null && typeof file === "object" ? pick(file, ["file", "uri", "path"]) : file;
+    const ep: ReachabilityEntryPoint = { name, kind: kind != null ? String(kind) : "" };
     if (route != null) ep.route = String(route);
     if (method != null) ep.method = String(method).toUpperCase();
-    if (file != null && file !== route) ep.file = String(file).replace(/^file:\/\//, "");
+    if (fileStr != null && fileStr !== route) ep.file = String(fileStr).replace(/^file:\/\//, "");
     out.push(ep);
   }
   return out;
@@ -257,16 +306,64 @@ export function normalizePrContext(
   if (!raw || typeof raw !== "object") return null;
   const max = Math.max(1, opts.maxCallers ?? 20);
 
-  // Changed functions live under one of several keys; each entry is one symbol's blast radius.
+  // Real CodeGraph pr_context returns a flat caller-edge list (`caller` → `calls`); group it by
+  // callee so each changed symbol can name its call sites, not just count them.
+  const namedCallers = new Map<string, ImpactRef[]>();
+  for (const e of asArray(pick(raw, ["callers", "direct_callers_list", "caller_edges"]))) {
+    if (!e || typeof e !== "object") continue;
+    const callee = symbolNameOf(pick(e, ["calls", "callee", "target", "to"]));
+    if (!callee) continue;
+    const callerName = symbolNameOf(pick(e, ["caller", "from", "source"]));
+    const file = pick(e, ["file", "path", "uri"]);
+    const ref: ImpactRef = {};
+    if (callerName) ref.symbol = callerName;
+    if (file != null) ref.file = String(file).replace(/^file:\/\//, "");
+    if (!ref.symbol && !ref.file) continue;
+    for (const key of new Set([callee, bareName(callee)])) {
+      const arr = namedCallers.get(key) ?? [];
+      arr.push(ref);
+      namedCallers.set(key, arr);
+    }
+  }
+
+  // Functions flagged untested at the PR level (test_gaps entries carry `function`/`name`).
+  const untested = new Set<string>();
+  for (const t of asArray(pick(raw, ["test_gaps", "testGaps", "untested", "untested_functions", "missing_tests", "missingTests"]))) {
+    const nm = symbolNameOf(t && typeof t === "object" ? (pick(t, ["function", "name", "symbol"]) ?? t) : t);
+    if (nm) { untested.add(nm); untested.add(bareName(nm)); }
+  }
+
+  // PR-level suggested reviewers ([{ author, lines_owned }]) — applied to each changed symbol that
+  // doesn't carry its own (real function_details have none; older per-symbol shapes do).
+  const prReviewers = asArray(pick(raw, ["suggested_reviewers", "suggestedReviewers", "reviewers", "owners", "codeowners"]))
+    .map((r) => ({ name: toReviewer(r), weight: reviewerWeight(r) }))
+    .filter((r): r is { name: string; weight: number } => r.name !== null)
+    .sort((a, b) => b.weight - a.weight)
+    .map((r) => r.name)
+    .filter((name, i, arr) => arr.indexOf(name) === i);
+
+  // Per-symbol blast radius: real CodeGraph uses `function_details` (name + numeric caller count +
+  // complexity + has_tests); older shapes use changed_functions/symbols with array callers.
   const entries = asArray(
-    pick(raw, ["changed_functions", "changedFunctions", "changes", "symbols", "functions", "results", "items"])
+    pick(raw, ["function_details", "functionDetails", "changed_functions", "changedFunctions", "changes", "symbols", "functions", "results", "items"])
   );
   const bySymbol: Record<string, ImpactInfo> = {};
   for (const entry of entries) {
     const sym = symbolKey(entry);
     if (!sym) continue;
     const im = normalizeImpact(entry, { symbol: sym, source: opts.source, maxCallers: max });
-    if (im) bySymbol[sym] = im;
+    if (!im) continue;
+    const named = namedCallers.get(sym) ?? namedCallers.get(bareName(sym)) ?? [];
+    if (named.length) {
+      im.callers = named.slice(0, max);
+      if (!im.callerCount) im.callerCount = named.length;
+      im.truncated = im.truncated || named.length > max;
+    }
+    if ((untested.has(sym) || untested.has(bareName(sym))) && im.testGaps.length === 0) {
+      im.testGaps = [{ symbol: sym }];
+    }
+    if (prReviewers.length && im.reviewers.length === 0) im.reviewers = prReviewers;
+    bySymbol[sym] = im;
   }
 
   const staleDocs: StaleDoc[] = asArray(
