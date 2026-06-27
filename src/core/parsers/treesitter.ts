@@ -36,6 +36,7 @@ function nodeResolve(): ((id: string) => string) | null {
 /** Language name (from detectLanguage) → npm package shipping a matching-ABI grammar WASM. */
 const GRAMMAR_PACKAGES: Record<string, string> = {
   python: "tree-sitter-python",
+  php: "tree-sitter-php",
 };
 
 /** Languages this build can parse with tree-sitter, regardless of whether init has run yet. */

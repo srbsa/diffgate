@@ -11,12 +11,14 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Real AST precision for Python (tree-sitter)** ([src/core/parsers/treesitter.ts](src/core/parsers/treesitter.ts), [src/core/rules/python.ts](src/core/rules/python.ts)). JS/TS got deep, sanitizer-aware AST rules via `@babel`; every other language was capped at comment-aware regex. Python now gets a real AST too — via the WASM build of tree-sitter (`web-tree-sitter` + `tree-sitter-python`, no native compilation, resolved from node_modules at runtime). The new `sql-injection` rule for Python reaches the **same precision tier as the JS rule**:
+- **Real AST precision for Python and PHP (tree-sitter)** ([src/core/parsers/treesitter.ts](src/core/parsers/treesitter.ts), [src/core/rules/python.ts](src/core/rules/python.ts), [src/core/rules/php.ts](src/core/rules/php.ts)). JS/TS got deep, sanitizer-aware AST rules via `@babel`; every other language was capped at comment-aware regex. Python and PHP now get a real AST too — via the WASM build of tree-sitter (`web-tree-sitter` + `tree-sitter-python` / `tree-sitter-php`, no native compilation, resolved from node_modules at runtime). The new `sql-injection` rule for Python reaches the **same precision tier as the JS rule**:
   - **sink-targeting** — only a dynamic SQL string that flows *into* a query sink (`.execute`, `.executemany`, `.executescript`, `.exec_driver_sql`, `.raw`, `.mogrify`, SQLAlchemy `text(...)`) is flagged, so an f-string mentioning `SELECT` in a *log line* is not;
   - **static clearing** — an f-string whose every `{…}` resolves to a module/local constant (`f"SELECT … {TABLE}"`) is not user-controlled → not flagged;
   - **parameter-aware** — a placeholder query with params passed separately (`cur.execute("… WHERE id = %s", (uid,))`) is parameterized → not flagged;
   - **sanitizer-aware** — when every dynamic part is wrapped in a recognized quoter (`psycopg2.sql.Identifier`, `quote_ident`, …) the finding is **down-tiered to review**, not blocked; a *mix* of sanitized and raw values stays blocking (one raw value can't be hidden);
   - cross-line query variables are resolved intra-file (`q = f"…{uid}"; cur.execute(q)`).
+
+  **PHP** ([src/core/rules/php.ts](src/core/rules/php.ts)) gets the same rule with PHP-aware precision: single-quoted strings **don't interpolate** (`'… $id'` is literal, not flagged); double-quoted/`{$x}`/heredoc interpolation and `.`-concatenation into a sink (`mysqli_query`, `$pdo->query`/`->exec`/`->prepare`, `$wpdb->get_results`, …) block; a placeholder prepared statement (`->prepare("… = ?")`) is safe while an interpolated one is the flagged anti-pattern; `(int)$id` casts and escapers (`mysqli_real_escape_string`, `$pdo->quote`) down-tier to review; a mix of escaped and raw values stays blocking.
 
   Posture matches JS exactly: **blocking orange on local evidence** (no graph required), never suppress — only down-tier on a recognized sanitizer. The community-CodeGraph reachability/blast-radius pass composes on top unchanged (AST = intra-procedural precision, graph = inter-procedural reachability). A new `tsast` rule type ([src/core/types.ts](src/core/types.ts)) carries this; init (`initTreeSitter`) runs once at the CLI/MCP entry points, the `analyze` hot path stays synchronous, and **when the grammar isn't loaded the language falls back to the cross-language regex candidate** — recall is never lost.
 
@@ -24,7 +26,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- `analyze` now attaches a tree-sitter tree (`ctx.tsTree`) for grammar-backed languages; a loaded grammar suppresses the broad `skipIfAst` regex candidate for that language so the precise rule isn't doubled. New runtime deps: `web-tree-sitter`, `tree-sitter-python` (marked external in the bundled CLI, like `@babel/parser`). 395 tests green.
+- `analyze` now attaches a tree-sitter tree (`ctx.tsTree`) for grammar-backed languages; a loaded grammar suppresses the broad `skipIfAst` regex candidate for that language so the precise rule isn't doubled. New runtime deps: `web-tree-sitter`, `tree-sitter-python`, `tree-sitter-php` (marked external in the bundled CLI, like `@babel/parser`). 410 tests green.
 
 ## [0.6.0] — 2026-06-26
 
