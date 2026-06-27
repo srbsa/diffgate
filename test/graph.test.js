@@ -136,6 +136,32 @@ test("codeGraphAvailable is false when graphing is turned off", () => {
   assert.equal(codeGraphAvailable({ enabled: false }), false);
 });
 
+test("normalizeImpact flags cross-project consumers (impacted paths outside repoRoot) + breakingCount", () => {
+  // Real analyze_impact shape: callers under `impacted` with {name, path, impact_type}, count under
+  // direct_impacted, breaking sites under breaking_changes.
+  const raw = {
+    breaking_changes: 2,
+    direct_impacted: 3,
+    impacted: [
+      { name: "handleAnalyze", path: "/repo/src/mcp.ts", impact_type: "caller", severity: "breaking" },
+      { name: "payConsumer", path: "/other/billing/src/pay.ts", impact_type: "caller", severity: "breaking" },
+      { name: "auditConsumer", path: "/other/audit/log.go", impact_type: "reference", severity: "breaking" },
+    ],
+  };
+  const im = normalizeImpact(raw, { symbol: "charge", source: "codegraph", repoRoot: "/repo" });
+  assert.equal(im.breakingCount, 2);
+  assert.ok(im.crossProject && im.crossProject.length === 2, "two impacted sites live outside /repo");
+  const files = im.crossProject.map((c) => c.file);
+  assert.ok(files.includes("/other/billing/src/pay.ts") && files.includes("/other/audit/log.go"));
+  assert.ok(!files.includes("/repo/src/mcp.ts"), "in-repo caller is not cross-project");
+});
+
+test("normalizeImpact: no repoRoot → no cross-project inference (opt-in)", () => {
+  const raw = { direct_impacted: 1, impacted: [{ name: "x", path: "/anywhere/x.ts", impact_type: "caller" }] };
+  const im = normalizeImpact(raw, { symbol: "y", source: "codegraph" });
+  assert.equal(im.crossProject, undefined, "without a repoRoot we never guess cross-project");
+});
+
 test("codeGraphAvailable detects the newer ~/.codegraph/projects layout, not just graph.db", () => {
   // os.homedir() honors $HOME on POSIX, so pin it to an empty dir and toggle the index layout.
   const realHome = process.env.HOME;

@@ -39,6 +39,11 @@ function blastSummary(impact: ImpactInfo): string {
   const parts = [`⚡ Blast radius: ${callsites} call site${impact.callerCount === 1 ? "" : "s"}` +
     (fileCount ? ` across ${plural(fileCount, "file")}` : "")];
   if (impact.reachable === true) parts.push("reachable from an entry point");
+  if (impact.crossProject && impact.crossProject.length) {
+    const names = impact.crossProject.slice(0, 2).map((c) => c.symbol || c.file).filter(Boolean).join(", ");
+    parts.push(`⚠ ${plural(impact.crossProject.length, "consumer")} in other repo${impact.crossProject.length === 1 ? "" : "s"}${names ? `: ${names}` : ""}`);
+  }
+  if (typeof impact.breakingCount === "number" && impact.breakingCount > 0) parts.push(`${plural(impact.breakingCount, "breaking site")}`);
   if (impact.reviewers.length) parts.push(`route: ${impact.reviewers.slice(0, 3).map((r) => "@" + r).join(", ")}`);
   if (typeof impact.complexity === "number" && impact.complexity >= HIGH_COMPLEXITY) {
     parts.push(`complexity ${impact.complexity}`);
@@ -63,25 +68,28 @@ function withImpact(
   opts: { escalateThreshold: number; pinned: boolean }
 ): Finding {
   const next: Finding = { ...finding, impact };
+  const crossRepo = (impact.crossProject?.length ?? 0) > 0;
 
   if (!TIERABLE.has(finding.ruleId) || opts.pinned) {
     // Non-tierable (e.g. deprecated-api) or user-pinned: enrich text only.
-    if (impact.callerCount > 0 || impact.testGaps.length) {
+    if (impact.callerCount > 0 || impact.testGaps.length || crossRepo) {
       next.message = `${finding.message}\n\n${blastSummary(impact)}`;
     }
     return next;
   }
 
-  // De-escalate: an exported surface the graph says nobody calls is low blast radius.
-  if (impact.source === "codegraph" && impact.callerCount === 0) {
+  // De-escalate: an exported surface the graph says nobody calls is low blast radius — but NOT when
+  // a consumer in another indexed repo depends on it (the diff can't see that breakage).
+  if (impact.source === "codegraph" && impact.callerCount === 0 && !crossRepo) {
     next.tier = "yellow";
     next.tierAdjusted = "deescalated";
     next.message = `${finding.message}\n\n⚡ Blast radius: no callers found in the code graph — exported but currently unused. Down-tiered to review.`;
     return next;
   }
 
-  // Escalate / keep: real cross-file fan-out. Keep the gate and route attention.
-  if (impact.callerCount >= opts.escalateThreshold) {
+  // Escalate / keep: real cross-file fan-out, OR a cross-repo consumer (high-signal regardless of
+  // local caller count — a change here breaks a repo the diff doesn't touch).
+  if (impact.callerCount >= opts.escalateThreshold || crossRepo) {
     next.tier = "orange";
     next.tierAdjusted = "escalated";
     next.message = `${finding.message}\n\n${blastSummary(impact)}`;

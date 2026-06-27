@@ -84,6 +84,12 @@ export interface ImpactInfo {
   complexity?: number | null;
   /** True when the symbol's documentation looks stale relative to its current signature. */
   staleDoc?: boolean | null;
+  /** Call sites in OTHER indexed repos that depend on this symbol — a change here can break a
+   *  consumer the diff doesn't touch. High-signal: present only when the graph indexes >1 project. */
+  crossProject?: ImpactRef[];
+  /** Count of impacted sites the graph marks as breaking (analyze_impact `breaking_changes`),
+   *  distinct from total callers — populated on a rename/delete-style change. */
+  breakingCount?: number | null;
 }
 
 /** A symbol whose documentation/spec drifted from the code, surfaced by pr_context. */

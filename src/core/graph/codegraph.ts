@@ -209,7 +209,8 @@ export function makeCodeGraphProvider(cwd: string, g: GraphConfig = {}, runner?:
       const uri = absUri(query);
       const raw = call("analyze_impact", { uri, file: uri, line: query.line, symbol: query.symbol });
       if (raw == null) return null;
-      return normalizeImpact(raw, { symbol: query.symbol, source: "codegraph", maxCallers });
+      // repoRoot lets normalize flag consumers in OTHER indexed repos (impacted paths outside it).
+      return normalizeImpact(raw, { symbol: query.symbol, source: "codegraph", maxCallers, repoRoot: query.cwd || cwd });
     },
 
     prContext(query: PrContextQuery): PrContextInfo | null {

@@ -52,6 +52,23 @@ test("attachImpact: keeps orange and marks escalated when callers exist", () => 
   assert.equal(out.tier, "orange");
 });
 
+test("attachImpact: a cross-repo consumer escalates even with 0 local callers (no de-escalation)", () => {
+  const res = publicApiResult();
+  // 0 local callers would normally DE-escalate orange→yellow; a consumer in another indexed repo
+  // means the diff can't see the breakage, so it must keep the gate and name the consumer.
+  const graph = fakeGraph(() => impactObj({
+    callerCount: 0,
+    crossProject: [{ symbol: "billing.charge", file: "/other/repo/billing/src/pay.ts" }],
+    breakingCount: 1,
+  }));
+  const [out] = attachImpact([res], { cwd: "/repo", config: cfg, graph });
+  const f = find(out, "public-api-change");
+  assert.equal(f.tier, "orange", "cross-repo consumer keeps the gate");
+  assert.equal(f.tierAdjusted, "escalated");
+  assert.match(f.message, /consumer in other repo/);
+  assert.match(f.message, /billing\.charge/);
+});
+
 test("attachImpact: de-escalates an exported symbol with zero callers", () => {
   const res = publicApiResult();
   const graph = fakeGraph(() => impactObj({ callerCount: 0, source: "codegraph" }));

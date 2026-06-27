@@ -46,6 +46,13 @@ function symbolNameOf(x: unknown): string | null {
   return null;
 }
 
+/** True when `file` sits inside `root` (same path or a descendant). Both are plain fs paths. */
+function isUnderRoot(file: string, root: string): boolean {
+  const f = file.replace(/^file:\/\//, "");
+  const r = root.replace(/^file:\/\//, "").replace(/\/+$/, "");
+  return f === r || f.startsWith(r + "/");
+}
+
 /** Last dotted/`#`/`::`-delimited segment of a symbol (StripeClient.charge → charge). */
 function bareName(symbol: string): string {
   const m = symbol.split(/[.#]|::/);
@@ -121,7 +128,7 @@ function symbolKey(raw: unknown): string | null {
  */
 export function normalizeImpact(
   raw: unknown,
-  opts: { symbol: string; source: string; maxCallers?: number }
+  opts: { symbol: string; source: string; maxCallers?: number; repoRoot?: string }
 ): ImpactInfo | null {
   if (!raw || typeof raw !== "object") return null;
   const max = Math.max(1, opts.maxCallers ?? 20);
@@ -167,6 +174,29 @@ export function normalizeImpact(
   const staleDoc = boolOf(raw, ["stale_doc", "staleDoc", "doc_stale", "docStale", "stale_docs"]) ??
     boolOf(nested, ["stale_doc", "staleDoc", "doc_stale"]);
 
+  // Breaking-change count (analyze_impact with changeType rename/delete tags sites severity:"breaking").
+  const breakingCount = numberOf(raw, ["breaking_changes", "breakingChanges", "breaking"]) ??
+    numberOf(nested, ["breaking_changes", "breakingChanges"]);
+
+  // Cross-project consumers: an explicit field, or impacted sites whose file is outside the repo root.
+  // These are the consumers in OTHER indexed repos a local diff can't see — the highest-signal blast.
+  const explicitCross = asArray(
+    pick(raw, ["cross_project", "crossProject", "cross_project_impacts", "crossProjectImpacts", "external_consumers", "externalConsumers"]) ??
+      pick(nested, ["cross_project", "crossProject", "cross_project_impacts", "external_consumers"])
+  ).map(toRef).filter((r): r is ImpactRef => r !== null);
+  const structuralCross = opts.repoRoot
+    ? callers.filter((c) => c.file && !isUnderRoot(c.file, opts.repoRoot as string))
+    : [];
+  const seenCross = new Set<string>();
+  const crossProject = [...explicitCross, ...structuralCross]
+    .filter((r) => {
+      const k = `${r.symbol || ""}|${r.file || ""}`;
+      if (seenCross.has(k)) return false;
+      seenCross.add(k);
+      return true;
+    })
+    .slice(0, max);
+
   return {
     symbol: opts.symbol,
     callerCount,
@@ -178,6 +208,8 @@ export function normalizeImpact(
     truncated,
     ...(complexity != null ? { complexity } : {}),
     ...(staleDoc != null ? { staleDoc } : {}),
+    ...(breakingCount != null ? { breakingCount } : {}),
+    ...(crossProject.length ? { crossProject } : {}),
   };
 }
 
