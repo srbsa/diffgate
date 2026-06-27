@@ -49,9 +49,10 @@ await esbuild.build({
   logLevel: "info",
 });
 
-// Build 3: Bundle CLI into a single executable. Runtime deps (chokidar, @babel/parser)
-// are marked external — they live in node_modules and npm installs them as dependencies.
-// CJS packages with dynamic require() of built-ins (chokidar) can't be inlined into ESM.
+// Build 3: Bundle CLI into a single executable. Runtime deps (chokidar, @babel/parser,
+// web-tree-sitter + grammars) are marked external — they live in node_modules and npm installs
+// them as dependencies. web-tree-sitter loads its own .wasm and resolves grammar wasm paths from
+// node_modules at runtime, so it must not be inlined into the bundle.
 await esbuild.build({
   entryPoints: ["src/cli.ts"],
   bundle: true,
@@ -59,7 +60,7 @@ await esbuild.build({
   format: "esm",
   target: "node18",
   outfile: "dist/cli.js",
-  external: ["fsevents", "chokidar", "@babel/parser"],
+  external: ["fsevents", "chokidar", "@babel/parser", "web-tree-sitter", "tree-sitter-python"],
   banner: { js: "#!/usr/bin/env node" },
   sourcemap: true,
   define,

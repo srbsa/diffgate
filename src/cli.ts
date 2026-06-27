@@ -26,6 +26,7 @@ import {
   overallTier,
   TIER_ORDER,
   reviewChanges,
+  initTreeSitter,
   reviewGuidelines,
   recordLearning,
   loadLearnings,
@@ -1025,6 +1026,11 @@ async function main(): Promise<void> {
   }
   const { pos, flags } = parseArgs(argv);
   if (flags["help"] || flags["h"]) { help(); return; }
+
+  // Load tree-sitter grammars once before any analysis so non-JS AST rules (Python) are active.
+  // Best-effort and cached; commands that don't analyze (init, install-hook, …) skip the cost.
+  const ANALYSIS_CMDS = new Set(["check", "scan", "watch", "report", "marginal", "explain", "guidelines", "stats"]);
+  if (ANALYSIS_CMDS.has(cmd)) await initTreeSitter();
 
   try {
     switch (cmd) {

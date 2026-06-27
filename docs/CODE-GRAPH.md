@@ -41,9 +41,13 @@ DiffGate auto-detects the index — the legacy `~/.codegraph/graph.db` or the ne
 
 ---
 
+## Does the graph still earn its place as DiffGate adds per-language AST?
+
+Yes — its value is **orthogonal** to AST precision, and concentrated. AST rules (`@babel` for JS/TS, tree-sitter for Python) are *intra-procedural*: "is this sink dangerous as written, past local sanitizers/guards/static constants?" The graph is *inter-procedural*: "can untrusted input reach it across files, what's the blast radius, who reviews it, is it tested?" Neither subsumes the other — they compose. DiffGate uses a focused ~7 of community CodeGraph's ~40 tools on purpose (the rest are agent/IDE features: doc indexing, memory, architecture-doc generation, semantic search). As AST precision lands language-by-language, the graph's role shifts from *the* justification to block a noisy regex → *reachability refinement + the language-agnostic blast-radius/cross-repo/reviewers/test-gap layer* ([src/core/impact.ts](src/core/impact.ts)) — strongest on web-server code, lighter on CLI/data/ML repos that have no HTTP entry points.
+
 ## Reachability (community edition)
 
-The blocking SQL-injection rule is deep on JS/TS (AST); on other languages DiffGate emits broad **advisory** findings (`sql-injection-candidate`, `raw-query`, `dangerous-exec`). Broad regex is recall, not precision, so those never block on their own. Reachability is the **community-tier precision source** that lets them earn a block — no Pro binary required.
+The blocking SQL-injection rule is AST-deep on JS/TS (`@babel`) and Python (tree-sitter); on the remaining languages DiffGate emits broad **advisory** findings (`sql-injection-candidate`, `raw-query`, `dangerous-exec`). Broad regex is recall, not precision, so those never block on their own. Reachability is the **community-tier precision source** that lets them earn a block — no Pro binary required. (For the AST-deep languages the finding already blocks on local evidence; reachability then only attaches the entry-point trace or, if the team opted in, de-escalates a proven-unreachable sink.)
 
 For each such finding, DiffGate walks the call graph from the sink back toward **untrusted entry points**:
 

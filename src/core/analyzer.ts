@@ -1,5 +1,6 @@
 import { detectLanguage, hasAstSupport } from "./parsers/index.js";
 import { parseJs } from "./parsers/javascript.js";
+import { parseTs } from "./parsers/treesitter.js";
 import { maskComments } from "./mask.js";
 import { applyTestScope } from "./testscope.js";
 import { runRules } from "./rules/index.js";
@@ -73,8 +74,12 @@ export function analyze({ filePath, content, previousContent = null, changedLine
     }
   }
 
+  // Tree-sitter AST for languages @babel can't parse (Python). Null when the grammar isn't loaded
+  // (init not run / unavailable) — the language then falls back to the cross-language regex rules.
+  const tsTree = ast ? null : parseTs(content, language);
+
   const scanLines = maskComments(lines, language);
-  const ctx: RuleContext = { filePath, language, lines, scanLines, changedLines, config: config as Config, ast };
+  const ctx: RuleContext = { filePath, language, lines, scanLines, changedLines, config: config as Config, ast, tsTree };
 
   const findings = runRules({ ast, ctx, config });
 

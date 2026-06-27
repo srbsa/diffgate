@@ -2,7 +2,7 @@ import path from "path";
 import { walk } from "../parsers/javascript.js";
 import { hasAstSupport } from "../parsers/index.js";
 import { BUILTIN_RULES, deprecatedRules, customPatternRules, legacyOrangeRules, RULE_PACKS } from "./builtin.js";
-import type { Rule, FileRule, PatternRule, AstRule, RuleContext, EmitFn, Finding, FindingEmitArg, AstNode, Config } from "../types.js";
+import type { Rule, FileRule, PatternRule, AstRule, TsAstRule, RuleContext, EmitFn, Finding, FindingEmitArg, AstNode, TsNode, TsTree, Config } from "../types.js";
 
 const DEPENDENCY_MANIFESTS = new Set([
   "package.json", "requirements.txt", "pyproject.toml", "go.mod",
@@ -253,13 +253,52 @@ function runAst(rule: AstRule, ast: AstNode, ctx: RuleContext, findings: Finding
   });
 }
 
+/** Walk every named node of a tree-sitter tree, applying a `tsast` rule's visitor. Mirrors runAst. */
+function runTsAst(rule: TsAstRule, tree: TsTree, ctx: RuleContext, findings: Finding[]): void {
+  const visit = (node: TsNode): void => {
+    rule.visit(node, ctx, (arg: FindingEmitArg) => {
+      const loc = arg && arg.loc;
+      if (!loc || !loc.start) return;
+      const line = loc.start.line;
+      if (!inChange(ctx, line)) return;
+      const text = ctx.lines[line - 1] || "";
+      findings.push(
+        makeFinding(rule, {
+          line,
+          column: loc.start.column,
+          endLine: loc.end ? loc.end.line : line,
+          endColumn: loc.end ? loc.end.column : loc.start.column,
+          code: arg.code || text.trim(),
+          message: arg.message,
+          tier: arg.tier,
+          blocking: arg.blocking,
+          tierAdjusted: arg.tierAdjusted,
+          fix: arg.fix,
+          symbol: arg.symbol,
+        })
+      );
+    });
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child) visit(child);
+    }
+  };
+  visit(tree.rootNode);
+}
+
 export function runRules({ ast, ctx, config }: { ast: AstNode | null; ctx: RuleContext; config: Partial<Config> }): Finding[] {
   const findings: Finding[] = [];
+  const tsTree = ctx.tsTree ?? null;
   const rules = getRules(config, ctx.language);
   for (const rule of rules) {
+    // A loaded tree-sitter tree owns precision for this language: skip the broad cross-language
+    // regex candidates (`skipIfAst`) so the precise `tsast` rule isn't doubled by a noisy regex.
+    // When no tree is present (grammar not loaded) the regex still fires — recall is preserved.
+    if (rule.type === "pattern" && rule.skipIfAst && tsTree) continue;
     if (rule.type === "pattern") runPattern(rule, ctx, findings);
     else if (rule.type === "file") runFile(rule, ctx, findings);
     else if (rule.type === "ast" && ast) runAst(rule, ast, ctx, findings);
+    else if (rule.type === "tsast" && tsTree) runTsAst(rule, tsTree, ctx, findings);
   }
   return findings;
 }

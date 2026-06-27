@@ -1,5 +1,6 @@
 import { memberName, walk } from "../parsers/javascript.js";
 import { resolvesToSanitizer, classifySecret } from "../taint.js";
+import { PYTHON_RULES } from "./python.js";
 import type { Rule, AstNode, EmitFn, RuleContext, DeprecatedEntry, Config } from "../types.js";
 
 const JS = ["javascript", "typescript"];
@@ -660,6 +661,11 @@ export const BUILTIN_RULES: Rule[] = [
       }
     },
   },
+
+  // ------------------------------------------ tree-sitter AST rules (non-JS)
+  // Per-language precision rules that mirror the JS AST rules' rigor. They run only when the
+  // matching grammar is loaded; otherwise the language falls back to the cross-language regex rules.
+  ...PYTHON_RULES,
 ];
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ export {
   blameLine,
 } from "./git.js";
 export { detectLanguage, hasAstSupport } from "./parsers/index.js";
+export { initTreeSitter, treeSitterReady, treeSitterLanguages, parseTs } from "./parsers/treesitter.js";
 export { computeChangedLines } from "./linediff.js";
 export { getRules, ruleCatalog } from "./rules/index.js";
 export type { RuleCatalogEntry } from "./rules/index.js";

@@ -9,6 +9,7 @@ import {
   computeChangedLines,
   getChangedLinesForFile,
   reviewChanges,
+  initTreeSitter,
   explainFinding,
   isAiAvailable,
   deepReview,
@@ -464,6 +465,7 @@ export async function handleAnalyze(
   opts: { graph?: Parameters<typeof attachImpact>[1]["graph"] } = {}
 ) {
   const cwd = cwdArg || process.cwd();
+  await initTreeSitter(); // ensure non-JS AST grammars (Python) are loaded before analysis
   const absPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const { config } = loadConfig(cwd);
 
@@ -511,6 +513,7 @@ export async function handleAnalyze(
 
 export async function handleCheckStaged({ cwd: cwdArg, mode = "working" }: { cwd?: string; mode?: string } = {}) {
   const cwd = cwdArg || process.cwd();
+  await initTreeSitter(); // ensure non-JS AST grammars (Python) are loaded before analysis
   const review = reviewChanges(cwd, { mode });
   // Omit `config` from the MCP payload: it bloats the agent context window every call and
   // exposes resolved config (ai.apiKeyEnv, customPatterns, extends paths, …) to the agent.
@@ -697,6 +700,7 @@ export async function dispatchMessage(msg: unknown, send: (obj: unknown) => void
 
 export function runMcpServer(): void {
   process.stderr.write("[diffgate mcp] server started\n");
+  void initTreeSitter(); // warm tree-sitter grammars in the background; handlers also await it
   const send = createWriter(process.stdout as unknown as Writable);
   const reader = createReader(process.stdin as unknown as Readable);
   reader.onMessage((msg: unknown) => { void dispatchMessage(msg, send); });

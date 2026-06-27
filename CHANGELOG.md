@@ -7,6 +7,25 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.0] — 2026-06-27
+
+### Added
+
+- **Real AST precision for Python (tree-sitter)** ([src/core/parsers/treesitter.ts](src/core/parsers/treesitter.ts), [src/core/rules/python.ts](src/core/rules/python.ts)). JS/TS got deep, sanitizer-aware AST rules via `@babel`; every other language was capped at comment-aware regex. Python now gets a real AST too — via the WASM build of tree-sitter (`web-tree-sitter` + `tree-sitter-python`, no native compilation, resolved from node_modules at runtime). The new `sql-injection` rule for Python reaches the **same precision tier as the JS rule**:
+  - **sink-targeting** — only a dynamic SQL string that flows *into* a query sink (`.execute`, `.executemany`, `.executescript`, `.exec_driver_sql`, `.raw`, `.mogrify`, SQLAlchemy `text(...)`) is flagged, so an f-string mentioning `SELECT` in a *log line* is not;
+  - **static clearing** — an f-string whose every `{…}` resolves to a module/local constant (`f"SELECT … {TABLE}"`) is not user-controlled → not flagged;
+  - **parameter-aware** — a placeholder query with params passed separately (`cur.execute("… WHERE id = %s", (uid,))`) is parameterized → not flagged;
+  - **sanitizer-aware** — when every dynamic part is wrapped in a recognized quoter (`psycopg2.sql.Identifier`, `quote_ident`, …) the finding is **down-tiered to review**, not blocked; a *mix* of sanitized and raw values stays blocking (one raw value can't be hidden);
+  - cross-line query variables are resolved intra-file (`q = f"…{uid}"; cur.execute(q)`).
+
+  Posture matches JS exactly: **blocking orange on local evidence** (no graph required), never suppress — only down-tier on a recognized sanitizer. The community-CodeGraph reachability/blast-radius pass composes on top unchanged (AST = intra-procedural precision, graph = inter-procedural reachability). A new `tsast` rule type ([src/core/types.ts](src/core/types.ts)) carries this; init (`initTreeSitter`) runs once at the CLI/MCP entry points, the `analyze` hot path stays synchronous, and **when the grammar isn't loaded the language falls back to the cross-language regex candidate** — recall is never lost.
+
+- **CodeGraph value, clarified** ([docs/CODE-GRAPH.md](docs/CODE-GRAPH.md)). Verified live that community CodeGraph indexes Python's call graph (entry points + callers + impact) — its value is **orthogonal** to per-language AST and concentrated in a focused ~7 of its ~40 tools (the rest are agent/IDE features). As AST precision raises local confidence per language, the graph's role shifts from *sole justification to block* → *reachability refinement + the language-agnostic blast-radius/cross-repo/reviewers/test-gap layer*, strongest on web-server code.
+
+### Changed
+
+- `analyze` now attaches a tree-sitter tree (`ctx.tsTree`) for grammar-backed languages; a loaded grammar suppresses the broad `skipIfAst` regex candidate for that language so the precise rule isn't doubled. New runtime deps: `web-tree-sitter`, `tree-sitter-python` (marked external in the bundled CLI, like `@babel/parser`). 395 tests green.
+
 ## [0.6.0] — 2026-06-26
 
 ### Added

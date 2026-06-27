@@ -348,6 +348,28 @@ export interface AstNode {
   [key: string]: unknown;
 }
 
+/**
+ * Minimal tree-sitter node surface (a subset of web-tree-sitter's `Node`). Tree-sitter powers
+ * AST-precision rules for languages @babel can't parse (Python first). Positions are 0-indexed
+ * `row`/`column`; rules add 1 to `row` for our 1-indexed `line`.
+ */
+export interface TsNode {
+  type: string;
+  text: string;
+  startPosition: { row: number; column: number };
+  endPosition: { row: number; column: number };
+  childForFieldName(field: string): TsNode | null;
+  namedChild(index: number): TsNode | null;
+  namedChildCount: number;
+  namedChildren: TsNode[];
+  descendantsOfType(types: string | string[]): TsNode[];
+  parent: TsNode | null;
+}
+
+export interface TsTree {
+  rootNode: TsNode;
+}
+
 export interface RuleContext {
   filePath: string;
   language: string;
@@ -358,6 +380,9 @@ export interface RuleContext {
   changedLines: Set<number> | null;
   config: Config;
   ast?: AstNode | null;
+  /** Tree-sitter parse of the file, when a matching grammar is loaded (e.g. Python). Drives `tsast`
+   *  rules. Absent when the grammar isn't ready — those languages fall back to pattern rules. */
+  tsTree?: TsTree | null;
 }
 
 export interface FindingEmitArg {
@@ -417,12 +442,19 @@ export interface AstRule extends RuleBase {
   visit: (node: AstNode, parent: AstNode | null, ctx: RuleContext, emit: EmitFn) => void;
 }
 
+/** Like {@link AstRule}, but visits a tree-sitter tree (`ctx.tsTree`) instead of the @babel AST.
+ *  Used for languages @babel can't parse — Python first. The engine walks every named node. */
+export interface TsAstRule extends RuleBase {
+  type: "tsast";
+  visit: (node: TsNode, ctx: RuleContext, emit: EmitFn) => void;
+}
+
 export interface FileRule extends RuleBase {
   type: "file";
   detect: (ctx: RuleContext, emit: EmitFn) => void;
 }
 
-export type Rule = PatternRule | AstRule | FileRule;
+export type Rule = PatternRule | AstRule | TsAstRule | FileRule;
 
 export interface ProviderPreset {
   wire: "anthropic" | "openai";
