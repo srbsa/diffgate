@@ -293,8 +293,10 @@ export function runRules({ ast, ctx, config }: { ast: AstNode | null; ctx: RuleC
   for (const rule of rules) {
     // A loaded tree-sitter tree owns precision for this language: skip the broad cross-language
     // regex candidates (`skipIfAst`) so the precise `tsast` rule isn't doubled by a noisy regex.
+    // `skipIfAstLangs` is the per-language form — skip only when the tree is for a language that has a
+    // precise replacement (e.g. dangerous-exec defers to PHP's AST exec rules but stays on for Python).
     // When no tree is present (grammar not loaded) the regex still fires — recall is preserved.
-    if (rule.type === "pattern" && rule.skipIfAst && tsTree) continue;
+    if (rule.type === "pattern" && tsTree && (rule.skipIfAst || (rule.skipIfAstLangs?.includes(ctx.language)))) continue;
     if (rule.type === "pattern") runPattern(rule, ctx, findings);
     else if (rule.type === "file") runFile(rule, ctx, findings);
     else if (rule.type === "ast" && ast) runAst(rule, ast, ctx, findings);

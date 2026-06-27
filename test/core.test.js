@@ -273,6 +273,24 @@ test("nosql-injection: does NOT fire on typed field access", () => {
   assert.equal(find(res, "nosql-injection"), undefined);
 });
 
+// Honest language scoping: these rules target JS/TS idioms (npm cors, Node/Mongo, req.*). They are
+// scoped to JS/TS so they don't advertise false breadth — a `{'origin': '*'}` dict in Python (or any
+// non-JS file) must NOT be flagged by a JS-shaped regex. Non-JS coverage needs its own rules.
+test("permissive-cors: does NOT fire on a non-JS file (scoped to JS/TS)", () => {
+  const res = analyze({ filePath: "settings.py", content: "CORS = { 'origin': '*' }\n", config: cfg });
+  assert.equal(find(res, "permissive-cors"), undefined);
+});
+
+test("path-traversal: does NOT fire on a non-JS file (scoped to JS/TS)", () => {
+  const res = analyze({ filePath: "v.py", content: "p = os.path.join('/data', request.args.get('name'))\n", config: cfg });
+  assert.equal(find(res, "path-traversal"), undefined);
+});
+
+test("nosql-injection: does NOT fire on a non-JS file (scoped to JS/TS)", () => {
+  const res = analyze({ filePath: "d.py", content: "docs = db.users.find(request.json)\n", config: cfg });
+  assert.equal(find(res, "nosql-injection"), undefined);
+});
+
 test("prototype-pollution: fires on Object.assign(existing, req.body)", () => {
   const res = analyze({ filePath: "h.js", content: "Object.assign(user, req.body);\n", config: cfg });
   assert.ok(find(res, "prototype-pollution"), "prototype-pollution should fire");

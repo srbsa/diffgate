@@ -69,10 +69,10 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 | `dangerous-exec` | 🟠 | `eval()`, `exec()`, `os.system()`, `pickle.loads`, Go `exec.Command`, Ruby `system`/`%x{}` — blocks when reachable |
 | `public-api-change` | 🟠 | exported symbols (JS/TS AST) |
 | `signature-drift` | 🟠 | exported function parameter changes (JS/TS) |
-| `permissive-cors` | 🟠 | `origin: '*'` |
-| `xss-sink` | 🟠 | `innerHTML`, `document.write`, `insertAdjacentHTML` (JS/TS) |
-| `path-traversal` | 🟠 | `path.join/readFile` called with `req.params/query/body` |
-| `nosql-injection` | 🟠 | `$where`, `db.eval`, `Model.find(req.body)` passthrough |
+| `permissive-cors` | 🟠 | JS/TS: `origin: '*'`, bare `cors()`. Python: flask-cors `CORS(...)`/`@cross_origin`, `CORS_ALLOW_ALL_ORIGINS=True`, manual `Access-Control-Allow-Origin: *` |
+| `xss-sink` | 🟠 | JS/TS: `innerHTML`, `document.write`, `insertAdjacentHTML`. Python: `mark_safe`/`Markup`/`render_template_string` of a dynamic value (escaper-aware) |
+| `path-traversal` | 🟠 | JS/TS: `path.join/readFile` with `req.params/query/body`. Python: `open`/`send_file` of request data (`secure_filename`/`safe_join` aware) |
+| `nosql-injection` | 🟠 | `$where`, `db.eval`, `Model.find(req.body)` passthrough (JS/TS) |
 | `prototype-pollution` | 🟠 | `Object.assign(existing, req.body)`, `_.merge` with request data (JS/TS) |
 | `deprecated-api` | 🟡 | configured via `deprecated[]`, offers a quick-fix |
 | `sql-injection-candidate` | 🟡 advisory | non-JS injection idioms (Python f-string/`%`/`.format`, PHP `.`-concat, Ruby `#{}`); **never blocks alone** — escalates to blocking 🟠 only when CodeGraph confirms reachability from an untrusted entry point. JS/TS use the precise AST `sql-injection` rule instead. |
@@ -93,6 +93,23 @@ Injection and secret findings are refined deterministically from the file's own 
 ### Test-file noise control (`testScope`, on by default)
 
 Security findings in test, fixture, and mock files are almost always intentional scaffolding (mock SQL, `eval` in a harness, sample payloads), so a 🟠 orange finding there **down-tiers to 🟡 yellow and stops blocking the gate** (surfaced as a review note, never suppressed). The catastrophic-if-real classes stay blocking even in tests: `hardcoded-secret`, `db-schema-destructive`, and the graph-owned public-surface rules. Pin a rule's tier to opt it out, or set `"testScope": false` to gate test code exactly like production.
+
+### Borrowed recall (`recall`, optional, off by default)
+
+For broader language coverage at the **CI/PR layer**, DiffGate can run an external scanner ([Semgrep](https://semgrep.dev)) and pass its findings through the same gate. This is for CI, not the local inner loop: Semgrep's startup cost is invisible in a pipeline but too slow for live editing. Borrowed findings are **advisory** — diff-scoped, deduped against DiffGate's own findings (by line + vulnerability class), capped at 🟡 yellow, and **never block the gate** (the 0-false-block guarantee is preserved). They appear with a `semgrep:` rule prefix.
+
+```jsonc
+{
+  "recall": {
+    "enabled": "ci",        // false (default) · "ci" = only when CI is set · true = always
+    "provider": "semgrep",  // requires the `semgrep` binary on PATH (e.g. `pip install semgrep`)
+    "config": "auto",       // semgrep --config (e.g. "p/python", "auto")
+    "timeoutMs": 60000
+  }
+}
+```
+
+`enabled: "ci"` activates it only when `process.env.CI` is set, so it runs in your pipeline but not when a developer runs `diffgate check` locally. `diffgate check --recall` force-enables it for a single run. If the binary isn't found, recall is silently skipped — the gate behaves exactly as if `recall` were off. In your CI workflow, install semgrep (e.g. `pip install semgrep`) before the DiffGate step.
 
 ---
 

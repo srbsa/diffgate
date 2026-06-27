@@ -156,7 +156,10 @@ function dynamicParts(node: TsNode, root: TsNode, depth = 0): TsNode[] {
       .map(interpExpr)
       .filter((e): e is TsNode => !!e && !isStaticConst(e, root));
   }
-  if (n.type === "binary_operator") {
+  // `+` concatenation (binary_operator) and implicit adjacent-literal concatenation
+  // (concatenated_string — the idiomatic multi-line SQL form `"SELECT … " f"WHERE id = {x}"`) share
+  // the same operand handling: plain/static parts are safe, f-string parts contribute their interps.
+  if (n.type === "binary_operator" || n.type === "concatenated_string") {
     const out: TsNode[] = [];
     for (const c of n.namedChildren) {
       if (c.type === "string" && !isFString(c)) continue; // a plain SQL literal operand is safe
@@ -223,6 +226,174 @@ function sanitizedNote(): string {
   );
 }
 
+// --- XSS (HTML-injection) ---------------------------------------------------
+// Mirrors the JS `xss-sink` AST rule for Python's server-side templating idioms: explicitly marking a
+// dynamic string safe-for-HTML is the injection. Sink-targeted (the function call that trusts the
+// string), dynamic-aware (a fully static literal is safe), and sanitizer-aware (an `escape(...)`-
+// wrapped value down-tiers to review). Same safety posture: orange by default, never suppress.
+//
+//   • mark_safe / Markup           — Django / MarkupSafe: stamp a string as not-to-be-escaped.
+//   • render_template_string       — Flask/Jinja: a dynamic template is SSTI *and* XSS.
+const XSS_SINK_FUNCS = new Set(["mark_safe", "Markup", "render_template_string"]);
+
+// Recognized HTML/value escapers — wrapping the value neutralizes the injection (down-tier).
+const XSS_SANITIZERS = /(?:^|\.)(?:escape|conditional_escape|clean|escape_html|quote|quote_plus)$/;
+
+/** A call to one of the XSS sinks (bare `mark_safe(...)` or attribute `django.utils.safestring.mark_safe(...)`). */
+function isXssSink(call: TsNode): boolean {
+  const fn = call.childForFieldName("function");
+  if (!fn) return false;
+  if (fn.type === "identifier") return XSS_SINK_FUNCS.has(fn.text);
+  if (fn.type === "attribute") {
+    const a = fn.childForFieldName("attribute");
+    return !!a && XSS_SINK_FUNCS.has(a.text);
+  }
+  return false;
+}
+
+/** A value that is NOT a compile-time-constant string — i.e. potentially attacker-influenced HTML.
+ *  Mirrors the JS rule's `isDynamicString` (anything that isn't a static literal is dynamic). */
+function isDynamicHtml(node: TsNode, root: TsNode): boolean {
+  return !isStaticConst(node, root);
+}
+
+/** The value (or all of its dynamic parts) is wrapped in a recognized HTML escaper. */
+function isXssSanitized(node: TsNode, root: TsNode, depth = 0): boolean {
+  if (depth > MAX_RESOLVE_DEPTH) return false;
+  const n = unwrap(node);
+  if (n.type === "call") {
+    const fn = n.childForFieldName("function");
+    if (fn && XSS_SANITIZERS.test(fn.text)) return true;
+  }
+  if (n.type === "identifier") {
+    const init = declInit(n.text, root);
+    return init ? isXssSanitized(init, root, depth + 1) : false;
+  }
+  return false;
+}
+
+const XSS_MESSAGE =
+  "A dynamic value is marked safe-for-HTML (`mark_safe`/`Markup`) or rendered as a template " +
+  "(`render_template_string`) without escaping. If any part is user-controlled, an attacker can inject " +
+  "arbitrary HTML/JavaScript (XSS) — or, for a dynamic template, server-side template injection. " +
+  "Escape the value (`django.utils.html.escape`, `markupsafe.escape`) before marking it safe, and never " +
+  "build a template string from request data.";
+
+function xssSanitizedNote(): string {
+  return (
+    "The value here is wrapped in a recognized HTML escaper (e.g. `escape`) — likely safe, but verify it " +
+    "covers every dynamic part and the right context. Down-tiered from a blocking finding to review."
+  );
+}
+
+// --- path traversal --------------------------------------------------------
+// Mirrors the JS `path-traversal` rule, and improves on it: it is **wrapper-aware** — a request value
+// neutralized by `secure_filename`/`basename`/`safe_join` down-tiers to review instead of blocking.
+// Sink-targeted (`open`/`send_file`/`send_static_file`) and only fires when the path carries request data.
+const PT_REQUEST_SOURCE = /\brequest\.(?:args|form|values|GET|POST|data|json|files|query_params|params)\b/;
+const PT_SANITIZERS = /(?:^|\.)(?:secure_filename|basename|safe_join)$/;
+
+/** If `call` is a path-read sink, its argument expressions; else null. `open` only as the builtin
+ *  (identifier) — `x.open(...)` on a file object is not a path sink. */
+function ptSinkArgs(call: TsNode): TsNode[] | null {
+  const fn = call.childForFieldName("function");
+  if (!fn) return null;
+  let name: string | null = null, viaAttr = false;
+  if (fn.type === "identifier") name = fn.text;
+  else if (fn.type === "attribute") { const a = fn.childForFieldName("attribute"); name = a ? a.text : null; viaAttr = true; }
+  if (!name) return null;
+  const ok = (name === "open" && !viaAttr) || name === "send_file" || name === "send_static_file";
+  if (!ok) return null;
+  const args = call.childForFieldName("arguments");
+  return args ? args.namedChildren : [];
+}
+
+/** True when an expression (resolving identifiers intra-file) carries HTTP request data. */
+function taintedByRequest(node: TsNode, root: TsNode, depth = 0): boolean {
+  if (depth > MAX_RESOLVE_DEPTH) return false;
+  const n = unwrap(node);
+  if (PT_REQUEST_SOURCE.test(n.text)) return true;
+  if (n.type === "identifier") {
+    const init = declInit(n.text, root);
+    return init ? taintedByRequest(init, root, depth + 1) : false;
+  }
+  return false;
+}
+
+/** True when EVERY request value in the path is wrapped in a recognized sanitizer (containment/
+ *  basename). A mix of sanitized + raw request data stays blocking — we never hide a raw value
+ *  (mirrors the sql-injection rule's `every`-sanitized invariant). */
+function pathSanitized(node: TsNode, root: TsNode, depth = 0): boolean {
+  if (depth > MAX_RESOLVE_DEPTH) return false;
+  const n = unwrap(node);
+  if (n.type === "identifier") {
+    const init = declInit(n.text, root);
+    return init ? pathSanitized(init, root, depth + 1) : false;
+  }
+  if (!PT_REQUEST_SOURCE.test(n.text)) return false; // nothing to sanitize
+  // Strike out every sanitizer-call subtree, then check whether any RAW request source remains.
+  let remaining = n.text;
+  let sawSanitizer = false;
+  const calls = n.type === "call" ? [n, ...n.descendantsOfType("call")] : n.descendantsOfType("call");
+  for (const call of calls) {
+    const fn = call.childForFieldName("function");
+    if (fn && PT_SANITIZERS.test(fn.text)) { sawSanitizer = true; remaining = remaining.split(call.text).join(" "); }
+  }
+  return sawSanitizer && !PT_REQUEST_SOURCE.test(remaining);
+}
+
+const PT_MESSAGE =
+  "A file path is built from request-controlled data (`request.args`/`request.GET`/…) and opened " +
+  "without containment. An attacker can read or write arbitrary files via `../../etc/passwd`. " +
+  "Resolve the path and assert it stays under an allowed base directory, or use " +
+  "`werkzeug.utils.safe_join` / `secure_filename`; never open a path built from request data directly.";
+
+function ptSanitizedNote(): string {
+  return (
+    "The request value here is wrapped in a recognized path sanitizer (e.g. `secure_filename`/`safe_join`) " +
+    "— likely safe, but verify it actually contains the path. Down-tiered from a blocking finding to review."
+  );
+}
+
+// --- permissive CORS -------------------------------------------------------
+// Python equivalents of the JS `permissive-cors` rule: flask-cors `CORS(...)`/`@cross_origin()` that
+// default to (or explicitly set) any-origin, django-cors-headers' allow-all settings, and a manual
+// `Access-Control-Allow-Origin: *` header. Unsafe forms are unambiguous → precise, not coarse.
+const CORS_STAR = /["']\*["']/;
+
+/** A flask-cors `CORS(...)` / `cross_origin(...)` call that allows any origin (explicit `*` or the
+ *  permissive default — no origin-restricting kwarg at all). */
+function corsCallPermissive(call: TsNode): boolean {
+  const fn = call.childForFieldName("function");
+  let name: string | null = null;
+  if (fn?.type === "identifier") name = fn.text;
+  else if (fn?.type === "attribute") { const a = fn.childForFieldName("attribute"); name = a ? a.text : null; }
+  if (name !== "CORS" && name !== "cross_origin") return false;
+  const args = call.childForFieldName("arguments");
+  const kwargs = args ? args.namedChildren.filter((a) => a.type === "keyword_argument") : [];
+  const originKw = kwargs.find((k) => {
+    const n = k.childForFieldName("name");
+    return !!n && (n.text === "origins" || n.text === "resources" || n.text === "allow_origins" || n.text === "origin");
+  });
+  if (!originKw) return true; // bare CORS(app) / cross_origin() → default allows all origins
+  const val = originKw.childForFieldName("value");
+  return !!val && CORS_STAR.test(val.text); // origins="*" / ["*"] / resources {... "*"}
+}
+
+/** A header write that sets `Access-Control-Allow-Origin` to `*` via a method call (`headers.add(...)`). */
+function isHeaderStarCall(call: TsNode): boolean {
+  const fn = call.childForFieldName("function");
+  if (fn?.type !== "attribute") return false;
+  const m = fn.childForFieldName("attribute");
+  if (!m || !/^(?:add|set|setdefault|append|update|__setitem__)$/.test(m.text)) return false;
+  return /access-control-allow-origin/i.test(call.text) && CORS_STAR.test(call.text);
+}
+
+const CORS_MESSAGE =
+  "CORS is configured to allow any origin (`*`, or the permissive flask-cors / django-cors-headers " +
+  "default). If cookies or tokens are used, arbitrary sites can make credentialed cross-origin requests. " +
+  "Set an explicit allowlist of trusted origins (`CORS(app, origins=[...])`, `CORS_ALLOWED_ORIGINS=[...]`).";
+
 export const PYTHON_RULES: TsAstRule[] = [
   {
     id: "sql-injection",
@@ -255,6 +426,97 @@ export const PYTHON_RULES: TsAstRule[] = [
           ? { loc, code, symbol, tier: "yellow", blocking: false, tierAdjusted: "deescalated", message: `${MESSAGE}\n\n${sanitizedNote()}` }
           : { loc, code, symbol }
       );
+    },
+  },
+  {
+    id: "xss-sink",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "XSS sink",
+    languages: ["python"],
+    message: XSS_MESSAGE,
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "call" || !isXssSink(node)) return;
+      const args = node.childForFieldName("arguments");
+      const a0 = args ? args.namedChild(0) : null;
+      if (!a0) return;
+      const root = ctx.tsTree!.rootNode;
+      if (!isDynamicHtml(a0, root)) return; // a fully static HTML literal is safe
+
+      const sanitized = isXssSanitized(a0, root);
+      const line = lineOf(node);
+      const loc = {
+        start: { line, column: node.startPosition.column },
+        end: { line: node.endPosition.row + 1, column: node.endPosition.column },
+      };
+      const code = (ctx.lines[line - 1] || "").trim();
+      const symbol = enclosingFunction(node);
+      emit(
+        sanitized
+          ? { loc, code, symbol, tier: "yellow", blocking: false, tierAdjusted: "deescalated", message: `${XSS_MESSAGE}\n\n${xssSanitizedNote()}` }
+          : { loc, code, symbol }
+      );
+    },
+  },
+  {
+    id: "path-traversal",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "Path traversal sink",
+    languages: ["python"],
+    message: PT_MESSAGE,
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "call") return;
+      const args = ptSinkArgs(node);
+      if (!args) return;
+      const root = ctx.tsTree!.rootNode;
+      const tainted = args.find((a) => taintedByRequest(a, root));
+      if (!tainted) return;
+      const sanitized = pathSanitized(tainted, root);
+      const line = lineOf(node);
+      const loc = {
+        start: { line, column: node.startPosition.column },
+        end: { line: node.endPosition.row + 1, column: node.endPosition.column },
+      };
+      const code = (ctx.lines[line - 1] || "").trim();
+      const symbol = enclosingFunction(node);
+      emit(
+        sanitized
+          ? { loc, code, symbol, tier: "yellow", blocking: false, tierAdjusted: "deescalated", message: `${PT_MESSAGE}\n\n${ptSanitizedNote()}` }
+          : { loc, code, symbol }
+      );
+    },
+  },
+  {
+    id: "permissive-cors",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "Permissive CORS policy",
+    languages: ["python"],
+    message: CORS_MESSAGE,
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      let hit = false;
+      if (node.type === "call") {
+        if (corsCallPermissive(node) || isHeaderStarCall(node)) hit = true;
+      } else if (node.type === "assignment") {
+        const left = node.childForFieldName("left");
+        const right = node.childForFieldName("right");
+        if (left && right) {
+          if (left.type === "identifier" && /^(?:CORS_ALLOW_ALL_ORIGINS|CORS_ORIGIN_ALLOW_ALL)$/.test(left.text) && right.type === "true") hit = true;
+          else if (/access-control-allow-origin/i.test(left.text) && CORS_STAR.test(right.text)) hit = true;
+        }
+      }
+      if (!hit) return;
+      const line = lineOf(node);
+      const loc = {
+        start: { line, column: node.startPosition.column },
+        end: { line: node.endPosition.row + 1, column: node.endPosition.column },
+      };
+      const code = (ctx.lines[line - 1] || "").trim();
+      emit({ loc, code });
     },
   },
 ];

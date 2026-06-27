@@ -7,9 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.7.0] — 2026-06-27
+## [0.6.0] — Unreleased
+
+_Working version for branch `feat/language-expansion-reachability` (last released: 0.5.2). Bundles community-edition reachability, real tree-sitter AST precision for Python and PHP, and the PHP AST expansion to seven sink classes — to be cut as a single release._
 
 ### Added
+
+- **PHP AST coverage expanded from 1 → 7 sink classes** ([src/core/rules/php.ts](src/core/rules/php.ts)). A deep-dive found PHP had only `sql-injection` at AST precision — every other PHP-infamous footgun (command exec, `unserialize`, `include` LFI, echo-XSS, path traversal) passed clean, because the cross-language regex rules are JS/Python-shaped. PHP now has six new `tsast` rules, each sink-targeted, dynamic-aware, sanitizer-down-tiering, and intra-file def-use resolving — same posture and precision tier as the SQLi rule:
+  - **command-injection** (CWE-78, blocking) — `exec`/`shell_exec`/`passthru`/`system`/`proc_open`/`popen`/`pcntl_exec` and backtick `` `…$x` `` with a dynamic argument. `escapeshellarg`/`escapeshellcmd` on every dynamic part down-tier to review; an argument-array form (`proc_open(['ls',$f], …)`, no shell) is **not** flagged; a static command is not flagged; a `$db->exec(…)` *method* call stays SQL, not command-exec.
+  - **code-injection** (CWE-95, blocking) — `eval`/`create_function` of a dynamic value, and `assert` only when its argument is string-shaped. `assert($x === 1)` / `assert(is_array($x))` are correctly **not** flagged (the prior naive shape would have).
+  - **file-inclusion** (CWE-98, blocking) — `include`/`include_once`/`require`/`require_once` of a dynamic path (LFI/RFI → RCE). `basename()` down-tiers to review; a static include is not flagged.
+  - **unsafe-deserialization** (CWE-502, blocking) — `unserialize()` of a dynamic value (object-injection / POP-chain RCE). `['allowed_classes' => false]` down-tiers to review.
+  - **xss-sink** (CWE-79, advisory) — `echo`/`print`/`printf` of a request superglobal (`$_GET`/`$_POST`/`$_REQUEST`/`$_COOKIE`/`$_FILES`/`$_SERVER`/`php://input`), resolved across lines. `htmlspecialchars`/`htmlentities`/`strip_tags`/`(int)` down-tier; echo of a non-request value is **not** flagged (precision over noise).
+  - **path-traversal** (CWE-22, advisory) — `fopen`/`file_get_contents`/`file_put_contents`/`readfile`/`unlink`/`copy`/`rename`/`scandir`/`opendir` of request data (`file_get_contents($url)` is also SSRF). `basename`/`realpath` down-tier.
+
+  The blocking classes block on local evidence (no graph required); xss and path-traversal are non-blocking advisories that the community-CodeGraph reachability pass can escalate. The four new ids join the `web-security` rule pack. Honest remaining PHP gaps (documented in [docs/SCOPE.md](docs/SCOPE.md)): type-juggling (`==`), weak crypto, `header()` injection / open redirect, `extract()`/mass-assignment, dedicated `curl` SSRF, XXE.
 
 - **Real AST precision for Python and PHP (tree-sitter)** ([src/core/parsers/treesitter.ts](src/core/parsers/treesitter.ts), [src/core/rules/python.ts](src/core/rules/python.ts), [src/core/rules/php.ts](src/core/rules/php.ts)). JS/TS got deep, sanitizer-aware AST rules via `@babel`; every other language was capped at comment-aware regex. Python and PHP now get a real AST too — via the WASM build of tree-sitter (`web-tree-sitter` + `tree-sitter-python` / `tree-sitter-php`, no native compilation, resolved from node_modules at runtime). The new `sql-injection` rule for Python reaches the **same precision tier as the JS rule**:
   - **sink-targeting** — only a dynamic SQL string that flows *into* a query sink (`.execute`, `.executemany`, `.executescript`, `.exec_driver_sql`, `.raw`, `.mogrify`, SQLAlchemy `text(...)`) is flagged, so an f-string mentioning `SELECT` in a *log line* is not;
@@ -24,14 +36,6 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 - **CodeGraph value, clarified** ([docs/CODE-GRAPH.md](docs/CODE-GRAPH.md)). Verified live that community CodeGraph indexes Python's call graph (entry points + callers + impact) — its value is **orthogonal** to per-language AST and concentrated in a focused ~7 of its ~40 tools (the rest are agent/IDE features). As AST precision raises local confidence per language, the graph's role shifts from *sole justification to block* → *reachability refinement + the language-agnostic blast-radius/cross-repo/reviewers/test-gap layer*, strongest on web-server code.
 
-### Changed
-
-- `analyze` now attaches a tree-sitter tree (`ctx.tsTree`) for grammar-backed languages; a loaded grammar suppresses the broad `skipIfAst` regex candidate for that language so the precise rule isn't doubled. New runtime deps: `web-tree-sitter`, `tree-sitter-python`, `tree-sitter-php` (marked external in the bundled CLI, like `@babel/parser`). 410 tests green.
-
-## [0.6.0] — 2026-06-26
-
-### Added
-
 - **Community-edition reachability — cross-language injection that earns its block** ([src/core/reachability.ts](src/core/reachability.ts), [src/core/graph/codegraph.ts](src/core/graph/codegraph.ts)). DiffGate's injection detection is AST-deep on JS/TS and best-effort regex elsewhere, and the Pro taint engine that made the graph "precision" is absent from the community CodeGraph build — so on Python/PHP/Ruby the precision story was dark exactly where recall was weakest. New `GraphProvider.reachability()` closes this using only **community** tools (`find_entry_points` + `get_callers`/`traverse_graph`): it walks the deterministic, AST-derived call graph from a sink back toward untrusted entry points (HTTP/event handlers). A new `attachReachability` pass routes injection-class findings through it — **reachable from a handler → escalate to a blocking orange** (entry point named, `trust: "reachable"`); **no path found → advisory** (`trust: "unreachable"`, never auto-cleared unless `graph.reachabilityDeescalate: true`); **can't tell → untouched** (`null` = unknown, never a false "unreachable"). Pro taint verdicts still win when present. Core-only behavior is unchanged — a strict no-op without a graph. Entry-point discovery is memoized once per review; reachability has its own depth bound and timeout budget.
 
 - **`sql-injection-candidate` rule + widened `dangerous-exec`** ([src/core/rules/builtin.ts](src/core/rules/builtin.ts)). A broad, **advisory** (yellow, non-blocking) cross-language injection rule for the idioms the JS-shaped blocking rule misses — Python f-string / `%` / `.format`, PHP `.`-concat & `"…$var…"`, Ruby `#{}` — and `dangerous-exec` now covers Go `exec.Command`/`CommandContext` and Ruby `system`/`%x{}`/`IO.popen`/`Open3`/`Process.spawn`/`Kernel.exec`. These never block on their own (and don't fire on parameterized queries); they escalate to blocking **only** via reachability. `skipIfAst` keeps the candidate off JS/TS, where the precise AST rule already owns this. This is the low-noise contract: recall comes from the rule, the right to block comes from the graph.
@@ -39,6 +43,12 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - **Config + status surface.** New `graph.reachability` / `reachabilityDeescalate` / `untrustedEntryKinds` / `reachabilityMaxDepth` / `reachabilityTimeoutMs` keys ([docs/CONFIG.md](docs/CONFIG.md)). `diffgate graph status` now shows a reachability line and the index age (reachability is only as good as the index; a stale index can make a reachable sink look unreachable). MCP `diffgate_analyze` findings may carry a `reachability` block and `trust: "reachable"/"unreachable"` ([MCP.md](MCP.md)).
 
 - **Docs.** [docs/SCOPE.md](docs/SCOPE.md) and [docs/CODE-GRAPH.md](docs/CODE-GRAPH.md) gain a "Reachability (community edition)" section; the Pro security graph is reframed as an optional enhancement *on top of* community reachability, not a prerequisite.
+
+### Changed
+
+- `analyze` attaches a tree-sitter tree (`ctx.tsTree`) for grammar-backed languages; a loaded grammar suppresses the broad `skipIfAst` regex candidate for that language so the precise rule isn't doubled. New runtime deps: `web-tree-sitter`, `tree-sitter-python`, `tree-sitter-php` (marked external in the bundled CLI, like `@babel/parser`).
+
+- **`skipIfAstLangs` — per-language regex deferral** ([src/core/types.ts](src/core/types.ts), [src/core/rules/index.ts](src/core/rules/index.ts)). `skipIfAst` skipped a broad pattern rule whenever *any* tree-sitter tree was loaded; the new `skipIfAstLangs` skips only when the tree is for a language that has a precise replacement. `dangerous-exec` now sets `skipIfAstLangs: ["php"]` so it defers to PHP's AST command/code-injection rules (no double-report) while still firing for Python `os.system`/`subprocess`, Go, and Ruby.
 
 ### Fixed — validated against a live CodeGraph (the integration was dark)
 
@@ -54,7 +64,7 @@ Verified end-to-end against the real binary on a Flask fixture: a Python f-strin
 
 ### Tests
 
-- New `test/reachability.test.js` (22): the `attachReachability` pass with an injected fake graph + the provider's `reachability()` with a canned `GraphRunner` (reachable/unreachable/unknown, `untrustedEntryKinds`, memoization, fail-safe degradation, Pro-wins). `test/graph-shapes.test.js` (9): the normalizers + provider against **real captured CodeGraph JSON** ([test/fixtures/codegraph-real.json](test/fixtures/codegraph-real.json)) — the regression guard the flat fakes could not be. `test/codegraph-e2e.test.js` (`npm run test:e2e`, gated by `DIFFGATE_CODEGRAPH_E2E=1`): drives the real binary on a Flask fixture. `test/scenarios.test.js` promotes the previously-pinned cross-language GAPs to the new covered-by-candidate behavior and the two-step reachability escalation. Full suite **377 green**; the clean-corpus false-block rate is unchanged (0.00) — CI has no graph, so nothing new can block.
+- New `test/reachability.test.js` (22): the `attachReachability` pass with an injected fake graph + the provider's `reachability()` with a canned `GraphRunner` (reachable/unreachable/unknown, `untrustedEntryKinds`, memoization, fail-safe degradation, Pro-wins). `test/graph-shapes.test.js` (9): the normalizers + provider against **real captured CodeGraph JSON** ([test/fixtures/codegraph-real.json](test/fixtures/codegraph-real.json)) — the regression guard the flat fakes could not be. `test/codegraph-e2e.test.js` (`npm run test:e2e`, gated by `DIFFGATE_CODEGRAPH_E2E=1`): drives the real binary on a Flask fixture. `test/scenarios.test.js` promotes the previously-pinned cross-language GAPs to the new covered-by-candidate behavior and the two-step reachability escalation. New `test/python-rules.test.js` and `test/php-rules.test.js` cover the tree-sitter rules — the latter with 45 cases across all seven PHP sink classes (TP / FP / sanitizer-down-tier / cross-line def-use / no-double-report). Full suite **473 green**; the clean-corpus false-block rate is unchanged (0.00) — CI has no graph, so nothing new can block.
 
 ---
 

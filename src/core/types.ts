@@ -318,6 +318,22 @@ export interface LearningsConfig {
   shared?: string[];
 }
 
+/** Optional borrowed-recall layer (docs/DESIGN-recall-and-parity.md): pipe an external scanner's
+ *  findings through the gate (diff-scoped, deduped, ADVISORY-only — never blocking). Off by default;
+ *  meant for the CI/PR layer, where its latency is invisible, not the millisecond inner loop. */
+export interface RecallConfig {
+  /** false (default) = off. "ci" = on only when running in CI (`process.env.CI` set). true = always on. */
+  enabled?: boolean | "ci";
+  /** External engine. Only "semgrep" today. */
+  provider?: "semgrep";
+  /** Binary name / path. Default "semgrep". Absent on PATH → no-op. */
+  command?: string;
+  /** Engine ruleset (semgrep `--config`). Default "auto". */
+  config?: string;
+  /** Per-invocation budget (ms) for the batched scan. Default 60000. */
+  timeoutMs?: number;
+}
+
 export interface Config {
   /** Org-wide policy packs to inherit from, base-first. Local config wins on conflicts.
    *  Each entry is a path (./team.diffgate.json), or a package name resolved under node_modules. */
@@ -332,6 +348,7 @@ export interface Config {
   orangePatterns?: string[];
   guidelines?: GuidelinesConfig;
   graph?: GraphConfig;
+  recall?: RecallConfig;
   learnings?: LearningsConfig;
   /** Down-tier non-exempt orange findings in test/fixture files (orange → yellow, non-blocking).
    *  Secrets, destructive schema, and graph-owned public-surface rules stay at full tier. Default true. */
@@ -424,6 +441,14 @@ interface RuleBase {
    * comment-masked text so commented-out code (`// eval(x)`, `# os.system(...)`) stops being noise.
    */
   scanRaw?: boolean;
+  /**
+   * Like {@link skipIfAst}, but per-language: skip this broad pattern rule ONLY when the loaded
+   * tree-sitter tree is for one of these languages — i.e. a language that has a precise `tsast`
+   * replacement for it. Used by `dangerous-exec` (PHP now owns command/code-injection via AST, but
+   * Python still relies on the regex for `os.system`/`subprocess`). Extend the list as precise rules
+   * land for more languages.
+   */
+  skipIfAstLangs?: string[];
 }
 
 export interface PatternRule extends RuleBase {

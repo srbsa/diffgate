@@ -39,6 +39,11 @@ export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, Reachab
 export { attachImpact, IMPACT_RULES } from "./impact.js";
 export { attachSecurity, SECURITY_RULES, labelTrust, trustFor } from "./security.js";
 export { attachReachability, REACHABILITY_RULES } from "./reachability.js";
+export {
+  makeSemgrepProvider, semgrepAvailable, parseSemgrep, mapSeverityToTier, diffScope, dedupeAgainst, toFindings,
+  getRecallProvider, attachRecall, resolveRecallConfig, recallActive, DEFAULT_RECALL_CONFIG,
+} from "./recall/index.js";
+export type { RecallProvider, RawRecallFinding, SemgrepRunner, SemgrepBatchRunner } from "./recall/index.js";
 export { buildCapabilities, capabilityHint } from "./capabilities.js";
 export type { Capabilities } from "./capabilities.js";
 export { predictedSignal, realizedSignal } from "./signal.js";
@@ -56,7 +61,9 @@ import { getGraph as _getGraph } from "./graph/index.js";
 import { attachImpact as _attachImpact } from "./impact.js";
 import { attachSecurity as _attachSecurity, labelTrust as _labelTrust } from "./security.js";
 import { attachReachability as _attachReachability } from "./reachability.js";
+import { getRecallProvider as _getRecallProvider, attachRecall as _attachRecall } from "./recall/index.js";
 import type { GraphProvider } from "./graph/index.js";
+import type { RecallProvider } from "./recall/index.js";
 import type { Config, AnalyzeResult } from "./types.js";
 
 export interface ReviewResult {
@@ -67,15 +74,23 @@ export interface ReviewResult {
   config: Config;
 }
 
-export function reviewChanges(cwd: string, opts: { mode?: string; base?: string; graph?: GraphProvider | null } = {}): ReviewResult {
+export function reviewChanges(
+  cwd: string,
+  opts: { mode?: string; base?: string; graph?: GraphProvider | null; recall?: RecallProvider | null } = {}
+): ReviewResult {
   const { config } = _loadConfig(cwd);
   const mode = opts.mode || config.gate.mode || "working";
   const base = opts.base;
   const changed = _getChangedFiles(cwd, { mode, base });
   const root = _repoRoot(cwd) || cwd;
   const learnings = _loadMergedLearnings(root, config.learnings?.shared || [], root);
-  let files: AnalyzeResult[] = [];
 
+  // Borrowed recall (off by default; "ci" only under CI; requires the binary). Resolved first because
+  // when active we must keep findings-free files in the pipeline too — that's where borrowed recall
+  // earns its keep (vulns DiffGate's own rules don't flag). When null, behavior is unchanged.
+  const recall = _getRecallProvider(cwd, config, opts.recall !== undefined ? { provider: opts.recall } : {});
+
+  let files: AnalyzeResult[] = [];
   for (const [filePath, changedLines] of changed) {
     if (_isIgnored(filePath, config, cwd)) continue;
     let content: string;
@@ -86,7 +101,7 @@ export function reviewChanges(cwd: string, opts: { mode?: string; base?: string;
     }
     const previousContent = _getPreviousContent(cwd, filePath, { mode, base });
     const result = _applyLearnings(analyze({ filePath, content, previousContent, changedLines, config }), learnings);
-    if (result.findings.length > 0) files.push(result);
+    if (result.findings.length > 0 || recall) files.push(result);
   }
 
   // Cross-file blast radius + graph-aware security/reachability (all no-ops without a code graph).
@@ -97,6 +112,9 @@ export function reviewChanges(cwd: string, opts: { mode?: string; base?: string;
   files = _attachSecurity(files, { cwd, config, graph });
   files = _attachReachability(files, { cwd, config, graph });
   files = _labelTrust(files);
+  // Borrowed recall last — advisory findings layered on top, then drop any file still finding-free.
+  files = _attachRecall(files, { cwd, config, changed, provider: recall });
+  if (recall) files = files.filter((f) => f.findings.length > 0);
 
   const allFindings = files.flatMap((f) => f.findings);
   return {

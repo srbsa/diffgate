@@ -307,6 +307,9 @@ export const BUILTIN_RULES: Rule[] = [
     tier: "orange",
     title: "Dynamic execution / shell-out",
     languages: ["*"],
+    // PHP has precise AST command-injection/code-injection rules — defer to them there (no double
+    // report). Other languages (Python os.system/subprocess, Go, Ruby) still rely on this regex.
+    skipIfAstLangs: ["php"],
     message: "Dynamic code execution or shell-out. Audit for command/code injection — never pass unsanitized input here.",
     patterns: [
       /\beval\s*\(/,
@@ -494,7 +497,9 @@ export const BUILTIN_RULES: Rule[] = [
     tier: "orange",
     blocking: false,
     title: "Permissive CORS policy",
-    languages: ["*"],
+    // JS/TS only: the patterns target the npm `cors` package and Express-style header writes.
+    // Other stacks (flask-cors `origins="*"`, etc.) need their own patterns — don't claim false breadth.
+    languages: JS,
     message:
       "CORS is configured to allow any origin (`*`). If authentication cookies or tokens are used, " +
       "arbitrary websites can make credentialed cross-origin requests to this API. " +
@@ -542,24 +547,10 @@ export const BUILTIN_RULES: Rule[] = [
     },
   },
   {
-    id: "path-traversal",
-    type: "pattern",
-    tier: "orange",
-    blocking: false,
-    title: "Path traversal sink",
-    languages: ["*"],
-    skipIfAst: true,
-    message:
-      "A file path is constructed from request-controlled data (`req.params`, `req.query`, `req.body`). " +
-      "Without canonicalization and a root-prefix check, an attacker can read arbitrary files via `../../etc/passwd`. " +
-      "Use `path.resolve()`, then assert the result starts with your allowed base directory before opening the file.",
-    patterns: [
-      /\bpath\.(?:join|resolve|normalize)\s*\([^)]*(?:req|request|ctx)\.(?:params|query|body)\b/i,
-      /\bfs\.(?:readFile|readFileSync|createReadStream|open|openSync)\s*\([^)]*(?:req|request|ctx)\.(?:params|query|body)\b/i,
-      /(?:__dirname|process\.cwd\(\))\s*,\s*(?:req|request|ctx)\.(?:params|query|body)\b/i,
-    ],
-  },
-  {
+    // JS/TS only. (A prior `["*"]` regex variant was removed: it was `skipIfAst` — always shadowed by
+    // this AST rule on JS/TS — and its `req.params`/`fs.`/`path.` patterns matched no other language,
+    // so it advertised breadth it never delivered. Non-JS path traversal needs its own rule, not a
+    // JS-shaped regex masquerading as cross-language.)
     id: "path-traversal",
     type: "ast",
     tier: "orange",
@@ -594,7 +585,9 @@ export const BUILTIN_RULES: Rule[] = [
     tier: "orange",
     blocking: false,
     title: "NoSQL injection sink",
-    languages: ["*"],
+    // JS/TS only: `$where`/`db.eval`/`.find(req.body)` are the Node+Mongo idioms. Other drivers
+    // (pymongo `find(request.json)`, etc.) need their own patterns — don't claim false breadth.
+    languages: JS,
     message:
       "MongoDB `$where`, `db.eval()`, or passing a raw request object as a query filter enables server-side JS execution " +
       "or operator injection. An attacker can bypass authentication by sending `{ password: { $gt: '' } }`. " +
@@ -823,6 +816,10 @@ export const RULE_PACKS: Record<string, string[]> = {
     "path-traversal",
     "prototype-pollution",
     "xss-sink",
+    "command-injection",
+    "code-injection",
+    "file-inclusion",
+    "unsafe-deserialization",
   ],
   "compatibility": [
     "public-api-change",

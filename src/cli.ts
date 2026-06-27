@@ -26,6 +26,7 @@ import {
   overallTier,
   TIER_ORDER,
   reviewChanges,
+  getRecallProvider,
   initTreeSitter,
   reviewGuidelines,
   recordLearning,
@@ -198,7 +199,14 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
   const { config } = loadConfig(cwd);
   const mode = resolveMode(flags, config);
   const base = typeof flags["base"] === "string" ? (flags["base"] as string) : undefined;
-  const review = reviewChanges(cwd, { mode, base });
+  // `--recall` force-enables borrowed recall (semgrep) for this run, overriding the config gate.
+  // Off otherwise; in CI it activates automatically when `recall.enabled` is "ci".
+  let recall: NonNullable<Parameters<typeof reviewChanges>[1]>["recall"];
+  if (flags["recall"]) {
+    recall = getRecallProvider(cwd, { ...config, recall: { ...(config.recall || {}), enabled: true } });
+    if (!recall) console.log(c.yellow("⚠ --recall: semgrep not found on PATH — skipping borrowed recall."));
+  }
+  const review = reviewChanges(cwd, { mode, base, ...(recall !== undefined ? { recall } : {}) });
   const allFindings = review.files.flatMap((f) => f.findings);
 
   if (flags["json"]) {
