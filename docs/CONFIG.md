@@ -63,19 +63,23 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 |------|------|-------|
 | `hardcoded-secret` | 🟠 blocking | AWS keys, GitHub PATs, Stripe secrets, generic credential patterns |
 | `db-schema-destructive` | 🟠 blocking | `DROP`, `TRUNCATE`, `DELETE` without `WHERE` |
-| `sql-injection` | 🟠 blocking | template literals / concatenation inside SQL calls (JS/TS AST + JS-shaped regex) |
+| `sql-injection` | 🟠 blocking | Interpolation/concatenation/`sprintf` inside SQL calls. JS/TS AST; Python AST (f-string/`%`/`.format`); PHP AST (`mysqli_query`/`$pdo->query`/`->prepare`, Laravel `whereRaw`/`orderByRaw`); JS-shaped regex fallback elsewhere. Parameter- & sanitizer-aware. |
+| `command-injection` | 🟠 blocking | PHP AST: `exec`/`shell_exec`/`passthru`/`system`/`proc_open`/`popen`/backticks with a dynamic arg (`escapeshellarg`/`escapeshellcmd` down-tier; arg-array form is safe). |
+| `code-injection` | 🟠 blocking | PHP AST: `eval`/`create_function`/string-`assert` of a dynamic value (RCE). |
+| `file-inclusion` | 🟠 blocking | PHP AST: `include`/`require`(`_once`) of a dynamic path — LFI/RFI (`basename()` down-tier; `__DIR__`/constant-built paths are safe). |
+| `unsafe-deserialization` | 🟠 blocking | PHP AST: `unserialize()` of a dynamic value — object injection / POP chains (`['allowed_classes'=>false]` down-tier). |
 | `db-schema-change` | 🟠 | `ALTER TABLE`, `ADD COLUMN`, `RENAME` |
 | `auth-crypto` | 🟠 | passport, JWT, bcrypt, session handlers |
-| `dangerous-exec` | 🟠 | `eval()`, `exec()`, `os.system()`, `pickle.loads`, Go `exec.Command`, Ruby `system`/`%x{}` — blocks when reachable |
+| `dangerous-exec` | 🟠 | `eval()`, `exec()`, `os.system()`, `pickle.loads`, Go `exec.Command`, Ruby `system`/`%x{}` — blocks when reachable. (Defers to PHP's precise `command-injection`/`code-injection` AST rules on PHP.) |
 | `public-api-change` | 🟠 | exported symbols (JS/TS AST) |
 | `signature-drift` | 🟠 | exported function parameter changes (JS/TS) |
 | `permissive-cors` | 🟠 | JS/TS: `origin: '*'`, bare `cors()`. Python: flask-cors `CORS(...)`/`@cross_origin`, `CORS_ALLOW_ALL_ORIGINS=True`, manual `Access-Control-Allow-Origin: *` |
-| `xss-sink` | 🟠 | JS/TS: `innerHTML`, `document.write`, `insertAdjacentHTML`. Python: `mark_safe`/`Markup`/`render_template_string` of a dynamic value (escaper-aware) |
-| `path-traversal` | 🟠 | JS/TS: `path.join/readFile` with `req.params/query/body`. Python: `open`/`send_file` of request data (`secure_filename`/`safe_join` aware) |
+| `xss-sink` | 🟠 | JS/TS: `innerHTML`, `document.write`, `insertAdjacentHTML`. Python: `mark_safe`/`Markup`/`render_template_string`. PHP: `echo`/`print`/`printf`/`<?=` of request superglobals (escaper-aware). |
+| `path-traversal` | 🟠 | JS/TS: `path.join/readFile` with `req.params/query/body`. Python: `open`/`send_file` of request data. PHP: `fopen`/`readfile`/`file_get_contents`/`unlink`/… of request data, incl. SSRF (`basename`/`realpath` aware). |
 | `nosql-injection` | 🟠 | `$where`, `db.eval`, `Model.find(req.body)` passthrough (JS/TS) |
 | `prototype-pollution` | 🟠 | `Object.assign(existing, req.body)`, `_.merge` with request data (JS/TS) |
 | `deprecated-api` | 🟡 | configured via `deprecated[]`, offers a quick-fix |
-| `sql-injection-candidate` | 🟡 advisory | non-JS injection idioms (Python f-string/`%`/`.format`, PHP `.`-concat, Ruby `#{}`); **never blocks alone** — escalates to blocking 🟠 only when CodeGraph confirms reachability from an untrusted entry point. JS/TS use the precise AST `sql-injection` rule instead. |
+| `sql-injection-candidate` | 🟡 advisory | non-AST injection idioms (Ruby `#{}`, etc.); **never blocks alone** — escalates to blocking 🟠 only when CodeGraph confirms reachability from an untrusted entry point. JS/TS, Python, and PHP use their precise AST `sql-injection` rule instead (this is their fallback only when the grammar can't load). |
 | `raw-query` | 🟡 | `db.query()`, bare SQL keywords; escalates when reachable |
 | `network-call` | 🟡 | `fetch`, `axios`, `requests.*` |
 | `migration-file` | 🟡 | migration file names |

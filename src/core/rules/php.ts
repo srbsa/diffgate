@@ -27,6 +27,12 @@ const SINK_METHODS = new Set([
   "query", "exec", "prepare", "multi_query", "real_query", "unprepared", "statement", "raw",
   "get_results", "get_var", "get_row", "get_col",
 ]);
+// Laravel raw-SQL fragment builders. The method name itself guarantees SQL context, so a *fragment*
+// like `"age > $x"` (no SELECT/WHERE keyword) is still injection — these skip the SQL-keyword gate and
+// flag any dynamic arg0. The safe form is a placeholder with bindings: `whereRaw("age > ?", [$x])`.
+const SINK_FRAGMENT_METHODS = new Set([
+  "whereRaw", "orWhereRaw", "havingRaw", "orHavingRaw", "orderByRaw", "groupByRaw", "selectRaw", "fromRaw",
+]);
 
 // Recognized SQL value sanitizers/escapers; an int/float cast is also a complete defense.
 const SANITIZER_FUNCS = /(?:^|\\)(?:mysqli_real_escape_string|mysql_real_escape_string|pg_escape_string|pg_escape_literal|pg_escape_identifier|addslashes|intval|floatval|quote)$/i;
@@ -44,11 +50,14 @@ const CODE_SINK_ARG1 = new Set(["create_function"]);
 const INCLUDE_TYPES = new Set(["include_expression", "include_once_expression", "require_expression", "require_once_expression"]);
 const FILE_PATH_SANITIZERS = /(?:^|\\)(?:basename)$/i;
 
-// Filesystem sinks for path traversal (read OR write). `file_get_contents`/`fopen` of a URL is also SSRF.
-// `realpath` is deliberately NOT a sink — it resolves/canonicalizes a path (a sanitizer, below).
-const PT_SINK_FUNCS = new Set([
-  "fopen", "file_get_contents", "file_put_contents", "readfile", "file", "fpassthru",
-  "unlink", "copy", "rename", "scandir", "opendir",
+// Filesystem sinks for path traversal (read OR write) → which argument index(es) carry the PATH.
+// `file_put_contents(path, DATA)` — only arg0 is the path (arg1 is content, not a traversal vector);
+// `copy(src, dst)` / `rename(old, new)` take two paths. `file_get_contents`/`fopen` of a URL is also
+// SSRF. `realpath` is deliberately NOT a sink — it canonicalizes a path (a sanitizer, below).
+const PT_SINK_FUNCS = new Map<string, number[]>([
+  ["fopen", [0]], ["file_get_contents", [0]], ["file_put_contents", [0]], ["readfile", [0]],
+  ["file", [0]], ["unlink", [0]], ["scandir", [0]], ["opendir", [0]],
+  ["copy", [0, 1]], ["rename", [0, 1]],
 ]);
 const PT_SANITIZERS = /(?:^|\\)(?:basename|realpath)$/i;
 
@@ -97,6 +106,13 @@ function isSqlSink(call: TsNode): boolean {
   if (!name) return false;
   if (call.type === "function_call_expression") return SINK_FUNCS.has(name.toLowerCase());
   return SINK_METHODS.has(name);
+}
+
+/** A Laravel raw-fragment sink (`->whereRaw(...)`, …) — method-name only, no SQL-keyword gate. */
+function isFragmentSink(call: TsNode): boolean {
+  if (call.type !== "member_call_expression" && call.type !== "nullsafe_member_call_expression" && call.type !== "scoped_call_expression") return false;
+  const name = callName(call);
+  return !!name && SINK_FRAGMENT_METHODS.has(name);
 }
 
 /** The argument expressions of a call (unwrapping `argument` nodes). */
@@ -169,8 +185,19 @@ function isStaticConst(node: TsNode | null, root: TsNode, depth = 0): boolean {
     case "heredoc":
     case "shell_command_expression":
       return !isInterpolating(n);
+    case "name":
+      // A bare name in expression position is a constant reference — a magic constant (`__DIR__`,
+      // `__FILE__`, …) or a user `const`/`define`. Runtime-constant, not attacker input, so a path/
+      // command/query built from it is not dynamic (`include(__DIR__ . "/config.php")` is safe).
+      return true;
     case "binary_expression":
       return n.namedChildren.every((c) => isStaticConst(c, root, depth + 1));
+    case "function_call_expression": {
+      // `dirname(...)` (the pre-`__DIR__` idiom `dirname(__FILE__)`) is static when its args are.
+      const fn = n.childForFieldName("function");
+      if (fn && /(?:^|\\)dirname$/i.test(fn.text)) return callArgs(n).every((a) => isStaticConst(a, root, depth + 1));
+      return false;
+    }
     case "variable_name": {
       const init = declInit(n.text, root);
       return init ? isStaticConst(init, root, depth + 1) : false;
@@ -210,11 +237,22 @@ function dynamicParts(node: TsNode, root: TsNode, depth = 0): TsNode[] {
     }
     return out;
   }
+  if (n.type === "function_call_expression" && isSprintf(n)) {
+    // sprintf("… %s …", $a, $b) — the format args (after arg0) are the injected values.
+    return callArgs(n).slice(1).filter((a) => !isStaticConst(a, root));
+  }
   if (n.type === "variable_name") {
     const init = declInit(n.text, root);
     if (init) return dynamicParts(init, root, depth + 1);
   }
   return [];
+}
+
+/** `sprintf`/`vsprintf` — builds a string from a format + args, the PHP analogue of Python `.format`. */
+function isSprintf(node: TsNode): boolean {
+  if (node.type !== "function_call_expression") return false;
+  const fn = node.childForFieldName("function");
+  return !!fn && /(?:^|\\)v?sprintf$/i.test(fn.text);
 }
 
 function isSqlDynamic(node: TsNode, root: TsNode, depth = 0): boolean {
@@ -230,6 +268,10 @@ function isSqlDynamic(node: TsNode, root: TsNode, depth = 0): boolean {
   if (n.type === "string") return false; // single-quoted: literal, never interpolates
   if (n.type === "encapsed_string" || n.type === "heredoc") return isInterpolating(n) && dynamicParts(n, root).length > 0;
   if (n.type === "binary_expression") return dynamicParts(n, root).length > 0;
+  if (n.type === "function_call_expression" && isSprintf(n)) {
+    const args = callArgs(n);
+    return args.length > 0 && looksLikeSql(args[0]) && args.slice(1).some((a) => !isStaticConst(a, root));
+  }
   if (n.type === "variable_name") {
     const init = declInit(n.text, root);
     return init ? isSqlDynamic(init, root, depth + 1) : false;
@@ -315,6 +357,30 @@ function requestSanitized(node: TsNode, root: TsNode, re: RegExp, depth = 0): bo
     if (t && SAFE_CASTS.has(`(${t.text})`)) { sawSanitizer = true; remaining = remaining.split(cast.text).join(" "); }
   }
   return sawSanitizer && !REQUEST_SOURCE.test(remaining);
+}
+
+/** The named sibling immediately before `node` (TsNode exposes no `previousSibling`), matched by
+ *  start position. Used to detect a PHP short-echo `<?= … ?>`, whose value parses as a bare
+ *  `expression_statement` preceded by a `<?=` tag. */
+function prevNamedSibling(node: TsNode): TsNode | null {
+  const p = node.parent;
+  if (!p) return null;
+  const kids = p.namedChildren;
+  for (let i = 0; i < kids.length; i++) {
+    if (kids[i].startPosition.row === node.startPosition.row && kids[i].startPosition.column === node.startPosition.column) {
+      return i > 0 ? kids[i - 1] : null;
+    }
+  }
+  return null;
+}
+
+/** A bare `expression_statement` that is the body of a PHP short-echo `<?= … ?>` (its preceding tag
+ *  text contains `<?=`). The expression is echoed to the HTML response, so it's an XSS output sink. */
+function shortEchoValue(node: TsNode): TsNode | null {
+  if (node.type !== "expression_statement") return null;
+  const prev = prevNamedSibling(node);
+  if (!prev || !prev.text.includes("<?=")) return null;
+  return node.namedChild(0);
 }
 
 function mkLoc(node: TsNode) {
@@ -423,9 +489,16 @@ export const PHP_RULES: TsAstRule[] = [
     languages: ["php"],
     message: SQL_MESSAGE,
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
-      if (!isCall(node) || !isSqlSink(node)) return;
+      if (!isCall(node)) return;
       const root = ctx.tsTree!.rootNode;
-      const dynamicArg = callArgs(node).find((a) => isSqlDynamic(a, root));
+      let dynamicArg: TsNode | undefined;
+      if (isFragmentSink(node)) {
+        // raw fragment: any dynamic arg0 is injection (a `?` placeholder string is static → safe).
+        const a0 = callArgs(node)[0];
+        if (a0 && isDynamicValue(a0, root)) dynamicArg = a0;
+      } else if (isSqlSink(node)) {
+        dynamicArg = callArgs(node).find((a) => isSqlDynamic(a, root));
+      }
       if (!dynamicArg) return;
       let src = dynamicArg;
       if (unwrap(src).type === "variable_name") src = declInit(unwrap(src).text, root) || src;
@@ -568,6 +641,9 @@ export const PHP_RULES: TsAstRule[] = [
         if (name && XSS_SINK_FUNCS.has(name.toLowerCase())) {
           value = callArgs(node).find((a) => taintedByRequest(a, root));
         }
+      } else if (node.type === "expression_statement") {
+        const v = shortEchoValue(node); // `<?= $_GET['x'] ?>`
+        if (v && taintedByRequest(v, root)) value = v;
       }
       if (!value) return;
       const sanitized = requestSanitized(value, root, XSS_SANITIZERS);
@@ -586,9 +662,11 @@ export const PHP_RULES: TsAstRule[] = [
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "function_call_expression") return;
       const name = callName(node);
-      if (!name || !PT_SINK_FUNCS.has(name.toLowerCase())) return;
+      const pathIdxs = name ? PT_SINK_FUNCS.get(name.toLowerCase()) : undefined;
+      if (!pathIdxs) return;
       const root = ctx.tsTree!.rootNode;
-      const tainted = callArgs(node).find((a) => taintedByRequest(a, root));
+      const args = callArgs(node);
+      const tainted = pathIdxs.map((i) => args[i]).find((a) => a && taintedByRequest(a, root));
       if (!tainted) return;
       const sanitized = requestSanitized(tainted, root, PT_SANITIZERS);
       emitFinding(node, ctx, emit, { sanitized, message: PT_MESSAGE, sanitizedNote: PT_SANITIZED });

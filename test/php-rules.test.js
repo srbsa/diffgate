@@ -244,3 +244,47 @@ precise("php: a static path, or a non-request variable path, is NOT flagged", ()
   assert.equal(pt(`function g(){ fopen("/etc/app.conf", "r"); }`), null);
   assert.equal(pt(`function g($p){ file_get_contents($p); }`), null);
 });
+
+// --- 11. bug-bash regressions --------------------------------------------------------------------
+precise("php: include(__DIR__ . '/static.php') is NOT a false block (magic constant is static)", () => {
+  assert.equal(lfi(`include(__DIR__ . "/config.php");`), null);
+  assert.equal(lfi(`require(APP_ROOT . "/bootstrap.php");`), null, "user-defined constant is static");
+  assert.equal(lfi(`include(dirname(__FILE__) . "/x.php");`), null, "dirname(__FILE__) idiom is static");
+  const f = lfi(`function g($p){ include(__DIR__ . "/" . $p); }`);
+  assert.ok(f && f.blocking, "but a dynamic part alongside __DIR__ still blocks");
+});
+precise("php: file_put_contents(STATIC_PATH, $request) does NOT flag path-traversal (data arg, not path)", () => {
+  assert.equal(pt(`function g(){ file_put_contents("/var/log/app.log", $_POST['msg']); }`), null);
+  assert.ok(pt(`function g(){ file_put_contents($_GET['f'], "data"); }`), "but a request PATH arg0 is flagged");
+  assert.ok(pt(`function g($src){ copy($src, $_GET['dst']); }`), "copy's 2nd arg is also a path");
+});
+precise("php: short-echo `<?= $_GET[...] ?>` is flagged as XSS", () => {
+  const f = findings(`<?php ?><?= $_GET['x'] ?>`, "xss-sink");
+  assert.ok(f.length && !f[0].blocking, "short-echo of request data is an advisory XSS finding");
+  const safe = findings(`<?php ?><?= htmlspecialchars($_GET['x']) ?>`, "xss-sink");
+  assert.ok(safe.length && safe[0].tierAdjusted === "deescalated", "escaped short-echo down-tiers");
+});
+precise("php: sprintf-built SQL into a sink is flagged (parity with Python .format)", () => {
+  const f = sqli(`function g($c,$id){ $c->query(sprintf("SELECT * FROM t WHERE id=%s", $id)); }`);
+  assert.ok(f && f.blocking);
+  assert.ok(sqli(`function g($c,$id){ $c->query(sprintf("SELECT * FROM t WHERE id=%d", (int)$id)); }`)?.tierAdjusted === "deescalated", "(int) on the arg down-tiers");
+});
+precise("php: Laravel raw-fragment sinks (whereRaw/orderByRaw/...) flag dynamic, not parameterized", () => {
+  assert.ok(sqli(`function g($q,$id){ $q->whereRaw("age > $id"); }`)?.blocking, "interpolated fragment blocks");
+  assert.ok(sqli(`function g($q,$id){ $q->orderByRaw("col $id"); }`)?.blocking);
+  assert.equal(sqli(`function g($q,$id){ $q->whereRaw("age > ?", [$id]); }`), null, "placeholder + bindings is safe");
+  assert.equal(sqli(`function g($q){ $q->whereRaw('age > 18'); }`), null, "static fragment is safe");
+  assert.equal(sqli(`function g($q,$c){ $q->where('active', $c); }`), null, "a normal where() is not a raw sink");
+});
+precise("php: a nowdoc (<<<'EOT') does NOT interpolate — not flagged", () => {
+  assert.equal(sqli(`function g($c){ $q = <<<'EOT'\nSELECT * FROM t WHERE id = $id\nEOT;\n$c->query($q); }`), null);
+});
+precise("php: commented-out dangerous code is NOT flagged (AST sees a comment, not a call)", () => {
+  assert.equal(cmd(`function g($f){ // exec("rm $f");\n return 1; }`), null);
+  assert.equal(deser(`function g(){ # unserialize($_POST['d']);\n return 1; }`), null);
+  assert.equal(sqli(`function g($c,$id){ /* $c->query("SELECT $id"); */ return 1; }`), null);
+});
+precise("php: namespaced \\unserialize / \\exec are still recognized", () => {
+  assert.ok(deser(`\\unserialize($_POST['d']);`)?.blocking);
+  assert.ok(cmd(`function g($f){ \\exec("ls $f"); }`)?.blocking);
+});
