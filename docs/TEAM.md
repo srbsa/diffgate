@@ -59,6 +59,8 @@ diffgate feedback <ruleId> <file> <line> --dismiss   # suppress this pattern org
 git add .diffgate/learnings.json && git commit -m "chore: suppress <ruleId> false positive"
 ```
 
+Or from the VS Code extension without leaving the editor: `⌘.` / `Ctrl+.` on the flagged line → **Dismiss as noise** (also on the hover card, and as a one-click button after a Deep Review returns "likely safe"). It writes the same `.diffgate/learnings.json`; CLI and editor dismissals reflect in each other live.
+
 Committed `learnings.json` is automatically applied by every developer and in CI. `diffgate install-hook` sets up a **git merge driver** that auto-resolves parallel dismissals from different branches (no merge conflicts on the file). To merge verdicts from a shared policy repo:
 
 ```jsonc

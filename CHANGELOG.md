@@ -7,9 +7,23 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.6.0] — Unreleased
+## [0.6.1] — 2026-06-28
 
-_Working version for branch `feat/language-expansion-reachability` (last released: 0.5.2). Bundles community-edition reachability, real tree-sitter AST precision for Python and PHP, and the PHP AST expansion to seven sink classes — to be cut as a single release._
+_Patch on 0.6.0: false-positive dismissal from the VS Code extension (editor parity with the CLI `feedback` command), plus the read-consistency fix and bug-bash hardening below._
+
+### Added
+
+- **Dismiss / confirm findings from the VS Code extension** ([extension/src/extension.ts](extension/src/extension.ts)) — the editor half of `diffgate feedback`. A false positive can now be suppressed without leaving the editor: **⌘. / Ctrl+. → "Dismiss as noise"**, a **"Dismiss as noise"** link on the hover card, or a **one-click button in the Deep Review inspector** after the agent returns a "likely safe" verdict. **"Confirm as a real risk"** records the opposite verdict (feeding the `diffgate stats` signal-vs-noise ratio). All write the same committed `.diffgate/learnings.json` keyed by a hash of the flagged snippet — so the dismissal is team-shared via git and applies in CI, with **no inline `// disable` comments** polluting source. An optional note can annotate why (skippable). CLI and editor dismissals reflect in each other live via a `.diffgate/learnings.json` file watcher.
+
+  - **Bug fix it closes:** the live-editor analysis path silently ignored `.diffgate/learnings.json` — only the git-diff sidebar path (`reviewChanges`) applied it. A finding dismissed via the CLI therefore vanished from the sidebar but **reappeared in the editor gutter** the moment the file was opened or edited. `analyzeText` now applies the verdicts the same way.
+  - Verdicts are cached per folder (analysis runs on every keystroke) and invalidated on a recorded verdict, an external `learnings.json` change, or a config change that could alter `learnings.shared` — so a dismissal takes effect immediately without re-reading disk on every edit.
+  - An empty flagged snippet is refused (it would hash to a constant and suppress every empty-line finding of that rule), mirroring the CLI guard.
+
+---
+
+## [0.6.0] — 2026-06-28
+
+_Bundles community-edition reachability, real tree-sitter AST precision for Python and PHP, and the PHP AST expansion to seven sink classes (last released: 0.5.2)._
 
 ### Added
 

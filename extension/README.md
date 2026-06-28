@@ -16,6 +16,7 @@ Diff-aware, three-tiered code review **inline in your editor**. DiffGate looks a
 - **Hover cards**: why it's risky, who owns the baseline line (git blame), and quick links to AI explain or Deep Review.
 - **Deep Review**: for orange findings, an agentic loop uses real repo tools (grep, read_file, git_blame, find_references) to investigate blast radius and shows a verdict badge directly in the hover card.
 - **Quick-fixes**: replace a deprecated call with its successor (⌘. / Ctrl+.).
+- **Dismiss false positives** (⌘. / Ctrl+. → "Dismiss as noise", or the hover link): suppresses that exact flagged pattern in a committed `.diffgate/learnings.json`, so it's gone for every teammate and in CI — no inline `// disable` comments. Mark a finding "Confirm as a real risk" to feed `diffgate stats` signal-vs-noise. CLI dismissals reflect live in the editor.
 - **Risk Review** tree: every pending change across the workspace, grouped by file and tier.
 - **Status bar** risk summary for the active file.
 - **Verification gate**: run your project's `testCommand` for high-impact changes.

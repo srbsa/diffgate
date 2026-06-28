@@ -2,7 +2,7 @@
   "name": "diffgate-review",
   "displayName": "DiffGate",
   "description": "Diff-aware, three-tiered code review gate inline in your editor.",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "publisher": "srbsa",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -69,6 +69,14 @@
       {
         "command": "diffgate.deepReview",
         "title": "DiffGate: Deep Review Finding (Agentic)"
+      },
+      {
+        "command": "diffgate.dismissFinding",
+        "title": "DiffGate: Dismiss Finding as Noise"
+      },
+      {
+        "command": "diffgate.confirmFinding",
+        "title": "DiffGate: Confirm Finding as Real Risk"
       }
     ],
     "viewsContainers": {
@@ -121,6 +129,14 @@
         },
         {
           "command": "diffgate.ignoreRule",
+          "when": "false"
+        },
+        {
+          "command": "diffgate.dismissFinding",
+          "when": "false"
+        },
+        {
+          "command": "diffgate.confirmFinding",
           "when": "false"
         }
       ]

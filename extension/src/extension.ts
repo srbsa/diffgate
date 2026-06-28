@@ -4,6 +4,9 @@ import path from "path";
 
 import {
   analyze,
+  applyLearnings,
+  loadMergedLearnings,
+  recordLearning,
   loadConfig,
   loadDotenv,
   isIgnored,
@@ -45,6 +48,10 @@ const findingsByUri = new Map<string, { res: AnalyzeResult; folder: string; conf
 const gitFindingsByUri = new Map<string, AnalyzeResult>();
 let decorationProvider: DiffGateFileDecorationProvider;
 const configCache = new Map<string, Config>();
+// Merged dismiss/confirm verdicts per folder. analyzeText runs on every debounced keystroke, so we
+// must not re-read learnings.json from disk each time — cache it and invalidate on the few events that
+// change it (a recorded verdict, the learnings watcher, a config change that could alter shared paths).
+const learningsCache = new Map<string, ReturnType<typeof loadMergedLearnings>>();
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 export const verdictCache = new Map<string, {
   verdict: string;
@@ -149,6 +156,15 @@ function getConfigFor(folder: string): Config {
   return merged;
 }
 
+function getLearningsFor(folder: string, config: Config): ReturnType<typeof loadMergedLearnings> {
+  let l = learningsCache.get(folder);
+  if (!l) {
+    l = loadMergedLearnings(folder, config.learnings?.shared || [], folder);
+    learningsCache.set(folder, l);
+  }
+  return l;
+}
+
 function severityFor(f: Finding): vscode.DiagnosticSeverity {
   if (f.blocking) return vscode.DiagnosticSeverity.Error;
   switch (f.tier) {
@@ -207,7 +223,11 @@ function analyzeText(filePath: string, content: string, folder: string, config: 
     previousContent = getPreviousContent(folder, filePath, { mode: diffMode });
     if (previousContent != null) changedLines = computeChangedLines(previousContent, content);
   }
-  return analyze({ filePath, content, previousContent, changedLines, config });
+  const res = analyze({ filePath, content, previousContent, changedLines, config });
+  // Apply the team's dismiss/confirm verdicts (.diffgate/learnings.json) the same way reviewChanges
+  // already does for the git-diff path. Without this, a finding dismissed via the CLI (or the editor)
+  // reappears the moment the file is opened or edited — the live-editor path silently ignored them.
+  return applyLearnings(res, getLearningsFor(folder, config));
 }
 
 // --- per-document analysis ---------------------------------------------------
@@ -240,6 +260,7 @@ function clearAll(): void {
   findingsByUri.clear();
   gitFindingsByUri.clear();
   verdictCache.clear();
+  learningsCache.clear();
   updateTreeData();
   updateStatusBar();
   if (decorationProvider) decorationProvider.fire();
@@ -425,6 +446,7 @@ const hoverProvider: vscode.HoverProvider = {
       const args = encodeURIComponent(JSON.stringify([document.uri.toString(), f.ruleId, f.line]));
       const links = [`[$(sparkle) Explain with AI](command:diffgate.explainWithAI?${args})`];
       if (f.tier === "orange") links.push(`[$(beaker) Deep Review](command:diffgate.deepReview?${args})`);
+      links.push(`[$(mute) Dismiss as noise](command:diffgate.dismissFinding?${args})`);
       if (f.fix) links.push("Quick fix available (`⌘.` / `Ctrl+.`)");
       md.appendMarkdown(links.join("  ·  ") + "\n\n---\n");
     }
@@ -461,6 +483,14 @@ const codeActionProvider: vscode.CodeActionProvider = {
         deep.command = { command: "diffgate.deepReview", title: "Deep Review", arguments: [document.uri.toString(), f.ruleId, f.line] };
         actions.push(deep);
       }
+
+      const dismiss = new vscode.CodeAction(`DiffGate: Dismiss "${f.title}" as noise (this exact pattern)`, vscode.CodeActionKind.QuickFix);
+      dismiss.command = { command: "diffgate.dismissFinding", title: "Dismiss as noise", arguments: [document.uri.toString(), f.ruleId, f.line] };
+      actions.push(dismiss);
+
+      const confirm = new vscode.CodeAction(`DiffGate: Confirm "${f.title}" as a real risk`, vscode.CodeActionKind.QuickFix);
+      confirm.command = { command: "diffgate.confirmFinding", title: "Confirm as real risk", arguments: [document.uri.toString(), f.ruleId, f.line] };
+      actions.push(confirm);
 
       const ignore = new vscode.CodeAction(`DiffGate: Disable rule "${f.ruleId}" for this project`, vscode.CodeActionKind.QuickFix);
       ignore.command = { command: "diffgate.ignoreRule", title: "Disable rule", arguments: [entry.folder, f.ruleId] };
@@ -851,6 +881,7 @@ async function cmdDeepReview(uriStr: string, ruleId: string, line: number): Prom
             ruleId: f.ruleId,
             file: path.basename(uriStr),
             line,
+            uri: uriStr,
             status: "success",
             steps,
             verdict: res.verdict,
@@ -914,6 +945,57 @@ function cmdIgnoreRule(folder: string, ruleId: string): void {
   vscode.window.showInformationMessage(`DiffGate: rule "${ruleId}" disabled in .diffgate.json.`);
   reanalyzeOpen();
   refreshWorkspace();
+}
+
+// Record a reviewer verdict to .diffgate/learnings.json — the editor half of `diffgate feedback`.
+// dismiss = false positive (the exact flagged pattern stops being reported); confirm = a real risk
+// (no suppression, but it feeds the signal-vs-noise ratio in `diffgate stats`). The store is keyed by
+// a hash of the flagged code so it matches the same pattern across files and renames, and is committed
+// so it applies to every teammate and in CI. We hash f.code (not the raw source line) so the recorded
+// hash matches what applyLearnings/isDismissed re-hash — that's what makes the finding vanish on the
+// next analysis instead of silently never matching.
+async function cmdRecordVerdict(uriStr: string, ruleId: string, line: number, verdict: "dismiss" | "confirm"): Promise<void> {
+  if (!uriStr || !ruleId) return;
+  const entry = findingsByUri.get(uriStr);
+  if (!entry) return;
+  const f = entry.res.findings.find((x) => x.ruleId === ruleId && x.line === line);
+  if (!f) return;
+  // An empty flagged snippet would hash to a constant, so a dismissal would suppress *every* empty-code
+  // finding of this rule. Refuse it (mirrors the CLI's `diffgate feedback` guard).
+  if (!f.code || !f.code.trim()) {
+    vscode.window.showWarningMessage(`DiffGate: can't record a verdict for "${f.title}" — the flagged snippet is empty.`);
+    return;
+  }
+
+  const note = await vscode.window.showInputBox({
+    prompt: verdict === "dismiss"
+      ? `Dismiss "${f.title}" (${ruleId}) as noise — optional note on why it's safe`
+      : `Confirm "${f.title}" (${ruleId}) as a real risk — optional note`,
+    placeHolder: "Press Enter to record · type a note first to annotate · Esc to cancel",
+  });
+  if (note === undefined) return; // Escape — cancel the whole action
+
+  let abs = uriStr;
+  try { abs = vscode.Uri.parse(uriStr).fsPath; } catch { /* keep uriStr */ }
+  try {
+    recordLearning(entry.folder, { ruleId, code: f.code, verdict, file: path.relative(entry.folder, abs), note: note || undefined });
+  } catch (e) {
+    vscode.window.showErrorMessage(`DiffGate: could not record verdict — ${(e as Error).message}`);
+    return;
+  }
+
+  // Reflect immediately on every surface: invalidate the learnings cache FIRST (otherwise re-analysis
+  // reuses the stale, pre-dismissal store), then analyzeText drops the dismissed finding and the
+  // git-diff path refreshes via reviewChanges (which loads learnings fresh from disk).
+  learningsCache.delete(entry.folder);
+  reanalyzeOpen();
+  refreshWorkspace();
+
+  if (verdict === "dismiss") {
+    vscode.window.showInformationMessage(`DiffGate: dismissed "${f.title}" — this pattern won't be reported again. Commit .diffgate/learnings.json to share it.`);
+  } else {
+    vscode.window.showInformationMessage(`DiffGate: confirmed "${f.title}" as a real risk (recorded for signal metrics).`);
+  }
 }
 
 async function cmdOpenConfig(): Promise<void> {
@@ -1071,6 +1153,8 @@ class DiffGateInspectorProvider implements vscode.WebviewViewProvider {
           webviewView.webview.postMessage(this._pendingMessage);
           this._pendingMessage = undefined;
         }
+      } else if (msg.type === "dismiss" && msg.uri && msg.ruleId) {
+        vscode.commands.executeCommand("diffgate.dismissFinding", msg.uri, msg.ruleId, msg.line);
       }
     });
   }
@@ -1089,6 +1173,7 @@ class DiffGateInspectorProvider implements vscode.WebviewViewProvider {
     ruleId: string;
     file: string;
     line: number;
+    uri?: string;
     status: "idle" | "running" | "success" | "error";
     steps?: { name: string; detail: string; status: "running" | "success" | "error" }[];
     verdict?: string;
@@ -1240,6 +1325,20 @@ class DiffGateInspectorProvider implements vscode.WebviewViewProvider {
       background-color: var(--vscode-editorWarning-foreground, #e67e22);
       color: #ffffff;
     }
+    #dismiss-btn {
+      display: none;
+      margin-top: 12px;
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #ffffff);
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9em;
+    }
+    #dismiss-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #45494e);
+    }
     @keyframes spin {
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
@@ -1267,6 +1366,7 @@ class DiffGateInspectorProvider implements vscode.WebviewViewProvider {
       <div id="verdict-title" class="section-title">Verdict</div>
       <div id="verdict-box" class="verdict-box"></div>
       <div id="verdict-footer" class="finding-meta" style="margin-top: 8px;"></div>
+      <button id="dismiss-btn">🔇 Dismiss as noise</button>
     </div>
   </div>
 
@@ -1284,9 +1384,21 @@ class DiffGateInspectorProvider implements vscode.WebviewViewProvider {
     const verdictTitle = document.getElementById("verdict-title");
     const verdictBox = document.getElementById("verdict-box");
     const verdictFooter = document.getElementById("verdict-footer");
+    const dismissBtn = document.getElementById("dismiss-btn");
+
+    let currentData = null;
+    dismissBtn.addEventListener("click", () => {
+      if (!currentData) return;
+      // The extension handles confirmation (optional-note prompt) and shows a notification on success;
+      // a VS Code notification is the source of truth, so we don't fake a "dismissed" state here (the
+      // user can still cancel at the note prompt).
+      vscode.postMessage({ type: "dismiss", uri: currentData.uri, ruleId: currentData.ruleId, line: currentData.line });
+    });
 
     window.addEventListener("message", event => {
       const data = event.data;
+      currentData = data;
+      dismissBtn.style.display = "none";
       welcomeView.style.display = "none";
       inspectorView.style.display = "block";
 
@@ -1394,6 +1506,8 @@ class DiffGateInspectorProvider implements vscode.WebviewViewProvider {
             findingBadge.className = "badge safe";
             findingBadge.innerHTML = "🟢 Likely Safe";
             verdictBox.className = "verdict-box success";
+            // The agent judged this safe — offer one-click dismissal so the finding stops recurring.
+            if (data.uri) dismissBtn.style.display = "inline-block";
           } else {
             findingBadge.className = "badge review";
             findingBadge.innerHTML = "🟡 Needs Review";
@@ -1482,6 +1596,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("diffgate.explainWithAI", cmdExplainWithAI),
     vscode.commands.registerCommand("diffgate.deepReview", cmdDeepReview),
     vscode.commands.registerCommand("diffgate.ignoreRule", cmdIgnoreRule),
+    vscode.commands.registerCommand("diffgate.dismissFinding", (u: string, r: string, l: number) => cmdRecordVerdict(u, r, l, "dismiss")),
+    vscode.commands.registerCommand("diffgate.confirmFinding", (u: string, r: string, l: number) => cmdRecordVerdict(u, r, l, "confirm")),
     vscode.commands.registerCommand("diffgate.openConfig", cmdOpenConfig),
     vscode.commands.registerCommand("diffgate.toggleScanMode", cmdToggleScanMode),
     vscode.commands.registerCommand("diffgate.runGate", cmdRunGate)
@@ -1579,6 +1695,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration("diffgate")) return;
       configCache.clear();
+      learningsCache.clear(); // config may change learnings.shared
       // Toggling diffgate.enable off must immediately clear every published finding, not just stop
       // future analysis (refreshWorkspace/analyzeDocument already short-circuit when disabled).
       if (!settings().get("enable", true)) { clearAll(); return; }
@@ -1592,12 +1709,22 @@ export function activate(context: vscode.ExtensionContext): void {
   const cfgWatcher = vscode.workspace.createFileSystemWatcher("**/.diffgate.json");
   const onCfg = (uri: vscode.Uri) => {
     if (isIgnored(uri.fsPath, getConfigFor(folderForUri(uri)), folderForUri(uri))) return;
-    configCache.clear(); reanalyzeOpen(); refreshWorkspace();
+    configCache.clear(); learningsCache.clear(); reanalyzeOpen(); refreshWorkspace();
   };
   cfgWatcher.onDidChange(onCfg);
   cfgWatcher.onDidCreate(onCfg);
   cfgWatcher.onDidDelete(onCfg);
   context.subscriptions.push(cfgWatcher);
+
+  // Watch the shared verdict store so a dismissal made via the CLI — or pulled in from a teammate via
+  // git — reflects live in the editor without a reload. (Our own writes also fire this; the resulting
+  // extra re-analysis is idempotent.)
+  const learnWatcher = vscode.workspace.createFileSystemWatcher("**/.diffgate/learnings.json");
+  const onLearn = () => { learningsCache.clear(); reanalyzeOpen(); refreshWorkspace(); };
+  learnWatcher.onDidChange(onLearn);
+  learnWatcher.onDidCreate(onLearn);
+  learnWatcher.onDidDelete(onLearn);
+  context.subscriptions.push(learnWatcher);
 
   // Watch each discovered repo's .git for state changes that alter the diff (commit, stash, reset,
   // checkout). VS Code's file watcher excludes .git, so we use Node's fs.watch directly.

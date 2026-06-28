@@ -25,6 +25,8 @@ const captured = {
   diags: new Map(),
   wsFolders: [],
   channels: {},
+  inputPrompts: [],
+  nextInput: "",
 };
 
 class Position {
@@ -107,6 +109,8 @@ const vscode = {
     showInformationMessage: (m) => { captured.messages.info.push(m); return Promise.resolve(); },
     showErrorMessage: (m) => { captured.messages.error.push(m); return Promise.resolve(); },
     showTextDocument: (d) => { captured.shownDocs.push(d); return Promise.resolve(); },
+    // Returns whatever the test sets in captured.nextInput (string = note, "" = skip, undefined = cancel).
+    showInputBox: (_o) => { captured.inputPrompts.push(_o); return Promise.resolve(captured.nextInput); },
     withProgress: (_o, task) => task(),
     onDidChangeActiveTextEditor: (fn) => { captured.activeEditor.push(fn); return { dispose() {} }; },
     onDidChangeVisibleTextEditors: (fn) => { captured.visibleEditors.push(fn); return { dispose() {} }; },
@@ -244,6 +248,7 @@ Promise.resolve().then(async () => {
   runGitPruneScenario();
   runMultiRepoScenario();
   runEnableDisableScenario();
+  await runDismissScenario();
 
   fs.rmSync(tmp, { recursive: true, force: true });
   // Dispose everything activate() registered — closes the .git fs.watch handles that would
@@ -411,6 +416,71 @@ function runEnableDisableScenario() {
 
   settingsValues.enable = true;
   fs.rmSync(repo, { recursive: true, force: true });
+}
+
+// --- dismiss / confirm: recording a verdict writes .diffgate/learnings.json and suppresses the finding
+// Covers the editor half of `diffgate feedback`: dismiss removes the exact pattern on re-analysis,
+// the note prompt is cancellable (Esc records nothing), confirm flips the verdict, and a no-arg
+// Command-Palette invocation is a safe no-op.
+async function runDismissScenario() {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "grg-ext-dismiss-")));
+  const dcontent = `const apiKey = "sk_live_abcdef0123456789abcd";\n`;
+  const dfile = path.join(folder, "pay.js");
+  fs.writeFileSync(dfile, dcontent);
+  const dlines = dcontent.split("\n");
+  const ddoc = {
+    uri: vscode.Uri.file(dfile), languageId: "javascript", lineCount: dlines.length,
+    getText: () => dcontent, lineAt: (n) => ({ range: new Range(n, 0, n, (dlines[n] || "").length) }),
+    isDirty: false, version: 1,
+  };
+  vscode.workspace.workspaceFolders = [{ uri: vscode.Uri.file(folder) }];
+  captured.folder = folder;
+
+  assert.ok(captured.commands.has("diffgate.dismissFinding"), "dismissFinding command registered");
+  assert.ok(captured.commands.has("diffgate.confirmFinding"), "confirmFinding command registered");
+
+  // Open -> the secret is flagged.
+  const dUri = ddoc.uri.toString();
+  const storePath = path.join(folder, ".diffgate", "learnings.json");
+  captured.open[0](ddoc);
+  let d = captured.diags.get(dUri);
+  assert.ok(d && d.some((x) => x.code === "hardcoded-secret"), "secret should be flagged before any verdict");
+
+  // Cancelling the note prompt (Esc -> undefined) records nothing — no store file is created.
+  captured.nextInput = undefined;
+  await captured.commands.get("diffgate.dismissFinding")(dUri, "hardcoded-secret", 1);
+  assert.ok(!fs.existsSync(storePath), "cancelling the note prompt records nothing");
+
+  // Confirm: records a verdict but does NOT suppress (it feeds the signal ratio, not the gate).
+  captured.nextInput = "";
+  await captured.commands.get("diffgate.confirmFinding")(dUri, "hardcoded-secret", 1);
+  let store = JSON.parse(fs.readFileSync(storePath, "utf-8"));
+  assert.ok(store.entries.some((e) => e.ruleId === "hardcoded-secret" && e.verdict === "confirm"),
+    "a confirm verdict is recorded");
+  captured.open[0](ddoc);
+  d = captured.diags.get(dUri);
+  assert.ok(d && d.some((x) => x.code === "hardcoded-secret"), "a confirmed finding is still reported");
+
+  // Dismiss: flips the verdict for the same pattern (latest per ruleId+codeHash wins) and suppresses it.
+  captured.nextInput = "";
+  await captured.commands.get("diffgate.dismissFinding")(dUri, "hardcoded-secret", 1);
+  store = JSON.parse(fs.readFileSync(storePath, "utf-8"));
+  assert.ok(store.entries.some((e) => e.ruleId === "hardcoded-secret" && e.verdict === "dismiss"),
+    "dismiss replaces the confirm verdict");
+
+  // Re-analyze -> the dismissed pattern is gone (the learnings cache was invalidated on record).
+  captured.open[0](ddoc);
+  d = captured.diags.get(dUri);
+  assert.ok(!d || !d.some((x) => x.code === "hardcoded-secret"),
+    "the dismissed finding is suppressed on the next analysis");
+
+  // No-arg invocation (stray Command-Palette use) is a safe no-op.
+  captured.nextInput = "";
+  await assert.doesNotReject(async () => captured.commands.get("diffgate.dismissFinding")(),
+    "dismissFinding with no args must not throw");
+
+  captured.nextInput = "";
+  fs.rmSync(folder, { recursive: true, force: true });
 }
 
 // --- multi-repo: a workspace folder containing several nested git repos analyzes ALL of them ------
