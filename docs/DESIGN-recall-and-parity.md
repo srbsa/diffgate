@@ -13,8 +13,8 @@ DiffGate's strategic identity is **the deterministic gate, not the scanner** (se
 | Language | Today |
 |---|---|
 | JS / TS | Full footgun set (SQLi, XSS, path-traversal, proto-pollution, CORS, NoSQL, public-API, signature-drift) via `@babel` AST. |
-| Python | AST-precise **SQLi** + **XSS** (XSS added 2026-06-27 as the parity proof) + the cross-language regex floor. |
-| PHP | AST-precise **SQLi** + the floor. |
+| Python | AST-precise **SQLi**, **XSS**, **path-traversal**, **permissive-CORS** (4 of the JS/TS footgun classes) + the cross-language regex floor. |
+| PHP | AST-precise across **7 sink classes** (SQLi, command-injection, code-injection, file-inclusion, unsafe-deserialization, XSS, path-traversal) + the floor. |
 | Go / Java / Ruby / … | Regex floor only (secrets, exec, schema, raw-query, network) + cross-language injection advisories that escalate via the code graph. |
 
 The competitive reality (June 2026): **Semgrep Guardian** owns "deterministic security in the agent via MCP" with 5,000+ rules across 30+ languages, official Cursor + Claude Code partnerships, 3M scans/week. **We cannot win on rule breadth.** Hand-rolling one vuln × one language at a time is a race we lose at scale.
@@ -31,14 +31,14 @@ The tree-sitter infrastructure is already in place (`src/core/parsers/treesitter
 |---|---|:--:|:--:|---|
 | sql-injection | ✅ done | — | high | |
 | xss-sink | ✅ done | — | med–high | `mark_safe`/`Markup`/`render_template_string`, escaper-aware |
-| **path-traversal** | `open`/`os.path.join`/`send_file`/`pathlib` from request data | **M–H** | **high** | Needs a request-source notion (`request.args/GET/json`, view params) **and** guard-awareness (`startswith`, `realpath`+check, `werkzeug.safe_join`). Doing it guard-aware *beats* the JS rule, which over-fires on guarded code (see MEASUREMENT.md). |
-| **permissive-cors** | `flask_cors.CORS(origins="*")`, `CORS_ALLOW_ALL_ORIGINS=True`, manual `Access-Control-Allow-Origin: *` | **L** | **med–high** | Unsafe forms are unambiguous → precise (not coarse) rule. Cheap, on-brand. |
+| path-traversal | ✅ done | — | high | `open`/`send_file` from request data, `secure_filename`/`safe_join`/`basename` wrappers down-tier; a mix of sanitized + raw stays orange. |
+| permissive-cors | ✅ done | — | med–high | flask-cors `CORS(app)`/`origins='*'`, django `CORS_ALLOW_ALL_ORIGINS = True`, manual `Access-Control-Allow-Origin: *`; explicit allowlist not flagged. |
 | nosql-injection | pymongo `collection.find(request.json)`, `$where` | L–M | low | Models avoid it; less common in Python than Node/Mongo. |
 | prototype-pollution | n/a (no prototype chain) | — | — | Python analog = **mass-assignment** (`setattr(obj, user_key, …)`, `obj.__dict__.update(request.json)`) — a *different* rule, optional. |
 | public-api-change / signature-drift | changed signature of a public (no leading `_`, or in `__all__`) def/class | M | med | Requires prev-vs-current tree-sitter AST diff (today `detectSignatureDrift` is babel-only). This is **blast-radius, not security** → aligns with the gate identity. |
 | deprecated-api | already cross-language via regex | ✅ | — | Effectively at parity already. |
 
-**Net to "parity":** ~2 high-value rules (path-traversal, permissive-cors) + 2 optional (nosql, signature-drift) + 1 different-vuln (mass-assignment). Roughly **3–5 focused days**. Bounded — but it's the start of the per-language treadmill if repeated for Ruby/Go/Java/C#/…
+**Status (0.6.0):** the four security classes that apply to Python — sql-injection, xss-sink, path-traversal, permissive-cors — are **done**. What remains to call it full JS/TS parity: `signature-drift`/`public-api` (the only item with merit — blast-radius, not security; needs a tree-sitter prev-vs-current diff since `detectSignatureDrift` is babel-only) and two low/different-value optionals (nosql-injection, mass-assignment). Closing the rest would start the per-language treadmill (Ruby/Go/Java/C#/…), which is why §3 (borrow recall) is the breadth answer instead.
 
 ---
 
