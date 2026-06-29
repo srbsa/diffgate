@@ -35,6 +35,14 @@ _Language parity expansion: bring every supported language to maximum feasible A
   - **`xss-sink`** (advisory) — `raw(…)`/`.html_safe`/`safe_concat` of a dynamic value; `sanitize`/`h`/`html_escape` down-tier.
   - `dangerous-exec` defers to Ruby. **Honest gaps:** mass-assignment, open-redirect, `render inline:` SSTI, dynamic `send`/`constantize`.
 
+- **Java is now a Deep (AST) language** ([src/core/rules/java.ts](src/core/rules/java.ts), `tree-sitter-java`) — four AST-precise classes (Java has no string interpolation, so dynamic queries/commands are built by `+` or `String.format`):
+  - **`sql-injection`** (blocking) — JDBC (`executeQuery`/`executeUpdate`/`prepareStatement`/`prepareCall`), JPA/Hibernate (`createQuery`/`createNativeQuery`/`createSQLQuery`) as fragment sinks (so keyword-less HQL `from User where …` blocks), and JdbcTemplate (`query`/`update`/…) gated on a SQL keyword to avoid false-blocking `ExecutorService.execute`. `?`-placeholder statements are safe; cross-line query variables resolved.
+  - **`command-injection`** (blocking) — `Runtime.exec`/`ProcessBuilder` with a concat/`String.format`-built or request-tainted argument; a bare opaque parameter is not flagged (no gosec-style config false-block).
+  - **`unsafe-deserialization`** (blocking) — `ObjectInputStream.readObject`/`readUnshared` on a receiver (the canonical native-deser gadget sink; a bare `readObject()` override call is skipped), and `XStream.fromXML` of a dynamic value.
+  - **`path-traversal`** (advisory) — `new File`/`FileInputStream`/`Files.readAllBytes`/`Paths.get` of `request.getParameter`/`getHeader`; `FilenameUtils.getName` down-tiers.
+  - Shared-core change: `requestSanitized` now honors a per-language `calleeField` (Java's call callee is the `name` field, not `function`) so the path down-tier works; bug bash also fixed fully-qualified `new java.io.File(...)` matching and a keyword-gate ordering FN (`execute(q)` is now resolved before the SQL-keyword check). `dangerous-exec` defers to Java.
+  - **Honest gaps:** XXE, `StringBuilder`-built SQL, SpEL/OGNL injection, SSRF.
+
 ---
 
 ## [0.6.1] — 2026-06-28

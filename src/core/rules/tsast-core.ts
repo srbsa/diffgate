@@ -52,6 +52,9 @@ export interface LanguageProfile {
   fnNameField: string;
   /** Call node type searched for nested sanitizer calls (`call` | `function_call_expression`). */
   callDescendantType: string;
+  /** Field on a call node holding the callee, for sanitizer detection in `requestSanitized`. Defaults to
+   *  `"function"` (Python/PHP/Go); Java uses `"name"`. */
+  calleeField?: string;
   /** PHP recurses into nested concatenations to reach dynamic leaves; Python pushes the nest whole.
    *  Preserved per-language so a fully-sanitized nested concat down-tiers exactly as it does today. */
   recurseNestedConcat: boolean;
@@ -238,7 +241,7 @@ export function requestSanitized(
     ? [n, ...n.descendantsOfType(p.callDescendantType)]
     : n.descendantsOfType(p.callDescendantType);
   for (const call of calls) {
-    const fn = call.childForFieldName("function");
+    const fn = call.childForFieldName(p.calleeField ?? "function");
     if (fn && sanitizerRe.test(fn.text)) { sawSanitizer = true; remaining = remaining.split(call.text).join(" "); }
   }
   if (p.safeCasts) {

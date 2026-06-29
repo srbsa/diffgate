@@ -4,6 +4,7 @@ import { PYTHON_RULES } from "./python.js";
 import { PHP_RULES } from "./php.js";
 import { GO_RULES } from "./go.js";
 import { RUBY_RULES } from "./ruby.js";
+import { JAVA_RULES } from "./java.js";
 import type { Rule, AstNode, EmitFn, RuleContext, DeprecatedEntry, Config } from "../types.js";
 
 const JS = ["javascript", "typescript"];
@@ -309,11 +310,11 @@ export const BUILTIN_RULES: Rule[] = [
     tier: "orange",
     title: "Dynamic execution / shell-out",
     languages: ["*"],
-    // PHP, Python, Go, and Ruby have precise AST command-/code-injection rules — defer to them there (no
-    // double report). Remaining languages still rely on this regex. Trade-offs of the precise owners:
-    // Python's `__import__` advisory is dropped, Go's/Ruby's safe multi-arg `exec`/`system(prog, x)` form is
-    // (correctly) no longer flagged — all prefer zero false positives over a rare/legitimate pattern.
-    skipIfAstLangs: ["php", "python", "go", "ruby"],
+    // PHP, Python, Go, Ruby, and Java have precise AST command-/code-injection rules — defer to them there
+    // (no double report). Remaining languages still rely on this regex. Trade-offs of the precise owners:
+    // Python's `__import__` advisory is dropped; Go/Ruby/Java's safe forms (arg-vector exec, opaque
+    // non-dynamic command args) are correctly not flagged — all prefer zero false positives.
+    skipIfAstLangs: ["php", "python", "go", "ruby", "java"],
     message: "Dynamic code execution or shell-out. Audit for command/code injection — never pass unsanitized input here.",
     patterns: [
       /\beval\s*\(/,
@@ -667,6 +668,7 @@ export const BUILTIN_RULES: Rule[] = [
   ...PHP_RULES,
   ...GO_RULES,
   ...RUBY_RULES,
+  ...JAVA_RULES,
 ];
 
 // ---------------------------------------------------------------------------
