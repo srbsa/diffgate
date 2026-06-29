@@ -1,6 +1,13 @@
 # DiffGate
 
-**The deterministic gate for AI-generated code — the same verdict from your agent's first keystroke to the merge button.**
+[![npm version](https://img.shields.io/npm/v/diffgate-review?logo=npm)](https://www.npmjs.com/package/diffgate-review)
+[![npm downloads](https://img.shields.io/npm/dm/diffgate-review)](https://www.npmjs.com/package/diffgate-review)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/srbsa.diffgate-review?logo=visualstudiocode&label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=srbsa.diffgate-review)
+[![Open VSX](https://img.shields.io/open-vsx/v/srbsa/diffgate-review?logo=eclipseide&label=Open%20VSX)](https://open-vsx.org/extension/srbsa/diffgate-review)
+[![License](https://img.shields.io/github/license/srbsa/diffgate)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/srbsa/diffgate?style=social)](https://github.com/srbsa/diffgate)
+
+**The deterministic gate for AI-generated code — the same verdict from your agent's first keystroke to the merge button.** If that sounds useful, **[star the repo ⭐](https://github.com/srbsa/diffgate)** — it's how others find it.
 
 Coding agents ship diffs faster than anyone can review them, and the model that wrote the code has the same blind spots reviewing it. DiffGate is a separate, **deterministic** check that runs on **only the lines that changed** (vs the committed baseline), sorts each change into one of three risk tiers, and **gates** the high-impact ones — running your tests only when a change actually warrants it. Not a model grading its own homework. Not a whole-repo scanner burying you in findings. The same engine, and the same verdict, in your agent, your editor, your terminal, and your PR.
 
@@ -119,20 +126,25 @@ How deeply DiffGate analyzes a change depends on the file's language — be expl
 
 | Tier | Languages | Depth |
 |------|-----------|-------|
-| **Deep (AST)** | JS / TS | The full set: injection sinks (SQL, XSS, path traversal, prototype pollution, CORS, NoSQL), public-API & signature changes, deprecated-API quick-fixes. |
-| **Deep (AST)** | Python | Seven sink classes at PHP-level depth: **SQL injection**, **XSS** (`mark_safe`/templating), **path traversal** (request-source + sanitizer-aware), **permissive CORS** (flask-cors / django-cors-headers), **command injection** (`os.system` / `subprocess(..., shell=True)`; arg-list form is safe, `shlex.quote` down-tiers), **code injection** (`eval`/`exec`/`compile`), and **unsafe deserialization** (`pickle`/`marshal`/`yaml.load`; `safe_load`/`SafeLoader` down-tier). Module sinks are **import-alias-resolved** — `import subprocess as sp; sp.run(...)` and `from os import system` are caught, not just direct calls. |
-| **Deep (AST)** | PHP | The widest non-JS coverage — eight sink classes: **SQL injection** (incl. Laravel `whereRaw` / `sprintf`), **command injection**, **code injection** (`eval`/`create_function`), **file inclusion** (LFI/RFI), **unsafe deserialization** (`unserialize`), **XSS** (`echo`/`<?=` of request data), **path traversal** / SSRF, and **permissive CORS** (wildcard or request-reflected `Access-Control-Allow-Origin`). Each sink/parameter/sanitizer-aware; single-quoted strings, `__DIR__`-built paths, and `?`-placeholder queries are correctly treated as safe. |
-| **Deep (AST)** | Go | **SQL injection** (`fmt.Sprintf`/concat into `database/sql`·`sqlx`·gorm sinks; `?`/`$1` placeholders are safe), **command injection** (`exec.Command` — the arg-vector form `exec.Command("git", x)` is correctly safe since Go uses no shell; flags `sh -c <dynamic>` and request-tainted program names), and **path traversal** (`os.ReadFile`/`http.ServeFile` of `r.FormValue`/`r.URL.Query()`; `filepath.Base` down-tiers). |
-| **Deep (AST)** | Ruby | Five sink classes, interpolation-aware: **SQL injection** (`#{…}` into ActiveRecord `where`/`find_by_sql`/`order`/…; `?`-placeholder & hash forms are safe), **command injection** (`system`/backticks/`%x`/`IO.popen`/`Open3` — the multi-arg `system("git", x)` form is safe, no shell), **code injection** (`eval`/`instance_eval`/…), **unsafe deserialization** (`Marshal.load`/`YAML.load`; `safe_load` is safe), and **XSS** (`raw`/`.html_safe`; `sanitize`/`h` down-tier). |
-| **Deep (AST)** | Java | **SQL injection** (concat/`String.format` into JDBC `executeQuery`/`prepareStatement`, JPA/Hibernate `createQuery`/`createNativeQuery` incl. keyword-less HQL, JdbcTemplate; `?`-placeholders are safe), **command injection** (`Runtime.exec`/`ProcessBuilder` of a dynamic or request-tainted command), **unsafe deserialization** (`ObjectInputStream.readObject`, `XStream.fromXML`), **path traversal** (`new File`/`Files`/`Paths.get` of `request.getParameter`; `FilenameUtils.getName` down-tiers), and **XXE** (unhardened `DocumentBuilderFactory`/`SAXParser`/`XMLInputFactory`/dom4j `SAXReader`; suppressed when DTDs/external entities are disabled). |
-| **Deep (AST)** | C# | Interpolation-aware: **SQL injection** (`$"…{x}"`/concat/`string.Format` into `SqlCommand`/`CommandText`/Dapper/EF `FromSqlRaw`; parameters & `FromSqlInterpolated` are safe), **command injection** (`Process.Start`/`ProcessStartInfo`), **unsafe deserialization** (`BinaryFormatter.Deserialize` & friends), **path traversal** (`File.*`/`new FileStream` of `Request.Query`/…; `Path.GetFileName` down-tiers), **XSS** (`@Html.Raw`/`Response.Write`; `HtmlEncode` down-tiers), and **XXE** (legacy `XmlTextReader`, `DtdProcessing.Parse` without a null resolver, or an explicit `XmlUrlResolver`; the modern `Prohibit`/null-resolver defaults are safe). |
-| **Deep (AST)** | Kotlin | JVM parity with Java + Kotlin string templates: **SQL injection** (`"$x"`/`"${expr}"`/concat into JDBC/JPA/Android `rawQuery`/`execSQL`; `?`-placeholders & const templates are safe; `escapeSql` down-tiers), **command injection** (`Runtime.exec`/`ProcessBuilder` of a dynamic or request-tainted value), **unsafe deserialization** (`ObjectInputStream.readObject`), **path traversal** (`File(...)`/`Files` of `getParameter`/Ktor `call.parameters`; `FilenameUtils.getName` down-tiers), and **XXE** (unhardened JVM XML factories/`SAXReader`). |
+| **Deep (AST)** | JS / TS (`@babel`) | All injection classes + public-API & signature changes + deprecated-API quick-fixes. **Prototype pollution** and **NoSQL injection** are JS/TS-only; JS/TS findings are also eligible for code-graph **taint confirmation**. |
+| **Deep (AST)** | Python, PHP, Go, Ruby, Java, C#, Kotlin (tree-sitter) | Sink-targeted, parameter- and sanitizer-aware injection detection — placeholders, argument-vectors, and escapers are correctly treated as safe. Sink classes per language below. |
+
+Sink classes per Deep-AST language (full detail — every sanitizer and safe-form, plus the code-graph boundary — in [docs/SCOPE.md](docs/SCOPE.md)):
+
+- **Python** (7) — SQL · XSS · path traversal · CORS · command · code · deserialization
+- **PHP** (8) — SQL · command · code · file inclusion · deserialization · XSS · path traversal · CORS
+- **Go** (3) — SQL · command · path traversal
+- **Ruby** (5) — SQL · command · code · deserialization · XSS
+- **Java** (5) — SQL · command · deserialization · path traversal · XXE
+- **C#** (6) — SQL · command · deserialization · path traversal · XSS · XXE
+- **Kotlin** (5) — SQL · command · deserialization · path traversal · XXE
+
+**SSRF** is a cross-language advisory across all eight Deep-AST languages (a request-tainted URL into an outbound-request sink; library-qualified and tainted-only, so static/config URLs aren't flagged). **XXE** covers the JVM (Java, Kotlin) and .NET (C#), suppressed when the file shows recognized hardening.
+
+| Tier | Languages | Depth |
+|------|-----------|-------|
 | **Floor (pattern)** | C/C++, Rust, Swift, Scala, … | Secrets, destructive/schema changes, auth/crypto, dynamic exec / shell-out, raw queries, network calls, TODO. Cross-language injection advisories that escalate via the code graph. |
 | **Text** | YAML, Terraform, JSON, any text | Secrets and TODO/FIXME markers. |
-
-**SSRF** is covered across all eight Deep-AST languages as a cross-language advisory: a request-tainted URL into an outbound-request sink (`fetch`/`requests`/`http.Get`/`Net::HTTP`/`curl`/`new URL`/`HttpClient`/OkHttp). Library-qualified and tainted-only, so static/config URLs and generic `.get` calls aren't flagged.
-
-**XXE** is covered on the JVM (Java, Kotlin) and .NET (C#) as an advisory: an XML parser created without disabling DOCTYPE / external-entity resolution. It is **suppressed when the file shows recognized hardening** (Java/Kotlin: `disallow-doctype-decl`, `FEATURE_SECURE_PROCESSING`, `SUPPORT_DTD=false`, …; C#: `DtdProcessing.Prohibit` / `XmlResolver = null`), and modern .NET safe-by-default APIs (`XmlReader.Create`, `XmlSecureResolver`) aren't flagged.
 
 **Fast by design — and scoped to match.** A review runs in milliseconds on the changed lines, which is exactly what lets the same check sit in the agent and editor inner loop. That speed is a deliberate trade: DiffGate is the deterministic **gate on the diff**, not an exhaustive whole-repo taint engine. Coverage is per-language (deep where there's an AST, a pattern floor elsewhere), the security rules are tuned to the residue agents actually ship rather than to maximize raw rule count, and a clean result means *"nothing matched at this language's tier,"* not *"proven safe."* For deep cross-file taint analysis across many languages, pair it with a dedicated SAST. Full per-language detail and the code-graph boundary: **[docs/SCOPE.md](docs/SCOPE.md)**.
 
@@ -180,6 +192,14 @@ You'll see green findings (logging), yellow findings (a deprecated call), and or
 ```bash
 npm test    # builds the extension, runs the full unit/integration suite + extension smoke test
 ```
+
+## Support the project
+
+If DiffGate caught something for you — or you just like the idea of a deterministic gate for agent code — **[star the repo ⭐](https://github.com/srbsa/diffgate)**. It's the signal that tells other people this is worth trying.
+
+- 🐛 **Found a false block, or a sink it missed?** [Open an issue](https://github.com/srbsa/diffgate/issues/new) — a false block is a bug we treat as P0.
+- 💡 **Want a language or rule covered?** [File a feature request](https://github.com/srbsa/diffgate/issues/new) with the idiom you'd like caught.
+- 🔒 **Security report?** Please disclose privately — see [SECURITY.md](SECURITY.md).
 
 ## Contributing & License
 
