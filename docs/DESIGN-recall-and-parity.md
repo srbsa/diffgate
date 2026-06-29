@@ -13,7 +13,7 @@ DiffGate's strategic identity is **the deterministic gate, not the scanner** (se
 | Language | Today |
 |---|---|
 | JS / TS | Full footgun set (SQLi, XSS, path-traversal, proto-pollution, CORS, NoSQL, public-API, signature-drift) via `@babel` AST. |
-| Python | AST-precise **SQLi**, **XSS**, **path-traversal**, **permissive-CORS** (4 of the JS/TS footgun classes) + the cross-language regex floor. |
+| Python | AST-precise across **7 sink classes** (SQLi, XSS, path-traversal, permissive-CORS, command-injection, code-injection, unsafe-deserialization) + the cross-language regex floor. |
 | PHP | AST-precise across **7 sink classes** (SQLi, command-injection, code-injection, file-inclusion, unsafe-deserialization, XSS, path-traversal) + the floor. |
 | Go / Java / Ruby / … | Regex floor only (secrets, exec, schema, raw-query, network) + cross-language injection advisories that escalate via the code graph. |
 

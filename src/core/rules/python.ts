@@ -21,7 +21,7 @@ import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
 import {
   type LanguageProfile,
   unwrap, declInit, isStaticConst, dynamicParts, looksLikeSql,
-  taintedByRequest as coreTaintedByRequest, requestSanitized, emitFinding,
+  taintedByRequest as coreTaintedByRequest, requestSanitized, valueSanitized, emitFinding,
 } from "./tsast-core.js";
 
 // Query sinks: a dynamic SQL string reaching one of these is the injection. Attribute calls
@@ -303,6 +303,137 @@ const CORS_MESSAGE =
   "default). If cookies or tokens are used, arbitrary sites can make credentialed cross-origin requests. " +
   "Set an explicit allowlist of trusted origins (`CORS(app, origins=[...])`, `CORS_ALLOWED_ORIGINS=[...]`).";
 
+// --- shared call helpers ----------------------------------------------------
+
+/** First positional argument of a call node, or null. */
+function arg0(call: TsNode): TsNode | null {
+  const args = call.childForFieldName("arguments");
+  return args ? args.namedChild(0) : null;
+}
+
+/** The `object`/`attribute` of an attribute-call (`subprocess.run` → {obj:"subprocess", attr:"run"}). */
+function attrCall(call: TsNode): { obj: string; attr: string } | null {
+  const fn = call.childForFieldName("function");
+  if (!fn || fn.type !== "attribute") return null;
+  const o = fn.childForFieldName("object");
+  const a = fn.childForFieldName("attribute");
+  if (!o || !a) return null;
+  return { obj: o.text, attr: a.text };
+}
+
+/** Whether the call passes a truthy `shell=True` keyword (the gate that makes subprocess use a shell). */
+function hasShellTrue(call: TsNode): boolean {
+  const args = call.childForFieldName("arguments");
+  if (!args) return false;
+  return args.namedChildren.some((a) => {
+    if (a.type !== "keyword_argument") return false;
+    const n = a.childForFieldName("name");
+    const v = a.childForFieldName("value");
+    return !!n && n.text === "shell" && !!v && v.type === "true";
+  });
+}
+
+// --- command injection ------------------------------------------------------
+// `os.system`/`os.popen` and `subprocess.getoutput`/`getstatusoutput` ALWAYS run via the shell, so any
+// dynamic argument is injection. `subprocess.run`/`call`/`Popen`/… use the shell ONLY with `shell=True`
+// — the list-argument form (`run(["ls", x])`) bypasses the shell and is safe. `shlex.quote` down-tiers.
+const CMD_COND_SHELL = new Set(["run", "call", "check_call", "check_output", "Popen"]);
+const CMD_SHLEX_QUOTE = /(?:^|\.)(?:shlex|pipes)\.quote$/;
+
+/** If `call` is an OS-command sink, the command argument plus whether it always invokes a shell. */
+function cmdSink(call: TsNode): { arg: TsNode; alwaysShell: boolean } | null {
+  const c = attrCall(call);
+  if (!c) return null;
+  const a = arg0(call);
+  if (!a) return null;
+  if (c.obj === "os" && (c.attr === "system" || c.attr === "popen")) return { arg: a, alwaysShell: true };
+  if ((c.obj === "subprocess" || c.obj === "commands") && (c.attr === "getoutput" || c.attr === "getstatusoutput"))
+    return { arg: a, alwaysShell: true };
+  if (c.obj === "subprocess" && CMD_COND_SHELL.has(c.attr)) return { arg: a, alwaysShell: false };
+  return null;
+}
+
+/** A `shlex.quote(...)` / `pipes.quote(...)` call — escapes a single shell argument. */
+function isShlexQuote(node: TsNode): boolean {
+  const n = unwrap(node, pythonProfile);
+  if (n.type !== "call") return false;
+  const fn = n.childForFieldName("function");
+  return !!fn && CMD_SHLEX_QUOTE.test(fn.text);
+}
+
+const CMD_MESSAGE =
+  "An OS command is built from a dynamic value and run through the shell (`os.system`, " +
+  "`subprocess(..., shell=True)`, …). If any part is user-controlled, an attacker can run arbitrary " +
+  "commands. Avoid the shell: pass an argument list (`subprocess.run([\"prog\", arg])`, no `shell=True`), " +
+  "or escape every argument with `shlex.quote()`.";
+function cmdSanitizedNote(): string {
+  return (
+    "Every dynamic part here is wrapped in `shlex.quote` — likely safe, but shell escaping is brittle " +
+    "(quoting context, multiple args); prefer an argument list. Down-tiered from a blocking finding to review."
+  );
+}
+
+// --- code injection ---------------------------------------------------------
+// `eval`/`exec`/`compile` of a dynamic, non-literal value is arbitrary code execution. There is no safe
+// escape — the fix is to remove the dynamic eval and use a data-driven dispatch (a dict/allowlist).
+const CODE_SINKS = new Set(["eval", "exec", "compile"]);
+
+/** The code argument of an `eval`/`exec`/`compile(...)` builtin call, or null. */
+function codeSinkArg(call: TsNode): TsNode | null {
+  const fn = call.childForFieldName("function");
+  if (!fn || fn.type !== "identifier" || !CODE_SINKS.has(fn.text)) return null;
+  return arg0(call);
+}
+
+const CODE_MESSAGE =
+  "A dynamic value is executed as Python code (`eval`/`exec`/`compile`). If any part is user-controlled " +
+  "this is remote code execution. There is no safe way to escape code — remove the dynamic " +
+  "`eval`/`exec` and dispatch on the value through a dict/allowlist instead.";
+
+// --- unsafe deserialization -------------------------------------------------
+// `pickle`/`marshal`/`dill` `.load`/`.loads` deserialize arbitrary objects → RCE on untrusted input.
+// `yaml.load(x)` is unsafe unless a safe `Loader=` is given (`yaml.safe_load` is the safe API, not a sink).
+const PICKLE_MODULES = new Set(["pickle", "cPickle", "_pickle", "dill"]);
+const DESER_ATTRS = new Set(["load", "loads"]);
+const YAML_SAFE_LOADER = /(?:^|\.)(?:SafeLoader|CSafeLoader|BaseLoader)$/;
+
+/** If `call` deserializes untrusted data, the data argument plus whether a safe loader neutralizes it. */
+function deserSink(call: TsNode): { arg: TsNode; sanitized: boolean } | null {
+  const c = attrCall(call);
+  if (!c) return null;
+  const a = arg0(call);
+  if (!a) return null;
+  const leaf = c.obj.split(".").pop() || c.obj; // `foo.pickle.loads` → match on `pickle`
+  if ((PICKLE_MODULES.has(leaf) || leaf === "marshal") && DESER_ATTRS.has(c.attr)) return { arg: a, sanitized: false };
+  if (leaf === "yaml" && c.attr === "load") return { arg: a, sanitized: hasSafeLoader(call) };
+  return null;
+}
+
+/** `yaml.load(x, Loader=SafeLoader)` / `yaml.load(x, SafeLoader)` — a safe loader forbids object construction. */
+function hasSafeLoader(call: TsNode): boolean {
+  const args = call.childForFieldName("arguments");
+  if (!args) return false;
+  return args.namedChildren.some((a) => {
+    if (a.type === "keyword_argument") {
+      const n = a.childForFieldName("name");
+      const v = a.childForFieldName("value");
+      return !!n && n.text === "Loader" && !!v && YAML_SAFE_LOADER.test(v.text);
+    }
+    return YAML_SAFE_LOADER.test(a.text); // positional Loader
+  });
+}
+
+const DESER_MESSAGE =
+  "Untrusted data is deserialized with `pickle`/`marshal`/`yaml.load`, which can construct arbitrary " +
+  "objects and execute code (RCE) on attacker-controlled input. Use a safe format (`json.loads`) for " +
+  "untrusted data, or `yaml.safe_load` / `yaml.load(x, Loader=yaml.SafeLoader)` for YAML.";
+function deserSanitizedNote(): string {
+  return (
+    "A safe YAML loader (`SafeLoader`/`BaseLoader`) is set, so arbitrary object construction is prevented " +
+    "— likely safe, but confirm the loader covers every call on this path. Down-tiered from a blocking finding to review."
+  );
+}
+
 export const PYTHON_RULES: TsAstRule[] = [
   {
     id: "sql-injection",
@@ -399,6 +530,66 @@ export const PYTHON_RULES: TsAstRule[] = [
       };
       const code = (ctx.lines[line - 1] || "").trim();
       emit({ loc, code });
+    },
+  },
+  {
+    id: "command-injection",
+    type: "tsast",
+    tier: "orange",
+    blocking: true,
+    title: "OS command injection sink",
+    languages: ["python"],
+    message: CMD_MESSAGE,
+    sinkQuery: "(call) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "call") return;
+      const sink = cmdSink(node);
+      if (!sink) return;
+      // subprocess.run/Popen/… are only a shell sink with shell=True; the list-arg form is always safe.
+      if (!sink.alwaysShell && !hasShellTrue(node)) return;
+      if (unwrap(sink.arg, pythonProfile).type === "list") return; // argument-list form bypasses the shell
+      const root = ctx.tsTree!.rootNode;
+      if (isStaticConst(sink.arg, root, pythonProfile)) return; // a static command string is not injectable
+      const sanitized = valueSanitized(sink.arg, root, pythonProfile, isShlexQuote);
+      emitFinding(node, ctx, emit, pythonProfile,
+        sanitized ? { sanitized: true, message: CMD_MESSAGE, sanitizedNote: cmdSanitizedNote() } : { sanitized: false, message: CMD_MESSAGE, sanitizedNote: "" });
+    },
+  },
+  {
+    id: "code-injection",
+    type: "tsast",
+    tier: "orange",
+    blocking: true,
+    title: "Dynamic code execution sink",
+    languages: ["python"],
+    message: CODE_MESSAGE,
+    sinkQuery: "(call) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "call") return;
+      const target = codeSinkArg(node);
+      if (!target) return;
+      const root = ctx.tsTree!.rootNode;
+      if (isStaticConst(target, root, pythonProfile)) return; // eval("1 + 1") on a literal is not injectable
+      emitFinding(node, ctx, emit, pythonProfile, { sanitized: false, message: CODE_MESSAGE, sanitizedNote: "" });
+    },
+  },
+  {
+    id: "unsafe-deserialization",
+    type: "tsast",
+    tier: "orange",
+    blocking: true,
+    title: "Unsafe deserialization sink",
+    languages: ["python"],
+    message: DESER_MESSAGE,
+    sinkQuery: "(call) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "call") return;
+      const sink = deserSink(node);
+      if (!sink) return;
+      const root = ctx.tsTree!.rootNode;
+      if (isStaticConst(sink.arg, root, pythonProfile)) return; // a literal payload is a fixture, not untrusted input
+      emitFinding(node, ctx, emit, pythonProfile,
+        sink.sanitized ? { sanitized: true, message: DESER_MESSAGE, sanitizedNote: deserSanitizedNote() } : { sanitized: false, message: DESER_MESSAGE, sanitizedNote: "" });
     },
   },
 ];

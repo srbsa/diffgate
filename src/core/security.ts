@@ -19,6 +19,9 @@ import type { AnalyzeResult, Config, Finding, SecurityVerdict } from "./types.js
 /** Injection-class rules whose risk depends on whether user input reaches the sink. */
 export const SECURITY_RULES = new Set([
   "sql-injection", "nosql-injection", "xss-sink", "path-traversal", "dangerous-exec", "prototype-pollution",
+  // AST injection classes (PHP + Python tsast). Blocking by default; SECURITY_RULES membership gives them
+  // the same trust-label + reachability treatment as sql-injection, instead of falling through unlabeled.
+  "command-injection", "code-injection", "file-inclusion", "unsafe-deserialization",
 ]);
 
 /** Deterministic trust label for a single finding (see Finding.trust). Pure; no graph call. */

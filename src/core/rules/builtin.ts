@@ -307,9 +307,11 @@ export const BUILTIN_RULES: Rule[] = [
     tier: "orange",
     title: "Dynamic execution / shell-out",
     languages: ["*"],
-    // PHP has precise AST command-injection/code-injection rules — defer to them there (no double
-    // report). Other languages (Python os.system/subprocess, Go, Ruby) still rely on this regex.
-    skipIfAstLangs: ["php"],
+    // PHP and Python have precise AST command-injection/code-injection/deserialization rules — defer to
+    // them there (no double report). Other languages (Go, Ruby) still rely on this regex.
+    // Trade-off: Python's `__import__` advisory is dropped (covered by neither tsast rule), preferring
+    // zero false positives over a rare, often-legitimate dynamic-import pattern.
+    skipIfAstLangs: ["php", "python"],
     message: "Dynamic code execution or shell-out. Audit for command/code injection — never pass unsanitized input here.",
     patterns: [
       /\beval\s*\(/,

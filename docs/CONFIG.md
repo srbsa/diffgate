@@ -64,13 +64,13 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 | `hardcoded-secret` | 🟠 blocking | AWS keys, GitHub PATs, Stripe secrets, generic credential patterns |
 | `db-schema-destructive` | 🟠 blocking | `DROP`, `TRUNCATE`, `DELETE` without `WHERE` |
 | `sql-injection` | 🟠 blocking | Interpolation/concatenation/`sprintf` inside SQL calls. JS/TS AST; Python AST (f-string/`%`/`.format`); PHP AST (`mysqli_query`/`$pdo->query`/`->prepare`, Laravel `whereRaw`/`orderByRaw`); JS-shaped regex fallback elsewhere. Parameter- & sanitizer-aware. |
-| `command-injection` | 🟠 blocking | PHP AST: `exec`/`shell_exec`/`passthru`/`system`/`proc_open`/`popen`/backticks with a dynamic arg (`escapeshellarg`/`escapeshellcmd` down-tier; arg-array form is safe). |
-| `code-injection` | 🟠 blocking | PHP AST: `eval`/`create_function`/string-`assert` of a dynamic value (RCE). |
+| `command-injection` | 🟠 blocking | PHP AST: `exec`/`shell_exec`/`passthru`/`system`/`proc_open`/`popen`/backticks with a dynamic arg (`escapeshellarg`/`escapeshellcmd` down-tier; arg-array form is safe). Python AST: `os.system`/`os.popen`/`subprocess.getoutput` (always-shell) and `subprocess.run`/`Popen`/… with `shell=True` and a dynamic arg (`shlex.quote` down-tier; the argument-list form is safe). |
+| `code-injection` | 🟠 blocking | PHP AST: `eval`/`create_function`/string-`assert` of a dynamic value (RCE). Python AST: `eval`/`exec`/`compile` of a dynamic value (a literal is safe; `df.eval`/`ast.literal_eval` are not flagged). |
 | `file-inclusion` | 🟠 blocking | PHP AST: `include`/`require`(`_once`) of a dynamic path — LFI/RFI (`basename()` down-tier; `__DIR__`/constant-built paths are safe). |
-| `unsafe-deserialization` | 🟠 blocking | PHP AST: `unserialize()` of a dynamic value — object injection / POP chains (`['allowed_classes'=>false]` down-tier). |
+| `unsafe-deserialization` | 🟠 blocking | PHP AST: `unserialize()` of a dynamic value — object injection / POP chains (`['allowed_classes'=>false]` down-tier). Python AST: `pickle`/`marshal`/`dill` `.load`/`.loads` and `yaml.load` of a dynamic value (`yaml.safe_load` / `Loader=SafeLoader` down-tier; `FullLoader` still blocks). |
 | `db-schema-change` | 🟠 | `ALTER TABLE`, `ADD COLUMN`, `RENAME` |
 | `auth-crypto` | 🟠 | passport, JWT, bcrypt, session handlers |
-| `dangerous-exec` | 🟠 | `eval()`, `exec()`, `os.system()`, `pickle.loads`, Go `exec.Command`, Ruby `system`/`%x{}` — blocks when reachable. (Defers to PHP's precise `command-injection`/`code-injection` AST rules on PHP.) |
+| `dangerous-exec` | 🟠 | `eval()`, `exec()`, `os.system()`, `pickle.loads`, Go `exec.Command`, Ruby `system`/`%x{}` — blocks when reachable. (Defers to the precise `command-injection`/`code-injection`/`unsafe-deserialization` AST rules on PHP and Python.) |
 | `public-api-change` | 🟠 | exported symbols (JS/TS AST) |
 | `signature-drift` | 🟠 | exported function parameter changes (JS/TS) |
 | `permissive-cors` | 🟠 | JS/TS: `origin: '*'`, bare `cors()`. Python: flask-cors `CORS(...)`/`@cross_origin`, `CORS_ALLOW_ALL_ORIGINS=True`, manual `Access-Control-Allow-Origin: *` |

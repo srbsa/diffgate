@@ -209,6 +209,108 @@ precise("python cors: a manual Access-Control-Allow-Origin: * header is flagged"
   assert.ok(cors(`resp.headers['Access-Control-Allow-Origin'] = '*'\n`));
 });
 
+// --- command injection: shell-aware (shell=True / always-shell sinks), arg-list bypass, shlex.quote ---
+function cmd(content) {
+  const f = findings(content, "command-injection");
+  return f.length ? f[0] : null;
+}
+
+precise("python cmd: os.system with a concatenated value blocks", () => {
+  const f = cmd(`def v(name):\n    os.system("ls " + name)\n`);
+  assert.ok(f && f.blocking && f.tier === "orange");
+  assert.equal(f.symbol, "v");
+});
+
+precise("python cmd: subprocess.run(..., shell=True) with a dynamic string blocks", () => {
+  const f = cmd(`def v(name):\n    subprocess.run("rm " + name, shell=True)\n`);
+  assert.ok(f && f.blocking);
+});
+
+precise("python cmd: subprocess.run with an argument list (no shell) is NOT flagged", () => {
+  assert.equal(cmd(`def v(name):\n    subprocess.run(["rm", name])\n`), null);
+});
+
+precise("python cmd: subprocess.run with a dynamic string but NO shell=True is NOT flagged", () => {
+  assert.equal(cmd(`def v(name):\n    subprocess.run("rm " + name)\n`), null);
+});
+
+precise("python cmd: subprocess.getoutput always shells → a dynamic arg blocks", () => {
+  assert.ok(cmd(`def v(x):\n    return subprocess.getoutput("id " + x)\n`));
+});
+
+precise("python cmd: a fully static command string is NOT flagged", () => {
+  assert.equal(cmd(`def v():\n    os.system("ls -la")\n`), null);
+});
+
+precise("python cmd: a cross-line tainted command variable is resolved and blocks", () => {
+  assert.ok(cmd(`def v(name):\n    c = "ls " + name\n    os.system(c)\n`));
+});
+
+precise("python cmd: every dynamic part wrapped in shlex.quote down-tiers to review", () => {
+  const f = cmd(`import shlex\ndef v(name):\n    os.system("ls " + shlex.quote(name))\n`);
+  assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
+});
+
+precise("python cmd: the regex dangerous-exec is suppressed when the AST rule owns python", () => {
+  // skipIfAstLangs includes python → no double report on os.system.
+  assert.equal(findings(`def v(name):\n    os.system("ls " + name)\n`, "dangerous-exec").length, 0);
+});
+
+// --- code injection: eval / exec / compile of a dynamic value -------------------------------------
+function code(content) {
+  const f = findings(content, "code-injection");
+  return f.length ? f[0] : null;
+}
+
+precise("python code: eval of a dynamic value blocks", () => {
+  const f = code(`def v(expr):\n    return eval(expr)\n`);
+  assert.ok(f && f.blocking && f.tier === "orange");
+});
+
+precise("python code: exec of a dynamic value blocks", () => {
+  assert.ok(code(`def v(src):\n    exec(src)\n`));
+});
+
+precise("python code: compile of a dynamic value blocks", () => {
+  assert.ok(code(`def v(src):\n    return compile(src, "<s>", "exec")\n`));
+});
+
+precise("python code: eval of a literal is NOT flagged", () => {
+  assert.equal(code(`def v():\n    return eval("1 + 1")\n`), null);
+});
+
+// --- unsafe deserialization: pickle / marshal / yaml.load (safe-loader aware) ---------------------
+function deser(content) {
+  const f = findings(content, "unsafe-deserialization");
+  return f.length ? f[0] : null;
+}
+
+precise("python deser: pickle.loads of a dynamic value blocks", () => {
+  const f = deser(`def v(data):\n    return pickle.loads(data)\n`);
+  assert.ok(f && f.blocking && f.tier === "orange");
+});
+
+precise("python deser: marshal.loads of a dynamic value blocks", () => {
+  assert.ok(deser(`def v(blob):\n    return marshal.loads(blob)\n`));
+});
+
+precise("python deser: bare yaml.load blocks", () => {
+  assert.ok(deser(`def v(s):\n    return yaml.load(s)\n`));
+});
+
+precise("python deser: yaml.load with a SafeLoader down-tiers to review", () => {
+  const f = deser(`def v(s):\n    return yaml.load(s, Loader=yaml.SafeLoader)\n`);
+  assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
+});
+
+precise("python deser: yaml.safe_load is the safe API and is NOT a sink", () => {
+  assert.equal(deser(`def v(s):\n    return yaml.safe_load(s)\n`), null);
+});
+
+precise("python deser: a literal pickle payload (fixture) is NOT flagged", () => {
+  assert.equal(deser(`def v():\n    return pickle.loads(b"\\x80\\x04K\\x01.")\n`), null);
+});
+
 // --- 5. diff-scoping: only changed lines are flagged ----------------------------------------------
 precise("python: a dynamic sink on an unchanged line is not flagged", () => {
   const content = `def g(uid):\n    cur.execute(f"SELECT * FROM t WHERE id={uid}")\n`;

@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+_Language parity expansion: bring every supported language to maximum feasible AST depth, language by language._
+
+### Added
+
+- **Python AST parity with PHP — three new blocking sink classes** ([src/core/rules/python.ts](src/core/rules/python.ts)), taking Python from 4 to **7 AST-precise classes**:
+  - **`command-injection`** — `os.system`/`os.popen`/`subprocess.getoutput`/`getstatusoutput` (always invoke a shell → any dynamic arg blocks) and `subprocess.run`/`call`/`check_call`/`check_output`/`Popen` **only with `shell=True`** and a dynamic arg. The argument-list form (`subprocess.run(["ls", x])`) bypasses the shell and is correctly **not** flagged; every dynamic part wrapped in `shlex.quote` down-tiers to review.
+  - **`code-injection`** — `eval`/`exec`/`compile` of a dynamic, non-literal value. A literal (`eval("1 + 1")`) is safe, and attribute calls like pandas `df.eval` / `ast.literal_eval` are **not** flagged (no false positives).
+  - **`unsafe-deserialization`** — `pickle`/`marshal`/`dill` `.load`/`.loads` and `yaml.load` of a dynamic value. `yaml.safe_load` / `Loader=SafeLoader` down-tier to review; `FullLoader` (not fully safe) still blocks; a literal payload (test fixture) is not flagged.
+  - `dangerous-exec` now defers to these on Python (`skipIfAstLangs` includes `python`) — no double report; recall is preserved via the regex when the grammar isn't loaded. The four AST injection classes (`command-`/`code-injection`, `file-inclusion`, `unsafe-deserialization`) joined `SECURITY_RULES` so they get the same trust-label + reachability treatment as `sql-injection` (also closes a latent gap for PHP).
+  - **Known limitation:** module-alias resolution is not implemented — `import pickle as p; p.loads(x)` is a false negative (miss, not a false block). Direct `pickle.loads`/`os.system`/etc. are covered.
+
+---
+
 ## [0.6.1] — 2026-06-28
 
 _Patch on 0.6.0: false-positive dismissal from the VS Code extension (editor parity with the CLI `feedback` command), plus the read-consistency fix and bug-bash hardening below._
