@@ -43,6 +43,14 @@ _Language parity expansion: bring every supported language to maximum feasible A
   - Shared-core change: `requestSanitized` now honors a per-language `calleeField` (Java's call callee is the `name` field, not `function`) so the path down-tier works; bug bash also fixed fully-qualified `new java.io.File(...)` matching and a keyword-gate ordering FN (`execute(q)` is now resolved before the SQL-keyword check). `dangerous-exec` defers to Java.
   - **Honest gaps:** XXE, `StringBuilder`-built SQL, SpEL/OGNL injection, SSRF.
 
+- **C# is now a Deep (AST) language** ([src/core/rules/csharp.ts](src/core/rules/csharp.ts), `tree-sitter-c-sharp`) — five AST-precise classes, interpolation-aware (`$"…{x}"`, plus concat and `string.Format`):
+  - **`sql-injection`** (blocking) — `new SqlCommand(…)`, `cmd.CommandText = …`, Dapper `Query`/`Execute` (SQL-keyword gated), EF Core `FromSqlRaw`/`ExecuteSqlRaw` (fragment sinks). A `@name`-parameterized command and EF `FromSqlInterpolated` (which parameterizes the interpolation) are correctly safe; cross-line query variables and `const`-interpolation are resolved.
+  - **`command-injection`** (blocking) — `Process.Start`/`ProcessStartInfo.Arguments`/`FileName` with a concat/interpolation-built or request-tainted value; a bare opaque parameter is not flagged.
+  - **`unsafe-deserialization`** (blocking) — `BinaryFormatter`/`SoapFormatter`/`NetDataContractSerializer`/`LosFormatter` `.Deserialize`, resolved through the receiver's `new …()` so a safe serializer is distinguished.
+  - **`path-traversal`** (advisory) — `File.*`/`new FileStream`/`StreamReader` of `Request.Query`/`Request.Form`/…; `Path.GetFileName` down-tiers.
+  - **`xss-sink`** (advisory) — `@Html.Raw`/`Response.Write`/`new HtmlString` of a dynamic value; `HttpUtility.HtmlEncode` down-tiers.
+  - Shared-core change: `boundValue` (def-use) now resolves C#'s `variable_declarator`, which exposes a `name` field but a positional initializer (no `value` field); the grammar registry gained a per-language wasm-filename override (`tree-sitter-c-sharp` ships `tree-sitter-c_sharp.wasm`). **Honest gaps:** Json.NET `TypeNameHandling`, XXE, SSRF, LDAP.
+
 ---
 
 ## [0.6.1] — 2026-06-28

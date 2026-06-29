@@ -120,9 +120,14 @@ function boundValue(assign: TsNode, name: string, p: LanguageProfile): TsNode | 
     return null;
   }
   const nm = assign.childForFieldName("name");
-  const val = assign.childForFieldName("value");
-  if (nm && val && nm.type === p.identifierType && nm.text === name) {
-    return p.assignmentListType && val.type === p.assignmentListType ? (val.namedChild(0) ?? val) : val;
+  if (nm && nm.type === p.identifierType && nm.text === name) {
+    const val = assign.childForFieldName("value");
+    if (val) return p.assignmentListType && val.type === p.assignmentListType ? (val.namedChild(0) ?? val) : val;
+    // C# `variable_declarator` exposes a `name` field but the initializer is a positional sibling
+    // (`q = "a" + id` → [identifier, binary_expression]); take the last named child if it isn't the name.
+    const kids = assign.namedChildren;
+    const last = kids[kids.length - 1];
+    if (last && last.id !== nm.id) return last;
   }
   return null;
 }

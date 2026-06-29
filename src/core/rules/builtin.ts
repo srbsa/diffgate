@@ -5,6 +5,7 @@ import { PHP_RULES } from "./php.js";
 import { GO_RULES } from "./go.js";
 import { RUBY_RULES } from "./ruby.js";
 import { JAVA_RULES } from "./java.js";
+import { CSHARP_RULES } from "./csharp.js";
 import type { Rule, AstNode, EmitFn, RuleContext, DeprecatedEntry, Config } from "../types.js";
 
 const JS = ["javascript", "typescript"];
@@ -669,6 +670,7 @@ export const BUILTIN_RULES: Rule[] = [
   ...GO_RULES,
   ...RUBY_RULES,
   ...JAVA_RULES,
+  ...CSHARP_RULES,
 ];
 
 // ---------------------------------------------------------------------------
