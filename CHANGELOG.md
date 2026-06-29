@@ -7,9 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.7.0] — 2026-06-29
 
-_Language parity expansion: bring every supported language to maximum feasible AST depth, language by language._
+_Language parity expansion: every mainstream backend language brought to maximum feasible AST depth. DiffGate now does real tree-sitter AST analysis for **11 languages** (JS/TS via Babel; Python, PHP, Go, Ruby, Java, C#, Kotlin via tree-sitter) — Python reached PHP's 7-class depth, and Go, Ruby, Java, C#, and Kotlin graduated from the regex floor to Deep (AST). Each language is sink-targeted, parameterization/sanitizer-aware, and tuned to never false-block. Shared engine ([tsast-core](src/core/rules/tsast-core.ts)) extended with declarative `sinkQuery` discovery and a `LanguageProfile` that absorbed every grammar's def-use shape (Go `expression_list`, C# positional declarators, Kotlin field-less `property_declaration`) and callee field — so a new language is a profile + name-sets, not a new engine. 623 tests green._
 
 ### Added
 
