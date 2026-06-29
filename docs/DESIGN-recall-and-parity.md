@@ -16,7 +16,8 @@ DiffGate's strategic identity is **the deterministic gate, not the scanner** (se
 | Python | AST-precise across **7 sink classes** (SQLi, XSS, path-traversal, permissive-CORS, command-injection, code-injection, unsafe-deserialization) + the cross-language regex floor. |
 | PHP | AST-precise across **7 sink classes** (SQLi, command-injection, code-injection, file-inclusion, unsafe-deserialization, XSS, path-traversal) + the floor. |
 | Go | AST-precise **SQLi** (`fmt.Sprintf`/concat into `database/sql`·`sqlx`·gorm sinks), **command-injection** (`exec.Command` shell/dynamic-name — arg-vector form safe), **path-traversal** (`os.ReadFile`/`http.ServeFile` of request data) + the floor. |
-| Java / Ruby / C# / … | Regex floor only (secrets, exec, schema, raw-query, network) + cross-language injection advisories that escalate via the code graph. |
+| Ruby | AST-precise across **5 sink classes** (SQLi via `#{}` into ActiveRecord, command-injection, code-injection, unsafe-deserialization, XSS via `raw`/`html_safe`) + the floor. |
+| Java / C# / … | Regex floor only (secrets, exec, schema, raw-query, network) + cross-language injection advisories that escalate via the code graph. |
 
 The competitive reality (June 2026): **Semgrep Guardian** owns "deterministic security in the agent via MCP" with 5,000+ rules across 30+ languages, official Cursor + Claude Code partnerships, 3M scans/week. **We cannot win on rule breadth.** Hand-rolling one vuln × one language at a time is a race we lose at scale.
 

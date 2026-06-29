@@ -3,6 +3,7 @@ import { resolvesToSanitizer, classifySecret } from "../taint.js";
 import { PYTHON_RULES } from "./python.js";
 import { PHP_RULES } from "./php.js";
 import { GO_RULES } from "./go.js";
+import { RUBY_RULES } from "./ruby.js";
 import type { Rule, AstNode, EmitFn, RuleContext, DeprecatedEntry, Config } from "../types.js";
 
 const JS = ["javascript", "typescript"];
@@ -308,11 +309,11 @@ export const BUILTIN_RULES: Rule[] = [
     tier: "orange",
     title: "Dynamic execution / shell-out",
     languages: ["*"],
-    // PHP, Python, and Go have precise AST command-injection rules — defer to them there (no double
-    // report). Remaining languages (Ruby, …) still rely on this regex. Trade-offs of the precise owners:
-    // Python's `__import__` advisory is dropped, and Go's safe `exec.Command("git", x)` arg-vector form is
-    // (correctly) no longer flagged — both prefer zero false positives over a rare/legitimate pattern.
-    skipIfAstLangs: ["php", "python", "go"],
+    // PHP, Python, Go, and Ruby have precise AST command-/code-injection rules — defer to them there (no
+    // double report). Remaining languages still rely on this regex. Trade-offs of the precise owners:
+    // Python's `__import__` advisory is dropped, Go's/Ruby's safe multi-arg `exec`/`system(prog, x)` form is
+    // (correctly) no longer flagged — all prefer zero false positives over a rare/legitimate pattern.
+    skipIfAstLangs: ["php", "python", "go", "ruby"],
     message: "Dynamic code execution or shell-out. Audit for command/code injection — never pass unsanitized input here.",
     patterns: [
       /\beval\s*\(/,
@@ -665,6 +666,7 @@ export const BUILTIN_RULES: Rule[] = [
   ...PYTHON_RULES,
   ...PHP_RULES,
   ...GO_RULES,
+  ...RUBY_RULES,
 ];
 
 // ---------------------------------------------------------------------------

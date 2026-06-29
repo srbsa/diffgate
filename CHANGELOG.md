@@ -27,6 +27,14 @@ _Language parity expansion: bring every supported language to maximum feasible A
   - Shared-core change: `declInit` (intra-file def-use) generalized to resolve Go's `expression_list`-wrapped `:=`/`=` and `var`/`const` specs, behind new optional `LanguageProfile` fields (`assignmentType` now accepts a list; `assignmentListType`). No change to Python/PHP behavior.
   - **Honest gaps:** SSRF (`http.Get(taintedURL)`), `text/template`-vs-`html/template` XSS, sqlx `Get`/`Select`.
 
+- **Ruby is now a Deep (AST) language** ([src/core/rules/ruby.ts](src/core/rules/ruby.ts), `tree-sitter-ruby`) — five AST-precise classes built around `#{…}` interpolation (a `string`/`subshell` interpolating a non-constant is dynamic; interpolating only a `Constant` is static):
+  - **`sql-injection`** (blocking) — ActiveRecord raw-SQL methods (`where`/`find_by_sql`/`exists?`/`order`/`group`/`joins`/…) and connection methods (`execute`/`exec_query`/…) as fragment sinks, so `"age > #{x}"` blocks. The `?`-placeholder array (`where("age > ?", x)`), the value-bound `where("id = ?", "#{x}")`, and the hash (`where(age: x)`) forms are correctly safe; `connection.quote`/`sanitize_sql` down-tier.
+  - **`command-injection`** (blocking) — `system`/`exec`/`spawn`, backticks/`%x{}`, `IO.popen`, `Open3.*`, `Process.spawn`. Only the single-string form invokes a shell, so `system("git", "checkout", x)` is safe; `Shellwords.escape` down-tiers.
+  - **`code-injection`** (blocking) — `eval`/`instance_eval`/`class_eval`/`module_eval` of a dynamic value; the block form is not flagged.
+  - **`unsafe-deserialization`** (blocking) — `Marshal.load`/`YAML.load`/`Oj.load` of a dynamic value; `YAML.safe_load` is not a sink.
+  - **`xss-sink`** (advisory) — `raw(…)`/`.html_safe`/`safe_concat` of a dynamic value; `sanitize`/`h`/`html_escape` down-tier.
+  - `dangerous-exec` defers to Ruby. **Honest gaps:** mass-assignment, open-redirect, `render inline:` SSTI, dynamic `send`/`constantize`.
+
 ---
 
 ## [0.6.1] — 2026-06-28
