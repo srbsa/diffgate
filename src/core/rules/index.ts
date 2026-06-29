@@ -1,6 +1,7 @@
 import path from "path";
 import { walk } from "../parsers/javascript.js";
 import { hasAstSupport } from "../parsers/index.js";
+import { compileTsQuery } from "../parsers/treesitter.js";
 import { BUILTIN_RULES, deprecatedRules, customPatternRules, legacyOrangeRules, RULE_PACKS } from "./builtin.js";
 import type { Rule, FileRule, PatternRule, AstRule, TsAstRule, RuleContext, EmitFn, Finding, FindingEmitArg, AstNode, TsNode, TsTree, Config } from "../types.js";
 
@@ -253,31 +254,51 @@ function runAst(rule: AstRule, ast: AstNode, ctx: RuleContext, findings: Finding
   });
 }
 
-/** Walk every named node of a tree-sitter tree, applying a `tsast` rule's visitor. Mirrors runAst. */
+/** Apply a `tsast` rule's visitor over a tree-sitter tree. When the rule declares a `sinkQuery`, run
+ *  it once and visit only the captured sink nodes; otherwise walk every named node. Mirrors runAst.
+ *  Findings are position-sorted downstream (analyzer), so visit order does not affect output. */
 function runTsAst(rule: TsAstRule, tree: TsTree, ctx: RuleContext, findings: Finding[]): void {
+  const emit = (arg: FindingEmitArg): void => {
+    const loc = arg && arg.loc;
+    if (!loc || !loc.start) return;
+    const line = loc.start.line;
+    if (!inChange(ctx, line)) return;
+    const text = ctx.lines[line - 1] || "";
+    findings.push(
+      makeFinding(rule, {
+        line,
+        column: loc.start.column,
+        endLine: loc.end ? loc.end.line : line,
+        endColumn: loc.end ? loc.end.column : loc.start.column,
+        code: arg.code || text.trim(),
+        message: arg.message,
+        tier: arg.tier,
+        blocking: arg.blocking,
+        tierAdjusted: arg.tierAdjusted,
+        fix: arg.fix,
+        symbol: arg.symbol,
+      })
+    );
+  };
+
+  if (rule.sinkQuery) {
+    const query = compileTsQuery(ctx.language, rule.sinkQuery);
+    if (query) {
+      const seen = new Set<number>(); // a node can be captured by multiple patterns — visit it once
+      for (const m of query.matches(tree.rootNode)) {
+        for (const cap of m.captures) {
+          if (seen.has(cap.node.id)) continue;
+          seen.add(cap.node.id);
+          rule.visit(cap.node, ctx, emit);
+        }
+      }
+      return;
+    }
+    // query failed to compile for this grammar → fall through to the full walk (graceful)
+  }
+
   const visit = (node: TsNode): void => {
-    rule.visit(node, ctx, (arg: FindingEmitArg) => {
-      const loc = arg && arg.loc;
-      if (!loc || !loc.start) return;
-      const line = loc.start.line;
-      if (!inChange(ctx, line)) return;
-      const text = ctx.lines[line - 1] || "";
-      findings.push(
-        makeFinding(rule, {
-          line,
-          column: loc.start.column,
-          endLine: loc.end ? loc.end.line : line,
-          endColumn: loc.end ? loc.end.column : loc.start.column,
-          code: arg.code || text.trim(),
-          message: arg.message,
-          tier: arg.tier,
-          blocking: arg.blocking,
-          tierAdjusted: arg.tierAdjusted,
-          fix: arg.fix,
-          symbol: arg.symbol,
-        })
-      );
-    });
+    rule.visit(node, ctx, emit);
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child) visit(child);

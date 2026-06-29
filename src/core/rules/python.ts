@@ -12,10 +12,17 @@
 //
 // Safety posture (identical to the JS rule): blocking orange by default; we only ever DOWN-tier on a
 // recognized sanitizer, never suppress. The graph reachability/blast-radius pass composes on top.
+//
+// The data-flow algorithm (static-const resolution, dynamic-part extraction, def-use, taint) lives in
+// `tsast-core`; this file supplies only the Python vocabulary (`pythonProfile`), the Python-specific
+// string/sink predicates, and the rule definitions.
 
 import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
-
-const SQL_KEYWORDS = /\b(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|MERGE)\b/i;
+import {
+  type LanguageProfile,
+  unwrap, declInit, isStaticConst, dynamicParts, looksLikeSql,
+  taintedByRequest as coreTaintedByRequest, requestSanitized, emitFinding,
+} from "./tsast-core.js";
 
 // Query sinks: a dynamic SQL string reaching one of these is the injection. Attribute calls
 // (`cur.execute`, `qs.raw`, `conn.exec_driver_sql`, `cur.mogrify`) and the SQLAlchemy `text(...)` fn.
@@ -28,11 +35,67 @@ const SINK_FUNCS = new Set(["text"]);
 // neutralizes the injection (down-tier, don't block).
 const SANITIZERS = /(?:^|\.)(?:Identifier|SQL|Literal|quote_ident|quote_name|escape_string|quote)$/;
 
-const MAX_RESOLVE_DEPTH = 6;
+// --- Python vocabulary -------------------------------------------------------
 
-function lineOf(node: TsNode): number {
-  return node.startPosition.row + 1;
+/** The f-string prefix letters (`f`, `rf`, `F`…) of a string node, or "" for a plain string. */
+function stringPrefix(node: TsNode): string {
+  return (node.text.match(/^[A-Za-z]*/) || [""])[0];
 }
+
+function isFString(node: TsNode): boolean {
+  return /f/i.test(stringPrefix(node)) || node.descendantsOfType("interpolation").length > 0;
+}
+
+/** The interpolated expression inside an f-string `{…}` placeholder. */
+function interpExpr(interp: TsNode): TsNode | null {
+  return interp.namedChild(0);
+}
+
+/** Static text of a node with interpolations/dynamic parts stripped — for SQL-keyword detection. */
+function staticText(node: TsNode): string {
+  const n = unwrap(node, pythonProfile);
+  if (n.type === "string") {
+    return n.descendantsOfType("string_content").map((c) => c.text).join(" ");
+  }
+  if (n.type === "binary_operator" || n.type === "concatenated_string") {
+    return n.namedChildren.map(staticText).join(" ");
+  }
+  if (n.type === "call") {
+    const fn = n.childForFieldName("function");
+    if (fn && fn.type === "attribute") {
+      const obj = fn.childForFieldName("object");
+      if (obj) return staticText(obj); // "…".format(x) → the template's static text
+    }
+  }
+  return "";
+}
+
+export const pythonProfile: LanguageProfile = {
+  lang: "python",
+  parenthesizedType: "parenthesized_expression",
+  identifierType: "identifier",
+  assignmentType: "assignment",
+  staticLiteralTypes: new Set(["integer", "float", "true", "false", "none"]),
+  stringTypes: new Set(["string"]),
+  concatTypes: new Set(["binary_operator", "concatenated_string"]),
+  isInterpolating: isFString,
+  interpolatedExprs: (node) => node.descendantsOfType("interpolation").map(interpExpr).filter((e): e is TsNode => !!e),
+  staticText,
+  enclosingFnTypes: new Set(["function_definition"]),
+  fnNameField: "name",
+  callDescendantType: "call",
+  recurseNestedConcat: false, // Python pushes a nested concatenation whole (preserves current behavior)
+  // `"…{}".format(args)` — the format arguments are the injected values.
+  resolveDynamicExtra(n, root) {
+    if (n.type === "call") {
+      const args = n.childForFieldName("arguments");
+      if (args) return args.namedChildren.filter((a) => !isStaticConst(a, root, pythonProfile));
+    }
+    return null;
+  },
+};
+
+// --- SQL injection ----------------------------------------------------------
 
 /** Name of the method/function being called, for sink matching. `cur.execute` → "execute". */
 function calleeInfo(call: TsNode): { attr: string | null; func: string | null } {
@@ -51,154 +114,24 @@ function isSink(call: TsNode): boolean {
   return (attr !== null && SINK_ATTRS.has(attr)) || (func !== null && SINK_FUNCS.has(func));
 }
 
-/** Nearest enclosing `def` name, so the graph can look up reachability/blast-radius for the sink. */
-function enclosingFunction(node: TsNode): string | null {
-  let n: TsNode | null = node.parent;
-  while (n) {
-    if (n.type === "function_definition") {
-      const name = n.childForFieldName("name");
-      return name ? name.text : null;
-    }
-    n = n.parent;
-  }
-  return null;
-}
-
-/** Last value assigned to a bare identifier anywhere in the file (intra-file def-use, like the JS rule). */
-function declInit(name: string, root: TsNode): TsNode | null {
-  let found: TsNode | null = null;
-  for (const assign of root.descendantsOfType("assignment")) {
-    const left = assign.childForFieldName("left");
-    const right = assign.childForFieldName("right");
-    if (left && right && left.type === "identifier" && left.text === name) found = right;
-  }
-  return found;
-}
-
-function unwrap(node: TsNode): TsNode {
-  let n = node;
-  while (n.type === "parenthesized_expression") {
-    const inner = n.namedChild(0);
-    if (!inner) break;
-    n = inner;
-  }
-  return n;
-}
-
-/** The f-string prefix letters (`f`, `rf`, `F`…) of a string node, or "" for a plain string. */
-function stringPrefix(node: TsNode): string {
-  return (node.text.match(/^[A-Za-z]*/) || [""])[0];
-}
-
-function isFString(node: TsNode): boolean {
-  return /f/i.test(stringPrefix(node)) || node.descendantsOfType("interpolation").length > 0;
-}
-
-/** The interpolated expression inside an f-string `{…}` placeholder. */
-function interpExpr(interp: TsNode): TsNode | null {
-  return interp.namedChild(0);
-}
-
-/** Static text of a node with interpolations/dynamic parts stripped — for SQL-keyword detection. */
-function staticText(node: TsNode): string {
-  const n = unwrap(node);
-  if (n.type === "string") {
-    return n.descendantsOfType("string_content").map((c) => c.text).join(" ");
-  }
-  if (n.type === "binary_operator" || n.type === "concatenated_string") {
-    return n.namedChildren.map(staticText).join(" ");
-  }
-  if (n.type === "call") {
-    const fn = n.childForFieldName("function");
-    if (fn && fn.type === "attribute") {
-      const obj = fn.childForFieldName("object");
-      if (obj) return staticText(obj); // "…".format(x) → the template's static text
-    }
-  }
-  return "";
-}
-
-function looksLikeSql(node: TsNode): boolean {
-  return SQL_KEYWORDS.test(staticText(node));
-}
-
-/** A value that resolves to a literal constant (string/number/bool/None, or an identifier bound to one). */
-function isStaticConst(node: TsNode | null, root: TsNode, depth = 0): boolean {
-  if (!node || depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  switch (n.type) {
-    case "string":
-      return !isFString(n); // a plain literal is static; an f-string may interpolate
-    case "integer":
-    case "float":
-    case "true":
-    case "false":
-    case "none":
-      return true;
-    case "binary_operator":
-    case "concatenated_string":
-      return n.namedChildren.every((c) => isStaticConst(c, root, depth + 1));
-    case "identifier": {
-      const init = declInit(n.text, root);
-      return init ? isStaticConst(init, root, depth + 1) : false;
-    }
-    default:
-      return false;
-  }
-}
-
-/** The dynamic (non-constant) sub-expressions that get injected into the SQL string. */
-function dynamicParts(node: TsNode, root: TsNode, depth = 0): TsNode[] {
-  if (depth > MAX_RESOLVE_DEPTH) return [];
-  const n = unwrap(node);
-  if (n.type === "string" && isFString(n)) {
-    return n.descendantsOfType("interpolation")
-      .map(interpExpr)
-      .filter((e): e is TsNode => !!e && !isStaticConst(e, root));
-  }
-  // `+` concatenation (binary_operator) and implicit adjacent-literal concatenation
-  // (concatenated_string — the idiomatic multi-line SQL form `"SELECT … " f"WHERE id = {x}"`) share
-  // the same operand handling: plain/static parts are safe, f-string parts contribute their interps.
-  if (n.type === "binary_operator" || n.type === "concatenated_string") {
-    const out: TsNode[] = [];
-    for (const c of n.namedChildren) {
-      if (c.type === "string" && !isFString(c)) continue; // a plain SQL literal operand is safe
-      if (isStaticConst(c, root)) continue;
-      if (c.type === "string" && isFString(c)) { out.push(...dynamicParts(c, root, depth + 1)); continue; }
-      out.push(c);
-    }
-    return out;
-  }
-  if (n.type === "call") {
-    // "…{}".format(args) — the format arguments are the injected values.
-    const args = n.childForFieldName("arguments");
-    if (args) return args.namedChildren.filter((a) => !isStaticConst(a, root));
-  }
-  if (n.type === "identifier") {
-    const init = declInit(n.text, root);
-    if (init) return dynamicParts(init, root, depth + 1);
-  }
-  return [];
-}
-
 /** Is `node` (the sink's first argument) a SQL string built from a dynamic, non-constant value? */
 function isDynamicSql(node: TsNode, root: TsNode, depth = 0): boolean {
-  if (depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  if (!looksLikeSql(n)) {
+  if (depth > 6) return false;
+  const n = unwrap(node, pythonProfile);
+  if (!looksLikeSql(n, pythonProfile)) {
     // An identifier may resolve to a SQL string elsewhere in the file.
     if (n.type === "identifier") {
-      const init = declInit(n.text, root);
+      const init = declInit(n.text, root, pythonProfile);
       return init ? isDynamicSql(init, root, depth + 1) : false;
     }
     return false;
   }
-  if (n.type === "string") return isFString(n) && dynamicParts(n, root).length > 0;
+  if (n.type === "string") return isFString(n) && dynamicParts(n, root, pythonProfile).length > 0;
   if (n.type === "binary_operator" || n.type === "call" || n.type === "concatenated_string") {
-    return dynamicParts(n, root).length > 0;
+    return dynamicParts(n, root, pythonProfile).length > 0;
   }
   if (n.type === "identifier") {
-    const init = declInit(n.text, root);
+    const init = declInit(n.text, root, pythonProfile);
     return init ? isDynamicSql(init, root, depth + 1) : false;
   }
   return false;
@@ -206,7 +139,7 @@ function isDynamicSql(node: TsNode, root: TsNode, depth = 0): boolean {
 
 /** A call node that is itself a recognized sanitizer (psycopg2 `sql.Identifier(x)`, `quote_ident(x)`). */
 function isSanitizerCall(node: TsNode): boolean {
-  const n = unwrap(node);
+  const n = unwrap(node, pythonProfile);
   if (n.type !== "call") return false;
   const fn = n.childForFieldName("function");
   return !!fn && SANITIZERS.test(fn.text);
@@ -254,19 +187,19 @@ function isXssSink(call: TsNode): boolean {
 /** A value that is NOT a compile-time-constant string — i.e. potentially attacker-influenced HTML.
  *  Mirrors the JS rule's `isDynamicString` (anything that isn't a static literal is dynamic). */
 function isDynamicHtml(node: TsNode, root: TsNode): boolean {
-  return !isStaticConst(node, root);
+  return !isStaticConst(node, root, pythonProfile);
 }
 
 /** The value (or all of its dynamic parts) is wrapped in a recognized HTML escaper. */
 function isXssSanitized(node: TsNode, root: TsNode, depth = 0): boolean {
-  if (depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
+  if (depth > 6) return false;
+  const n = unwrap(node, pythonProfile);
   if (n.type === "call") {
     const fn = n.childForFieldName("function");
     if (fn && XSS_SANITIZERS.test(fn.text)) return true;
   }
   if (n.type === "identifier") {
-    const init = declInit(n.text, root);
+    const init = declInit(n.text, root, pythonProfile);
     return init ? isXssSanitized(init, root, depth + 1) : false;
   }
   return false;
@@ -309,37 +242,13 @@ function ptSinkArgs(call: TsNode): TsNode[] | null {
 }
 
 /** True when an expression (resolving identifiers intra-file) carries HTTP request data. */
-function taintedByRequest(node: TsNode, root: TsNode, depth = 0): boolean {
-  if (depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  if (PT_REQUEST_SOURCE.test(n.text)) return true;
-  if (n.type === "identifier") {
-    const init = declInit(n.text, root);
-    return init ? taintedByRequest(init, root, depth + 1) : false;
-  }
-  return false;
+function taintedByRequest(node: TsNode, root: TsNode): boolean {
+  return coreTaintedByRequest(node, root, pythonProfile, PT_REQUEST_SOURCE);
 }
 
-/** True when EVERY request value in the path is wrapped in a recognized sanitizer (containment/
- *  basename). A mix of sanitized + raw request data stays blocking — we never hide a raw value
- *  (mirrors the sql-injection rule's `every`-sanitized invariant). */
-function pathSanitized(node: TsNode, root: TsNode, depth = 0): boolean {
-  if (depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  if (n.type === "identifier") {
-    const init = declInit(n.text, root);
-    return init ? pathSanitized(init, root, depth + 1) : false;
-  }
-  if (!PT_REQUEST_SOURCE.test(n.text)) return false; // nothing to sanitize
-  // Strike out every sanitizer-call subtree, then check whether any RAW request source remains.
-  let remaining = n.text;
-  let sawSanitizer = false;
-  const calls = n.type === "call" ? [n, ...n.descendantsOfType("call")] : n.descendantsOfType("call");
-  for (const call of calls) {
-    const fn = call.childForFieldName("function");
-    if (fn && PT_SANITIZERS.test(fn.text)) { sawSanitizer = true; remaining = remaining.split(call.text).join(" "); }
-  }
-  return sawSanitizer && !PT_REQUEST_SOURCE.test(remaining);
+/** True when EVERY request value in the path is wrapped in a recognized sanitizer. */
+function pathSanitized(node: TsNode, root: TsNode): boolean {
+  return requestSanitized(node, root, pythonProfile, PT_REQUEST_SOURCE, PT_SANITIZERS);
 }
 
 const PT_MESSAGE =
@@ -403,6 +312,8 @@ export const PYTHON_RULES: TsAstRule[] = [
     title: "SQL injection sink",
     languages: ["python"],
     message: MESSAGE,
+    // call nodes only; the imperative core decides whether arg0 is a dynamic SQL string.
+    sinkQuery: "(call) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "call" || !isSink(node)) return;
       const args = node.childForFieldName("arguments");
@@ -411,21 +322,10 @@ export const PYTHON_RULES: TsAstRule[] = [
       const root = ctx.tsTree!.rootNode;
       if (!isDynamicSql(a0, root)) return;
 
-      const dyn = dynamicParts(unwrap(a0).type === "identifier" ? (declInit(unwrap(a0).text, root) || a0) : a0, root);
+      const dyn = dynamicParts(unwrap(a0, pythonProfile).type === "identifier" ? (declInit(unwrap(a0, pythonProfile).text, root, pythonProfile) || a0) : a0, root, pythonProfile);
       const sanitized = dyn.length > 0 && dyn.every(isSanitizerCall);
-
-      const line = lineOf(node);
-      const loc = {
-        start: { line, column: node.startPosition.column },
-        end: { line: node.endPosition.row + 1, column: node.endPosition.column },
-      };
-      const code = (ctx.lines[line - 1] || "").trim();
-      const symbol = enclosingFunction(node);
-      emit(
-        sanitized
-          ? { loc, code, symbol, tier: "yellow", blocking: false, tierAdjusted: "deescalated", message: `${MESSAGE}\n\n${sanitizedNote()}` }
-          : { loc, code, symbol }
-      );
+      emitFinding(node, ctx, emit, pythonProfile,
+        sanitized ? { sanitized: true, message: MESSAGE, sanitizedNote: sanitizedNote() } : { sanitized: false, message: MESSAGE, sanitizedNote: "" });
     },
   },
   {
@@ -436,6 +336,7 @@ export const PYTHON_RULES: TsAstRule[] = [
     title: "XSS sink",
     languages: ["python"],
     message: XSS_MESSAGE,
+    sinkQuery: "(call) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "call" || !isXssSink(node)) return;
       const args = node.childForFieldName("arguments");
@@ -445,18 +346,8 @@ export const PYTHON_RULES: TsAstRule[] = [
       if (!isDynamicHtml(a0, root)) return; // a fully static HTML literal is safe
 
       const sanitized = isXssSanitized(a0, root);
-      const line = lineOf(node);
-      const loc = {
-        start: { line, column: node.startPosition.column },
-        end: { line: node.endPosition.row + 1, column: node.endPosition.column },
-      };
-      const code = (ctx.lines[line - 1] || "").trim();
-      const symbol = enclosingFunction(node);
-      emit(
-        sanitized
-          ? { loc, code, symbol, tier: "yellow", blocking: false, tierAdjusted: "deescalated", message: `${XSS_MESSAGE}\n\n${xssSanitizedNote()}` }
-          : { loc, code, symbol }
-      );
+      emitFinding(node, ctx, emit, pythonProfile,
+        sanitized ? { sanitized: true, message: XSS_MESSAGE, sanitizedNote: xssSanitizedNote() } : { sanitized: false, message: XSS_MESSAGE, sanitizedNote: "" });
     },
   },
   {
@@ -467,6 +358,7 @@ export const PYTHON_RULES: TsAstRule[] = [
     title: "Path traversal sink",
     languages: ["python"],
     message: PT_MESSAGE,
+    sinkQuery: "(call) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "call") return;
       const args = ptSinkArgs(node);
@@ -475,18 +367,8 @@ export const PYTHON_RULES: TsAstRule[] = [
       const tainted = args.find((a) => taintedByRequest(a, root));
       if (!tainted) return;
       const sanitized = pathSanitized(tainted, root);
-      const line = lineOf(node);
-      const loc = {
-        start: { line, column: node.startPosition.column },
-        end: { line: node.endPosition.row + 1, column: node.endPosition.column },
-      };
-      const code = (ctx.lines[line - 1] || "").trim();
-      const symbol = enclosingFunction(node);
-      emit(
-        sanitized
-          ? { loc, code, symbol, tier: "yellow", blocking: false, tierAdjusted: "deescalated", message: `${PT_MESSAGE}\n\n${ptSanitizedNote()}` }
-          : { loc, code, symbol }
-      );
+      emitFinding(node, ctx, emit, pythonProfile,
+        sanitized ? { sanitized: true, message: PT_MESSAGE, sanitizedNote: ptSanitizedNote() } : { sanitized: false, message: PT_MESSAGE, sanitizedNote: "" });
     },
   },
   {
@@ -510,7 +392,7 @@ export const PYTHON_RULES: TsAstRule[] = [
         }
       }
       if (!hit) return;
-      const line = lineOf(node);
+      const line = node.startPosition.row + 1;
       const loc = {
         start: { line, column: node.startPosition.column },
         end: { line: node.endPosition.row + 1, column: node.endPosition.column },

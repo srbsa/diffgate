@@ -12,10 +12,17 @@
 // Coverage (each a separate `tsast` rule sharing the helpers below):
 //   sql-injection · command-injection · code-injection · file-inclusion · unsafe-deserialization ·
 //   xss-sink · path-traversal.
+//
+// The data-flow algorithm lives in `tsast-core`; this file supplies the PHP vocabulary (`phpProfile`),
+// the PHP-specific string/sink/cast predicates, and the rule definitions.
 
-import type { TsAstRule, TsNode, RuleContext, EmitFn, FindingEmitArg, Tier } from "../types.js";
-
-const SQL_KEYWORDS = /\b(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|MERGE)\b/i;
+import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
+import {
+  type LanguageProfile,
+  unwrap, declInit, isStaticConst, dynamicParts, looksLikeSql,
+  valueSanitized, taintedByRequest as coreTaintedByRequest, requestSanitized as coreRequestSanitized,
+  emitFinding as coreEmitFinding,
+} from "./tsast-core.js";
 
 // SQL query sinks. Function-style (`mysqli_query($conn, $sql)`) and method/static-style
 // (`$pdo->query($sql)`, `$wpdb->get_results($sql)`, `DB::statement($sql)`).
@@ -72,21 +79,7 @@ const REQUEST_SOURCE = /\$_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER)\b|\$HTTP_RAW
 // Tree-sitter-php node types that represent an interpolated value inside a double-quoted/heredoc/backtick string.
 const INTERP_TYPES = ["variable_name", "member_access_expression", "subscript_expression", "nullsafe_member_access_expression", "scoped_property_access_expression"];
 
-const MAX_RESOLVE_DEPTH = 6;
-
-function lineOf(node: TsNode): number {
-  return node.startPosition.row + 1;
-}
-
-function unwrap(node: TsNode): TsNode {
-  let n = node;
-  while (n.type === "parenthesized_expression") {
-    const inner = n.namedChild(0);
-    if (!inner) break;
-    n = inner;
-  }
-  return n;
-}
+// --- PHP vocabulary ----------------------------------------------------------
 
 /** Method/function name a call node targets, for sink matching. */
 function callName(call: TsNode): string | null {
@@ -101,49 +94,11 @@ function callName(call: TsNode): string | null {
   return null;
 }
 
-function isSqlSink(call: TsNode): boolean {
-  const name = callName(call);
-  if (!name) return false;
-  if (call.type === "function_call_expression") return SINK_FUNCS.has(name.toLowerCase());
-  return SINK_METHODS.has(name);
-}
-
-/** A Laravel raw-fragment sink (`->whereRaw(...)`, …) — method-name only, no SQL-keyword gate. */
-function isFragmentSink(call: TsNode): boolean {
-  if (call.type !== "member_call_expression" && call.type !== "nullsafe_member_call_expression" && call.type !== "scoped_call_expression") return false;
-  const name = callName(call);
-  return !!name && SINK_FRAGMENT_METHODS.has(name);
-}
-
 /** The argument expressions of a call (unwrapping `argument` nodes). */
 function callArgs(call: TsNode): TsNode[] {
   const args = call.childForFieldName("arguments");
   if (!args) return [];
   return args.namedChildren.map((a) => (a.type === "argument" ? a.namedChild(0) : a)).filter((a): a is TsNode => !!a);
-}
-
-/** Nearest enclosing function/method name, for the graph reachability/blast-radius lookup. */
-function enclosingFunction(node: TsNode): string | null {
-  let n: TsNode | null = node.parent;
-  while (n) {
-    if (n.type === "function_definition" || n.type === "method_declaration") {
-      const name = n.childForFieldName("name");
-      return name ? name.text : null;
-    }
-    n = n.parent;
-  }
-  return null;
-}
-
-/** Last value assigned to a `$var` anywhere in the file (intra-file def-use). */
-function declInit(varText: string, root: TsNode): TsNode | null {
-  let found: TsNode | null = null;
-  for (const assign of root.descendantsOfType("assignment_expression")) {
-    const left = assign.childForFieldName("left");
-    const right = assign.childForFieldName("right");
-    if (left && right && left.type === "variable_name" && left.text === varText) found = right;
-  }
-  return found;
 }
 
 /** A double-quoted/heredoc/backtick string with at least one interpolated variable/member/subscript. */
@@ -167,87 +122,6 @@ function staticText(node: TsNode): string {
   return node.text; // single-quoted string / other literal
 }
 
-function looksLikeSql(node: TsNode): boolean {
-  return SQL_KEYWORDS.test(staticText(node));
-}
-
-/** A value that resolves to a compile-time constant (literal, or a `$var` bound to one). */
-function isStaticConst(node: TsNode | null, root: TsNode, depth = 0): boolean {
-  if (!node || depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  switch (n.type) {
-    case "string":
-    case "integer":
-    case "float":
-    case "boolean":
-      return true;
-    case "encapsed_string":
-    case "heredoc":
-    case "shell_command_expression":
-      return !isInterpolating(n);
-    case "name":
-      // A bare name in expression position is a constant reference — a magic constant (`__DIR__`,
-      // `__FILE__`, …) or a user `const`/`define`. Runtime-constant, not attacker input, so a path/
-      // command/query built from it is not dynamic (`include(__DIR__ . "/config.php")` is safe).
-      return true;
-    case "binary_expression":
-      return n.namedChildren.every((c) => isStaticConst(c, root, depth + 1));
-    case "function_call_expression": {
-      // `dirname(...)` (the pre-`__DIR__` idiom `dirname(__FILE__)`) is static when its args are.
-      const fn = n.childForFieldName("function");
-      if (fn && /(?:^|\\)dirname$/i.test(fn.text)) return callArgs(n).every((a) => isStaticConst(a, root, depth + 1));
-      return false;
-    }
-    case "variable_name": {
-      const init = declInit(n.text, root);
-      return init ? isStaticConst(init, root, depth + 1) : false;
-    }
-    default:
-      return false;
-  }
-}
-
-/** Any value that is not a compile-time constant — the trigger for sinks where the danger is dynamism
- *  itself (command/code/include/deserialize), independent of SQL-keyword shape. */
-function isDynamicValue(node: TsNode | null, root: TsNode): boolean {
-  if (!node) return false;
-  return !isStaticConst(node, root);
-}
-
-/** The dynamic (non-constant) sub-expressions interpolated/concatenated into a string-building value. */
-function dynamicParts(node: TsNode, root: TsNode, depth = 0): TsNode[] {
-  if (depth > MAX_RESOLVE_DEPTH) return [];
-  const n = unwrap(node);
-  if ((n.type === "encapsed_string" || n.type === "heredoc" || n.type === "shell_command_expression") && isInterpolating(n)) {
-    return interpolatedExprs(n).filter((e) => !isStaticConst(e, root));
-  }
-  if (n.type === "binary_expression") {
-    const out: TsNode[] = [];
-    for (const c of n.namedChildren) {
-      if (c.type === "string") continue; // single-quoted literal operand is safe
-      if ((c.type === "encapsed_string" || c.type === "heredoc") && !isInterpolating(c)) continue;
-      if (isStaticConst(c, root)) continue;
-      // Recurse into nested concatenations and interpolations to reach the actual dynamic leaves —
-      // `"a" . esc($x) . "b"` parses left-associative, so the escaper is nested one level down.
-      if (c.type === "binary_expression" || ((c.type === "encapsed_string" || c.type === "heredoc") && isInterpolating(c))) {
-        out.push(...dynamicParts(c, root, depth + 1));
-        continue;
-      }
-      out.push(c);
-    }
-    return out;
-  }
-  if (n.type === "function_call_expression" && isSprintf(n)) {
-    // sprintf("… %s …", $a, $b) — the format args (after arg0) are the injected values.
-    return callArgs(n).slice(1).filter((a) => !isStaticConst(a, root));
-  }
-  if (n.type === "variable_name") {
-    const init = declInit(n.text, root);
-    if (init) return dynamicParts(init, root, depth + 1);
-  }
-  return [];
-}
-
 /** `sprintf`/`vsprintf` — builds a string from a format + args, the PHP analogue of Python `.format`. */
 function isSprintf(node: TsNode): boolean {
   if (node.type !== "function_call_expression") return false;
@@ -255,25 +129,98 @@ function isSprintf(node: TsNode): boolean {
   return !!fn && /(?:^|\\)v?sprintf$/i.test(fn.text);
 }
 
+export const phpProfile: LanguageProfile = {
+  lang: "php",
+  parenthesizedType: "parenthesized_expression",
+  identifierType: "variable_name",
+  assignmentType: "assignment_expression",
+  staticLiteralTypes: new Set(["integer", "float", "boolean"]),
+  // `string` (single-quoted) never interpolates → static; encapsed/heredoc/shell are static iff not interpolating.
+  stringTypes: new Set(["string", "encapsed_string", "heredoc", "shell_command_expression"]),
+  concatTypes: new Set(["binary_expression"]),
+  isInterpolating,
+  interpolatedExprs,
+  staticText,
+  enclosingFnTypes: new Set(["function_definition", "method_declaration"]),
+  fnNameField: "name",
+  callDescendantType: "function_call_expression",
+  recurseNestedConcat: true, // `"a" . esc($x) . "b"` parses left-associative; recurse to reach the leaves
+  safeCasts: SAFE_CASTS,
+  // A bare `name` is a constant reference (magic constant `__DIR__`/`__FILE__`, or a user `const`/`define`)
+  // → runtime-constant, not attacker input. `dirname(...)` is static when its args are.
+  resolveStaticExtra(n, _root, recurse) {
+    if (n.type === "name") return true;
+    if (n.type === "function_call_expression") {
+      const fn = n.childForFieldName("function");
+      if (fn && /(?:^|\\)dirname$/i.test(fn.text)) return callArgs(n).every(recurse);
+      return false;
+    }
+    return null;
+  },
+  // sprintf("… %s …", $a, $b) — the format args (after arg0) are the injected values.
+  resolveDynamicExtra(n, root) {
+    if (isSprintf(n)) return callArgs(n).slice(1).filter((a) => !isStaticConst(a, root, phpProfile));
+    return null;
+  },
+};
+
+// --- thin PHP wrappers over the shared core (preserve call sites) ------------
+
+function isDynamicValue(node: TsNode | null, root: TsNode): boolean {
+  if (!node) return false;
+  return !isStaticConst(node, root, phpProfile);
+}
+
+function taintedByRequest(node: TsNode, root: TsNode): boolean {
+  return coreTaintedByRequest(node, root, phpProfile, REQUEST_SOURCE);
+}
+
+function requestSanitized(node: TsNode, root: TsNode, re: RegExp): boolean {
+  return coreRequestSanitized(node, root, phpProfile, REQUEST_SOURCE, re);
+}
+
+function emitFinding(
+  node: TsNode, ctx: RuleContext, emit: EmitFn,
+  opts: { sanitized: boolean; message: string; sanitizedNote: string }
+): void {
+  coreEmitFinding(node, ctx, emit, phpProfile, opts);
+}
+
+// --- sink-specific predicates ------------------------------------------------
+
+function isSqlSink(call: TsNode): boolean {
+  const name = callName(call);
+  if (!name) return false;
+  if (call.type === "function_call_expression") return SINK_FUNCS.has(name.toLowerCase());
+  return SINK_METHODS.has(name);
+}
+
+/** A Laravel raw-fragment sink (`->whereRaw(...)`, …) — method-name only, no SQL-keyword gate. */
+function isFragmentSink(call: TsNode): boolean {
+  if (call.type !== "member_call_expression" && call.type !== "nullsafe_member_call_expression" && call.type !== "scoped_call_expression") return false;
+  const name = callName(call);
+  return !!name && SINK_FRAGMENT_METHODS.has(name);
+}
+
 function isSqlDynamic(node: TsNode, root: TsNode, depth = 0): boolean {
-  if (depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  if (!looksLikeSql(n)) {
+  if (depth > 6) return false;
+  const n = unwrap(node, phpProfile);
+  if (!looksLikeSql(n, phpProfile)) {
     if (n.type === "variable_name") {
-      const init = declInit(n.text, root);
+      const init = declInit(n.text, root, phpProfile);
       return init ? isSqlDynamic(init, root, depth + 1) : false;
     }
     return false;
   }
   if (n.type === "string") return false; // single-quoted: literal, never interpolates
-  if (n.type === "encapsed_string" || n.type === "heredoc") return isInterpolating(n) && dynamicParts(n, root).length > 0;
-  if (n.type === "binary_expression") return dynamicParts(n, root).length > 0;
+  if (n.type === "encapsed_string" || n.type === "heredoc") return isInterpolating(n) && dynamicParts(n, root, phpProfile).length > 0;
+  if (n.type === "binary_expression") return dynamicParts(n, root, phpProfile).length > 0;
   if (n.type === "function_call_expression" && isSprintf(n)) {
     const args = callArgs(n);
-    return args.length > 0 && looksLikeSql(args[0]) && args.slice(1).some((a) => !isStaticConst(a, root));
+    return args.length > 0 && looksLikeSql(args[0], phpProfile) && args.slice(1).some((a) => !isStaticConst(a, root, phpProfile));
   }
   if (n.type === "variable_name") {
-    const init = declInit(n.text, root);
+    const init = declInit(n.text, root, phpProfile);
     return init ? isSqlDynamic(init, root, depth + 1) : false;
   }
   return false;
@@ -281,7 +228,7 @@ function isSqlDynamic(node: TsNode, root: TsNode, depth = 0): boolean {
 
 /** A node that neutralizes its value: a SQL escaper/quoter call, or an int/float cast. */
 function isSqlSanitizerCall(node: TsNode): boolean {
-  const n = unwrap(node);
+  const n = unwrap(node, phpProfile);
   if (n.type === "cast_expression") {
     const t = n.childForFieldName("type");
     return !!t && SAFE_CASTS.has(`(${t.text})`);
@@ -297,66 +244,12 @@ function isSqlSanitizerCall(node: TsNode): boolean {
   return false;
 }
 
-/** Generic "is this whole value neutralized by a recognized sanitizer" check, parameterized by the
- *  per-class predicate. Mirrors the SQL rule's `every-dynamic-part-sanitized` invariant and handles a
- *  top-level sanitizer call (`system(escapeshellarg($x))`) plus nested concatenation. We never hide a
- *  raw value: a mix of escaped + raw stays blocking. */
-function valueSanitized(node: TsNode, root: TsNode, pred: (n: TsNode) => boolean, depth = 0): boolean {
-  if (depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  if (pred(n)) return true; // entire value is sanitizer(...) / a safe cast
-  if (n.type === "variable_name") {
-    const init = declInit(n.text, root);
-    return init ? valueSanitized(init, root, pred, depth + 1) : false;
-  }
-  const dyn = dynamicParts(n, root);
-  return dyn.length > 0 && dyn.every((d) => valueSanitized(d, root, pred, depth + 1));
-}
-
-/** True when an expression (resolving identifiers intra-file) carries HTTP request data. */
-function taintedByRequest(node: TsNode, root: TsNode, depth = 0): boolean {
-  if (depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  if (REQUEST_SOURCE.test(n.text)) return true; // covers inline subgroups: `"x" . $_GET['a']`
-  if (n.type === "variable_name") {
-    const init = declInit(n.text, root);
-    return init ? taintedByRequest(init, root, depth + 1) : false;
-  }
-  return false;
-}
-
 /** A simple-function-call sanitizer-call predicate keyed by name regex. */
 function callMatches(node: TsNode, re: RegExp): boolean {
-  const n = unwrap(node);
+  const n = unwrap(node, phpProfile);
   if (n.type !== "function_call_expression") return false;
   const fn = n.childForFieldName("function");
   return !!fn && re.test(fn.text);
-}
-
-/** True when EVERY request value reaching a sink is wrapped in a recognized sanitizer (strike-out the
- *  sanitizer subtrees, then check no raw request source remains). A mix of sanitized + raw stays
- *  blocking. Used for request-tainted sinks (XSS, path) where the value isn't a clean concat tree. */
-function requestSanitized(node: TsNode, root: TsNode, re: RegExp, depth = 0): boolean {
-  if (depth > MAX_RESOLVE_DEPTH) return false;
-  const n = unwrap(node);
-  if (n.type === "variable_name") {
-    const init = declInit(n.text, root);
-    return init ? requestSanitized(init, root, re, depth + 1) : false;
-  }
-  if (!REQUEST_SOURCE.test(n.text)) return false; // nothing to sanitize
-  let remaining = n.text;
-  let sawSanitizer = false;
-  const calls = n.type === "function_call_expression" ? [n, ...n.descendantsOfType("function_call_expression")] : n.descendantsOfType("function_call_expression");
-  for (const call of calls) {
-    const fn = call.childForFieldName("function");
-    if (fn && re.test(fn.text)) { sawSanitizer = true; remaining = remaining.split(call.text).join(" "); }
-  }
-  // An (int)/(float) cast also neutralizes the value for output/path contexts.
-  for (const cast of n.descendantsOfType("cast_expression")) {
-    const t = cast.childForFieldName("type");
-    if (t && SAFE_CASTS.has(`(${t.text})`)) { sawSanitizer = true; remaining = remaining.split(cast.text).join(" "); }
-  }
-  return sawSanitizer && !REQUEST_SOURCE.test(remaining);
 }
 
 /** The named sibling immediately before `node` (TsNode exposes no `previousSibling`), matched by
@@ -381,29 +274,6 @@ function shortEchoValue(node: TsNode): TsNode | null {
   const prev = prevNamedSibling(node);
   if (!prev || !prev.text.includes("<?=")) return null;
   return node.namedChild(0);
-}
-
-function mkLoc(node: TsNode) {
-  return {
-    start: { line: lineOf(node), column: node.startPosition.column },
-    end: { line: node.endPosition.row + 1, column: node.endPosition.column },
-  };
-}
-
-/** Emit a finding, down-tiering to a non-blocking review note when `sanitized`. Never suppresses. */
-function emitFinding(
-  node: TsNode, ctx: RuleContext, emit: EmitFn,
-  opts: { sanitized: boolean; message: string; sanitizedNote: string }
-): void {
-  const loc = mkLoc(node);
-  const code = (ctx.lines[lineOf(node) - 1] || "").trim();
-  const symbol = enclosingFunction(node);
-  const base: FindingEmitArg = { loc, code, symbol };
-  if (opts.sanitized) {
-    emit({ ...base, tier: "yellow" as Tier, blocking: false, tierAdjusted: "deescalated", message: `${opts.message}\n\n${opts.sanitizedNote}` });
-  } else {
-    emit({ ...base, message: opts.message });
-  }
 }
 
 const CALL_TYPES = new Set(["function_call_expression", "member_call_expression", "nullsafe_member_call_expression", "scoped_call_expression"]);
@@ -488,6 +358,7 @@ export const PHP_RULES: TsAstRule[] = [
     title: "SQL injection sink",
     languages: ["php"],
     message: SQL_MESSAGE,
+    sinkQuery: "[(function_call_expression) (member_call_expression) (nullsafe_member_call_expression) (scoped_call_expression)] @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (!isCall(node)) return;
       const root = ctx.tsTree!.rootNode;
@@ -501,8 +372,8 @@ export const PHP_RULES: TsAstRule[] = [
       }
       if (!dynamicArg) return;
       let src = dynamicArg;
-      if (unwrap(src).type === "variable_name") src = declInit(unwrap(src).text, root) || src;
-      const dyn = dynamicParts(src, root);
+      if (unwrap(src, phpProfile).type === "variable_name") src = declInit(unwrap(src, phpProfile).text, root, phpProfile) || src;
+      const dyn = dynamicParts(src, root, phpProfile);
       const sanitized = dyn.length > 0 && dyn.every(isSqlSanitizerCall);
       emitFinding(node, ctx, emit, { sanitized, message: SQL_MESSAGE, sanitizedNote: SQL_SANITIZED });
     },
@@ -516,12 +387,13 @@ export const PHP_RULES: TsAstRule[] = [
     title: "OS command injection sink",
     languages: ["php"],
     message: CMD_MESSAGE,
+    sinkQuery: "[(shell_command_expression) (function_call_expression)] @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       const root = ctx.tsTree!.rootNode;
       // Backtick command string with an interpolated value.
       if (node.type === "shell_command_expression") {
         if (!isInterpolating(node)) return;
-        const dyn = dynamicParts(node, root);
+        const dyn = dynamicParts(node, root, phpProfile);
         const sanitized = dyn.length > 0 && dyn.every((d) => callMatches(d, CMD_SANITIZERS));
         emitFinding(node, ctx, emit, { sanitized, message: CMD_MESSAGE, sanitizedNote: CMD_SANITIZED });
         return;
@@ -531,9 +403,9 @@ export const PHP_RULES: TsAstRule[] = [
       if (!name || !CMD_SINK_FUNCS.has(name.toLowerCase())) return;
       const arg0 = callArgs(node)[0];
       if (!arg0) return;
-      if (unwrap(arg0).type === "array_creation_expression") return; // arg-array form bypasses the shell
+      if (unwrap(arg0, phpProfile).type === "array_creation_expression") return; // arg-array form bypasses the shell
       if (!isDynamicValue(arg0, root)) return;
-      const sanitized = valueSanitized(arg0, root, (n) => callMatches(n, CMD_SANITIZERS));
+      const sanitized = valueSanitized(arg0, root, phpProfile, (n) => callMatches(n, CMD_SANITIZERS));
       emitFinding(node, ctx, emit, { sanitized, message: CMD_MESSAGE, sanitizedNote: CMD_SANITIZED });
     },
   },
@@ -546,6 +418,7 @@ export const PHP_RULES: TsAstRule[] = [
     title: "Dynamic code execution sink",
     languages: ["php"],
     message: CODE_MESSAGE,
+    sinkQuery: "(function_call_expression) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "function_call_expression") return;
       const name = callName(node);
@@ -564,10 +437,10 @@ export const PHP_RULES: TsAstRule[] = [
       if (lower === "assert") {
         const STR = new Set(["string", "encapsed_string", "heredoc"]);
         const isStringish = (n: TsNode, d = 0): boolean => {
-          if (d > MAX_RESOLVE_DEPTH) return false;
-          const u = unwrap(n);
+          if (d > 6) return false;
+          const u = unwrap(n, phpProfile);
           if (STR.has(u.type)) return true;
-          if (u.type === "variable_name") { const i = declInit(u.text, root); return !!i && isStringish(i, d + 1); }
+          if (u.type === "variable_name") { const i = declInit(u.text, root, phpProfile); return !!i && isStringish(i, d + 1); }
           return false;
         };
         if (!isStringish(target)) return;
@@ -585,13 +458,14 @@ export const PHP_RULES: TsAstRule[] = [
     title: "File inclusion sink (LFI/RFI)",
     languages: ["php"],
     message: INCLUDE_MESSAGE,
+    sinkQuery: "[(include_expression) (include_once_expression) (require_expression) (require_once_expression)] @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (!INCLUDE_TYPES.has(node.type)) return;
       const target = node.namedChild(0);
       if (!target) return;
       const root = ctx.tsTree!.rootNode;
       if (!isDynamicValue(target, root)) return;
-      const sanitized = valueSanitized(target, root, (n) => callMatches(n, FILE_PATH_SANITIZERS));
+      const sanitized = valueSanitized(target, root, phpProfile, (n) => callMatches(n, FILE_PATH_SANITIZERS));
       emitFinding(node, ctx, emit, { sanitized, message: INCLUDE_MESSAGE, sanitizedNote: INCLUDE_SANITIZED });
     },
   },
@@ -604,6 +478,7 @@ export const PHP_RULES: TsAstRule[] = [
     title: "Unsafe deserialization sink",
     languages: ["php"],
     message: DESERIALIZE_MESSAGE,
+    sinkQuery: "(function_call_expression) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "function_call_expression") return;
       const name = callName(node);
@@ -628,6 +503,7 @@ export const PHP_RULES: TsAstRule[] = [
     title: "XSS sink",
     languages: ["php"],
     message: XSS_MESSAGE,
+    sinkQuery: "[(echo_statement) (print_intrinsic) (function_call_expression) (expression_statement)] @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       const root = ctx.tsTree!.rootNode;
       let value: TsNode | undefined;
@@ -659,6 +535,7 @@ export const PHP_RULES: TsAstRule[] = [
     title: "Path traversal sink",
     languages: ["php"],
     message: PT_MESSAGE,
+    sinkQuery: "(function_call_expression) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "function_call_expression") return;
       const name = callName(node);

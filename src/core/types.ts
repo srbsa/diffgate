@@ -371,6 +371,8 @@ export interface AstNode {
  * `row`/`column`; rules add 1 to `row` for our 1-indexed `line`.
  */
 export interface TsNode {
+  /** Stable unique id within a tree — used to de-duplicate query-captured sink nodes. */
+  id: number;
   type: string;
   text: string;
   startPosition: { row: number; column: number };
@@ -385,6 +387,19 @@ export interface TsNode {
 
 export interface TsTree {
   rootNode: TsNode;
+}
+
+/** Minimal surface of a compiled tree-sitter query (web-tree-sitter `Query`). Drives `tsast` rules'
+ *  declarative sink discovery — see `sinkQuery` and `compileTsQuery`. */
+export interface TsQueryCapture {
+  name: string;
+  node: TsNode;
+}
+export interface TsQueryMatch {
+  captures: TsQueryCapture[];
+}
+export interface TsQuery {
+  matches(root: TsNode): TsQueryMatch[];
 }
 
 export interface RuleContext {
@@ -471,6 +486,14 @@ export interface AstRule extends RuleBase {
  *  Used for languages @babel can't parse — Python first. The engine walks every named node. */
 export interface TsAstRule extends RuleBase {
   type: "tsast";
+  /**
+   * Optional declarative sink discovery: an S-expression tree-sitter query capturing candidate
+   * sink-site nodes (e.g. `(call) @sink`). When present, the engine runs the query ONCE and invokes
+   * `visit` only on captured nodes instead of walking every named node — `visit` keeps its own
+   * precise check, so the query is a structural pre-filter, never the precision boundary. Falls back
+   * to the full walk if the query is absent or fails to compile (graceful, like the regex fallback).
+   */
+  sinkQuery?: string;
   visit: (node: TsNode, ctx: RuleContext, emit: EmitFn) => void;
 }
 
