@@ -6,6 +6,7 @@ import { GO_RULES } from "./go.js";
 import { RUBY_RULES } from "./ruby.js";
 import { JAVA_RULES } from "./java.js";
 import { CSHARP_RULES } from "./csharp.js";
+import { KOTLIN_RULES } from "./kotlin.js";
 import type { Rule, AstNode, EmitFn, RuleContext, DeprecatedEntry, Config } from "../types.js";
 
 const JS = ["javascript", "typescript"];
@@ -315,7 +316,7 @@ export const BUILTIN_RULES: Rule[] = [
     // (no double report). Remaining languages still rely on this regex. Trade-offs of the precise owners:
     // Python's `__import__` advisory is dropped; Go/Ruby/Java's safe forms (arg-vector exec, opaque
     // non-dynamic command args) are correctly not flagged — all prefer zero false positives.
-    skipIfAstLangs: ["php", "python", "go", "ruby", "java"],
+    skipIfAstLangs: ["php", "python", "go", "ruby", "java", "kotlin"],
     message: "Dynamic code execution or shell-out. Audit for command/code injection — never pass unsanitized input here.",
     patterns: [
       /\beval\s*\(/,
@@ -671,6 +672,7 @@ export const BUILTIN_RULES: Rule[] = [
   ...RUBY_RULES,
   ...JAVA_RULES,
   ...CSHARP_RULES,
+  ...KOTLIN_RULES,
 ];
 
 // ---------------------------------------------------------------------------

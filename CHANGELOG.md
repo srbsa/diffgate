@@ -51,6 +51,13 @@ _Language parity expansion: bring every supported language to maximum feasible A
   - **`xss-sink`** (advisory) — `@Html.Raw`/`Response.Write`/`new HtmlString` of a dynamic value; `HttpUtility.HtmlEncode` down-tiers.
   - Shared-core change: `boundValue` (def-use) now resolves C#'s `variable_declarator`, which exposes a `name` field but a positional initializer (no `value` field); the grammar registry gained a per-language wasm-filename override (`tree-sitter-c-sharp` ships `tree-sitter-c_sharp.wasm`). **Honest gaps:** Json.NET `TypeNameHandling`, XXE, SSRF, LDAP.
 
+- **Kotlin is now a Deep (AST) language** ([src/core/rules/kotlin.ts](src/core/rules/kotlin.ts), `@tree-sitter-grammars/tree-sitter-kotlin`) — JVM parity with Java plus Kotlin string templates (`"… $x"` simple, `"… ${expr}"` braced; interpolating a non-constant is dynamic, a `const val` is static). Four AST classes:
+  - **`sql-injection`** (blocking) — JDBC/JPA fragment sinks + Android `rawQuery`/`execSQL`, JdbcTemplate `query`/`execute`/`update` (SQL-keyword gated). `?`-placeholders and const templates are safe; cross-line `val` query variables resolved.
+  - **`command-injection`** (blocking) — `Runtime.exec`/`ProcessBuilder` with a template/concat-built or request-tainted value; a bare opaque parameter is not flagged.
+  - **`unsafe-deserialization`** (blocking) — `ObjectInputStream.readObject`/`readUnshared` on a receiver.
+  - **`path-traversal`** (advisory) — `File(...)`/`FileInputStream`/`Files.readAllBytes` of `getParameter`/`@RequestParam`/Ktor `call.parameters`; `FilenameUtils.getName` down-tiers.
+  - The community Kotlin grammar is field-less on calls/navigation/declarations and splits a simple `$x` template into text fragments, so the rules use positional parsing and a `declNameWrapper` def-use hook (added to the shared profile). **Honest gaps:** XSS, the `File(...).name` property sanitizer, XXE, SSRF.
+
 ---
 
 ## [0.6.1] — 2026-06-28

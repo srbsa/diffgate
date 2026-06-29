@@ -57,7 +57,7 @@ export interface RuleCatalogEntry {
 
 // Enumerate effective rules across representative languages so language-scoped rules (e.g. an
 // AST rule that only applies to javascript) are not omitted from the catalog. Union by id.
-const CATALOG_LANGUAGES = ["javascript", "typescript", "python", "go", "ruby", "java", "csharp", "rust", "php", "*"];
+const CATALOG_LANGUAGES = ["javascript", "typescript", "python", "go", "ruby", "java", "csharp", "kotlin", "rust", "php", "*"];
 
 /** Active rule catalog for this repo's resolved config — reflects tier/enabled overrides and packs. */
 export function ruleCatalog(config: Partial<Config>): RuleCatalogEntry[] {

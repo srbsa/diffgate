@@ -34,6 +34,10 @@ export interface LanguageProfile {
   /** List-wrapper node holding the LHS/RHS of a (possibly multi-target) assignment — Go `expression_list`
    *  in `a, b := x, y` and the `value` of a `var`/`const` spec. Absent for languages with a bare LHS. */
   assignmentListType?: string;
+  /** Field-less grammars (Kotlin) wrap the declared name in a node (`variable_declaration`) and place the
+   *  initializer as a positional sibling. When set, `declInit` reads the name from this wrapper's first
+   *  identifier and the value from the last named sibling. */
+  declNameWrapper?: string;
   /** Node types that are unconditionally compile-time constants (numbers, bools, null/none). */
   staticLiteralTypes: Set<string>;
   /** String node types whose staticness is CONDITIONAL on `isInterpolating` (plain literal = static). */
@@ -118,6 +122,16 @@ function boundValue(assign: TsNode, name: string, p: LanguageProfile): TsNode | 
       if (i >= 0 && i < rs.length) return rs[i]; // positional match a,b := x,y
     }
     return null;
+  }
+  // Field-less wrapper form (Kotlin `property_declaration`): [variable_declaration(identifier), value].
+  if (p.declNameWrapper) {
+    const kids = assign.namedChildren;
+    const wrapper = kids.find((k) => k.type === p.declNameWrapper);
+    const nameId = wrapper?.namedChildren.find((c) => c.type === p.identifierType);
+    if (wrapper && nameId && nameId.text === name) {
+      const val = kids[kids.length - 1];
+      if (val && val.id !== wrapper.id) return val;
+    }
   }
   const nm = assign.childForFieldName("name");
   if (nm && nm.type === p.identifierType && nm.text === name) {

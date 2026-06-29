@@ -60,7 +60,7 @@ await esbuild.build({
   format: "esm",
   target: "node18",
   outfile: "dist/cli.js",
-  external: ["fsevents", "chokidar", "@babel/parser", "web-tree-sitter", "tree-sitter-python", "tree-sitter-php", "tree-sitter-go", "tree-sitter-ruby", "tree-sitter-java", "tree-sitter-c-sharp"],
+  external: ["fsevents", "chokidar", "@babel/parser", "web-tree-sitter", "tree-sitter-python", "tree-sitter-php", "tree-sitter-go", "tree-sitter-ruby", "tree-sitter-java", "tree-sitter-c-sharp", "@tree-sitter-grammars/tree-sitter-kotlin"],
   banner: { js: "#!/usr/bin/env node" },
   sourcemap: true,
   define,
