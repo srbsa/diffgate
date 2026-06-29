@@ -20,6 +20,13 @@ _Language parity expansion: bring every supported language to maximum feasible A
   - `dangerous-exec` now defers to these on Python (`skipIfAstLangs` includes `python`) — no double report; recall is preserved via the regex when the grammar isn't loaded. The four AST injection classes (`command-`/`code-injection`, `file-inclusion`, `unsafe-deserialization`) joined `SECURITY_RULES` so they get the same trust-label + reachability treatment as `sql-injection` (also closes a latent gap for PHP).
   - **Known limitation:** module-alias resolution is not implemented — `import pickle as p; p.loads(x)` is a false negative (miss, not a false block). Direct `pickle.loads`/`os.system`/etc. are covered.
 
+- **Go is now a Deep (AST) language** ([src/core/rules/go.ts](src/core/rules/go.ts), `tree-sitter-go`) — three AST-precise classes, exploiting Go's lack of string interpolation (a dynamic query is built only by `+` or `fmt.Sprintf`):
+  - **`sql-injection`** (blocking) — `fmt.Sprintf`/concat into `database/sql` / `sqlx` / gorm sinks (`Query`/`Exec`/`Queryx`/`MustExec`/`Raw`/…). A `?`/`$1` placeholder string is static → safe; cross-line `:=`/`var`/`const` query variables are resolved. The generic `Get`/`Select` names are excluded to avoid false-blocking caches (honest FN for sqlx `Get`/`Select`).
+  - **`command-injection`** (blocking) — `exec.Command`/`exec.CommandContext`. Go runs no shell, so the argument-vector form `exec.Command("git", "checkout", branch)` is correctly **safe**; blocks only a static shell program (`sh`/`bash`/`cmd`) with a dynamic argument, or a **request-tainted** program name — deliberately narrower than gosec's noisy G204 to preserve zero false blocks.
+  - **`path-traversal`** (advisory) — `os.ReadFile`/`os.Open`/`http.ServeFile`/… of request data (`r.FormValue`/`r.URL.Query()`/`mux.Vars`); `filepath.Base` down-tiers.
+  - Shared-core change: `declInit` (intra-file def-use) generalized to resolve Go's `expression_list`-wrapped `:=`/`=` and `var`/`const` specs, behind new optional `LanguageProfile` fields (`assignmentType` now accepts a list; `assignmentListType`). No change to Python/PHP behavior.
+  - **Honest gaps:** SSRF (`http.Get(taintedURL)`), `text/template`-vs-`html/template` XSS, sqlx `Get`/`Select`.
+
 ---
 
 ## [0.6.1] — 2026-06-28

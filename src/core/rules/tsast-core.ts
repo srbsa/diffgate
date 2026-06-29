@@ -28,8 +28,12 @@ export interface LanguageProfile {
   parenthesizedType: string;
   /** Bare-identifier / variable node type that may resolve to a declaration (`identifier` | `variable_name`). */
   identifierType: string;
-  /** Assignment statement node type for intra-file def-use (`assignment` | `assignment_expression`). */
-  assignmentType: string;
+  /** Assignment statement node type(s) for intra-file def-use (`assignment` | `assignment_expression`;
+   *  Go needs several: `short_var_declaration`, `assignment_statement`, `var_spec`, `const_spec`). */
+  assignmentType: string | string[];
+  /** List-wrapper node holding the LHS/RHS of a (possibly multi-target) assignment — Go `expression_list`
+   *  in `a, b := x, y` and the `value` of a `var`/`const` spec. Absent for languages with a bare LHS. */
+  assignmentListType?: string;
   /** Node types that are unconditionally compile-time constants (numbers, bools, null/none). */
   staticLiteralTypes: Set<string>;
   /** String node types whose staticness is CONDITIONAL on `isInterpolating` (plain literal = static). */
@@ -87,12 +91,37 @@ export function mkLoc(node: TsNode) {
 /** Last value assigned to a bare identifier/variable anywhere in the file (intra-file def-use). */
 export function declInit(name: string, root: TsNode, p: LanguageProfile): TsNode | null {
   let found: TsNode | null = null;
-  for (const assign of root.descendantsOfType(p.assignmentType)) {
-    const left = assign.childForFieldName("left");
-    const right = assign.childForFieldName("right");
-    if (left && right && left.type === p.identifierType && left.text === name) found = right;
+  const types = Array.isArray(p.assignmentType) ? p.assignmentType : [p.assignmentType];
+  for (const t of types) {
+    for (const assign of root.descendantsOfType(t)) {
+      const v = boundValue(assign, name, p);
+      if (v) found = v;
+    }
   }
   return found;
+}
+
+/** The value bound to `name` by a single assignment-family node, or null. Handles three shapes:
+ *  a bare `left`/`right` (Python `assignment`, PHP `assignment_expression`), a list-wrapped `left`/`right`
+ *  (Go `a, b := x, y` where both sides are `expression_list`), and a `name`/`value` spec (Go `var x = …`). */
+function boundValue(assign: TsNode, name: string, p: LanguageProfile): TsNode | null {
+  const left = assign.childForFieldName("left");
+  const right = assign.childForFieldName("right");
+  if (left && right) {
+    if (left.type === p.identifierType && left.text === name) return right;
+    if (p.assignmentListType && left.type === p.assignmentListType && right.type === p.assignmentListType) {
+      const ls = left.namedChildren, rs = right.namedChildren;
+      const i = ls.findIndex((l) => l.type === p.identifierType && l.text === name);
+      if (i >= 0 && i < rs.length) return rs[i]; // positional match a,b := x,y
+    }
+    return null;
+  }
+  const nm = assign.childForFieldName("name");
+  const val = assign.childForFieldName("value");
+  if (nm && val && nm.type === p.identifierType && nm.text === name) {
+    return p.assignmentListType && val.type === p.assignmentListType ? (val.namedChild(0) ?? val) : val;
+  }
+  return null;
 }
 
 /** Nearest enclosing function/method name, for the graph reachability/blast-radius lookup. */
