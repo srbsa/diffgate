@@ -288,3 +288,19 @@ precise("php: namespaced \\unserialize / \\exec are still recognized", () => {
   assert.ok(deser(`\\unserialize($_POST['d']);`)?.blocking);
   assert.ok(cmd(`function g($f){ \\exec("ls $f"); }`)?.blocking);
 });
+
+// --- SSRF: request-tainted URL into a curl/socket sink -------------------------------------------
+function ssrf(content) { const f = findings(content, "ssrf"); return f.length ? f[0] : null; }
+precise("php ssrf: curl_init of request data is flagged (advisory)", () => {
+  const f = ssrf(`<?php\nfunction v(){ $c = curl_init($_GET["url"]); }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("php ssrf: curl_setopt CURLOPT_URL of request data is flagged", () => {
+  assert.ok(ssrf(`<?php\nfunction v($ch){ curl_setopt($ch, CURLOPT_URL, $_POST["u"]); }`));
+});
+precise("php ssrf: a static URL is NOT flagged", () => {
+  assert.equal(ssrf(`<?php\nfunction v(){ curl_init("https://api/x"); }`), null);
+});
+precise("php ssrf: curl_setopt with a non-URL option is NOT flagged", () => {
+  assert.equal(ssrf(`<?php\nfunction v($ch){ curl_setopt($ch, CURLOPT_TIMEOUT, $_GET["t"]); }`), null);
+});

@@ -157,3 +157,16 @@ precise("csharp: a dynamic sink on an unchanged line is not flagged", () => {
   const r = analyze({ filePath: "T.cs", content, changedLines: new Set([1]) });
   assert.equal(r.findings.filter((f) => f.ruleId === "sql-injection").length, 0);
 });
+
+// --- SSRF: request-tainted URL into HttpClient/WebClient/WebRequest -------------------------------
+function ssrf(content) { const f = findings(content, "ssrf"); return f.length ? f[0] : null; }
+precise("csharp ssrf: HttpClient.GetStringAsync of request data is flagged (advisory)", () => {
+  const f = ssrf(`public class T { void M(HttpClient c, HttpRequest Request) { c.GetStringAsync(Request.Query["u"]); } }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("csharp ssrf: WebRequest.Create of request data is flagged", () => {
+  assert.ok(ssrf(`public class T { void M(HttpRequest Request) { WebRequest.Create(Request.Form["u"]); } }`));
+});
+precise("csharp ssrf: a static URL is NOT flagged", () => {
+  assert.equal(ssrf(`public class T { void M(HttpClient c) { c.GetStringAsync("https://api/x"); } }`), null);
+});

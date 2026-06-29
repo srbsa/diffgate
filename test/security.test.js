@@ -153,3 +153,27 @@ test("labelTrust: preserves an already-set trust label", () => {
   const [out] = labelTrust([res]);
   assert.equal(find(out, "sql-injection").trust, "confirmed", "did not overwrite");
 });
+
+// --- SSRF (JS/TS Babel rule): request-tainted URL into an outbound-request sink -------------------
+const ssrfJs = (code) => find(analyze({ filePath: "x.js", content: code, config: cfg }), "ssrf");
+
+test("ssrf: fetch of req.query is flagged (advisory orange)", () => {
+  const f = ssrfJs(`app.get("/x",(req,res)=>{ fetch(req.query.url); });\n`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+
+test("ssrf: axios.get of a concatenated request URL is flagged", () => {
+  assert.ok(ssrfJs(`app.get("/x",(req,res)=>{ axios.get("http://x/"+req.query.id); });\n`));
+});
+
+test("ssrf: a static URL is NOT flagged", () => {
+  assert.equal(ssrfJs(`fetch("https://api.example.com/health");\n`), undefined);
+});
+
+test("ssrf: a generic .get on an unrelated object (not an HTTP client) is NOT flagged", () => {
+  assert.equal(ssrfJs(`app.get("/x",(req,res)=>{ store.get(req.query.k); });\n`), undefined);
+});
+
+test("ssrf: SECURITY_RULES and the web-security pack include ssrf", () => {
+  assert.ok(SECURITY_RULES.has("ssrf"));
+});

@@ -336,6 +336,30 @@ const XSS_SANITIZED =
   "The request value here is wrapped in a recognized escaper (e.g. `htmlspecialchars`) — likely safe, " +
   "but verify the escaping context (HTML body vs attribute vs JS) matches. Down-tiered to review.";
 
+// SSRF — URL/host-fetch sinks (curl, sockets). `file_get_contents`/`fopen` of a URL are deliberately left
+// to the path-traversal rule (which already flags request data and notes the SSRF overlap), so no double report.
+const SSRF_FUNCS = new Map<string, number[]>([
+  ["curl_init", [0]], ["get_headers", [0]], ["fsockopen", [0]], ["pfsockopen", [0]], ["stream_socket_client", [0]],
+]);
+
+/** The URL/host argument(s) of an SSRF sink, or []. `curl_setopt($ch, CURLOPT_URL, $url)` → arg2. */
+function ssrfUrlArgs(call: TsNode): TsNode[] {
+  if (call.type !== "function_call_expression") return [];
+  const name = callName(call);
+  if (!name) return [];
+  const lower = name.toLowerCase();
+  const args = callArgs(call);
+  if (lower === "curl_setopt") return args[1] && /CURLOPT_URL/.test(args[1].text) && args[2] ? [args[2]] : [];
+  const idxs = SSRF_FUNCS.get(lower);
+  return idxs ? idxs.map((i) => args[i]).filter((a): a is TsNode => !!a) : [];
+}
+
+const SSRF_MESSAGE =
+  "An outbound request is made to a request-controlled URL/host (`curl`, `fsockopen`, `get_headers`). An " +
+  "attacker can point it at internal services or the cloud metadata endpoint (`169.254.169.254`) — server-side " +
+  "request forgery. Validate the URL against an allowlist of permitted hosts (not a denylist), disable " +
+  "following redirects (or re-check the host after each), and reject non-HTTP schemes.";
+
 const PT_MESSAGE =
   "A filesystem path is built from request data and passed to a file sink (`fopen`, `file_get_contents`, " +
   "`readfile`, `unlink`, …) without containment. An attacker can read or write arbitrary files via " +
@@ -527,6 +551,23 @@ export const PHP_RULES: TsAstRule[] = [
     },
   },
 
+  {
+    id: "ssrf",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "SSRF sink",
+    languages: ["php"],
+    message: SSRF_MESSAGE,
+    sinkQuery: "(function_call_expression) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "function_call_expression") return;
+      const root = ctx.tsTree!.rootNode;
+      const tainted = ssrfUrlArgs(node).find((a) => taintedByRequest(a, root));
+      if (!tainted) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: SSRF_MESSAGE, sanitizedNote: "" });
+    },
+  },
   {
     id: "path-traversal",
     type: "tsast",

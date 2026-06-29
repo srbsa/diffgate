@@ -186,3 +186,19 @@ precise("ruby: a dynamic sink on an unchanged line is not flagged", () => {
   const r = analyze({ filePath: "x.rb", content, changedLines: new Set([1]) });
   assert.equal(r.findings.filter((f) => f.ruleId === "sql-injection").length, 0);
 });
+
+// --- SSRF: request-tainted URL into an HTTP library ----------------------------------------------
+function ssrf(content) { const f = findings(content, "ssrf"); return f.length ? f[0] : null; }
+precise("ruby ssrf: Net::HTTP.get of params is flagged (advisory)", () => {
+  const f = ssrf(`Net::HTTP.get(URI(params[:url]))`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("ruby ssrf: HTTParty.get of params is flagged", () => {
+  assert.ok(ssrf(`HTTParty.get(params[:url])`));
+});
+precise("ruby ssrf: a static URL is NOT flagged", () => {
+  assert.equal(ssrf(`Net::HTTP.get(URI("https://api/x"))`), null);
+});
+precise("ruby ssrf: a generic .get on an unrelated receiver is NOT flagged", () => {
+  assert.equal(ssrf(`myobj.get(params[:k])`), null);
+});

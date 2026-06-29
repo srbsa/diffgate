@@ -7,6 +7,23 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.1] — 2026-06-29
+
+### Added
+
+- **SSRF — a new cross-language advisory class** ([`ssrf`], orange / non-blocking) across **all 8 Deep-AST languages**. Fires only when a request-tainted URL/host reaches an outbound-request sink, so a static or config URL is never flagged:
+  - **JS/TS** ([builtin.ts](src/core/rules/builtin.ts)): `fetch`/`axios.*`/`http(s).get`/`got`/`superagent` of `req.query`/`req.params`/`req.body` (incl. template/concat URLs).
+  - **Python**: `requests`/`httpx`/`urllib3`/`aiohttp` HTTP methods + `urllib.request.urlopen`.
+  - **Go**: `http.Get`/`Post`/`Head`/`PostForm` and `http.NewRequest`/`NewRequestWithContext` (URL arg position aware).
+  - **Ruby**: `Net::HTTP`/`URI.open`/`HTTParty`/`RestClient`/`Faraday`/`Excon` (new Rails `params`/`cookies` request source).
+  - **PHP**: `curl_init`/`curl_setopt(CURLOPT_URL, …)`/`get_headers`/`fsockopen` (`file_get_contents`/`fopen` stay under path-traversal — no double report).
+  - **Java**: `new URL`/`URI`, `RestTemplate.getForObject`/`exchange`/…, Apache `HttpGet`/`HttpPost`, `HttpRequest.newBuilder`.
+  - **C#**: `HttpClient.GetAsync`/`GetStringAsync`/…, `WebClient.DownloadString`/…, `WebRequest.Create`, `new Uri`/`HttpRequestMessage`.
+  - **Kotlin**: JVM `URL(...)`/`URI(...)` construction and OkHttp `.url(...)`.
+  - Qualified by library so a generic `.get`/`.Get` on a dict/cache/collection with request data is **not** flagged (bug-bashed). `ssrf` joined `SECURITY_RULES` + the `web-security` pack, so it's eligible for code-graph reachability escalation like the other injection advisories. +29 tests; full suite 652 green. **Honest gaps:** session/instance-based clients (`requests.Session().get`, `client.Get`), `axios({url})` config form, redirect-following analysis.
+
+[`ssrf`]: src/core/rules/
+
 ## [0.7.0] — 2026-06-29
 
 _Language parity expansion: every mainstream backend language brought to maximum feasible AST depth. DiffGate now does real tree-sitter AST analysis for **11 languages** (JS/TS via Babel; Python, PHP, Go, Ruby, Java, C#, Kotlin via tree-sitter) — Python reached PHP's 7-class depth, and Go, Ruby, Java, C#, and Kotlin graduated from the regex floor to Deep (AST). Each language is sink-targeted, parameterization/sanitizer-aware, and tuned to never false-block. Shared engine ([tsast-core](src/core/rules/tsast-core.ts)) extended with declarative `sinkQuery` discovery and a `LanguageProfile` that absorbed every grammar's def-use shape (Go `expression_list`, C# positional declarators, Kotlin field-less `property_declaration`) and callee field — so a new language is a profile + name-sets, not a new engine. 623 tests green._

@@ -18,7 +18,7 @@ import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
 import {
   type LanguageProfile,
   unwrap, declInit, isStaticConst, dynamicParts,
-  valueSanitized, emitFinding as coreEmitFinding,
+  valueSanitized, taintedByRequest as coreTaintedByRequest, emitFinding as coreEmitFinding,
 } from "./tsast-core.js";
 
 // ActiveRecord raw-SQL methods (fragment sinks — no SQL-keyword gate). A string argument with dynamic
@@ -59,6 +59,18 @@ const DESER_RECV: Record<string, Set<string>> = {
   Psych: new Set(["load", "unsafe_load"]),
   Oj: new Set(["load", "object_load"]),
 };
+
+// SSRF — outbound-request libraries (receiver → methods). The URL/host is arg0.
+const SSRF_RECV: Record<string, Set<string>> = {
+  URI: new Set(["open"]), // open-uri: URI.open fetches (URI.parse alone does not — not a sink)
+  "Net::HTTP": new Set(["get", "get_response", "post", "post_form", "start", "new"]),
+  HTTParty: new Set(["get", "post", "put", "delete", "patch", "head"]),
+  RestClient: new Set(["get", "post", "put", "delete", "patch", "head"]),
+  Faraday: new Set(["get", "post", "put", "delete", "new"]),
+  Excon: new Set(["get", "post", "new"]),
+};
+// Untrusted request data (Rails): params, request accessors, cookies.
+const RUBY_REQUEST_SOURCE = /\bparams\s*\[|\brequest\.(?:params|GET|POST|query_parameters|parameters|env)\b|\bcookies\s*\[/;
 
 // HTML-output sinks (reflected XSS): `raw(x)` helper and `x.html_safe` mark a string un-escaped.
 const XSS_HELPERS = new Set(["raw", "html_safe", "safe_concat"]);
@@ -188,6 +200,12 @@ const DESER_MESSAGE =
   "objects and execute code (RCE) on attacker-controlled input. Use a safe format (`JSON.parse`) for untrusted " +
   "data, or `YAML.safe_load` for YAML.";
 
+const SSRF_MESSAGE =
+  "An outbound request is made to a request-controlled URL (`Net::HTTP`/`URI.open`/`HTTParty`/`RestClient`/…) " +
+  "built from `params`/`cookies`/request data. An attacker can point it at internal services or the cloud " +
+  "metadata endpoint (`169.254.169.254`) — server-side request forgery. Validate the URL against an allowlist " +
+  "of permitted hosts (not a denylist), and re-check the host after any redirects.";
+
 const XSS_MESSAGE =
   "A dynamic value is marked HTML-safe (`raw(…)` / `.html_safe`), bypassing Rails' auto-escaping. If any part " +
   "is user-controlled, an attacker can inject arbitrary HTML/JavaScript (XSS). Let Rails escape the value " +
@@ -300,6 +318,26 @@ export const RUBY_RULES: TsAstRule[] = [
       const root = ctx.tsTree!.rootNode;
       if (!isDynamicValue(arg0, root)) return; // a literal payload is a fixture, not untrusted input
       emitFinding(node, ctx, emit, { sanitized: false, message: DESER_MESSAGE, sanitizedNote: "" });
+    },
+  },
+  {
+    id: "ssrf",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "SSRF sink",
+    languages: ["ruby"],
+    message: SSRF_MESSAGE,
+    sinkQuery: "(call) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      const c = callParts(node);
+      if (!c || !c.receiver) return;
+      if (!SSRF_RECV[c.receiver.text]?.has(c.method)) return;
+      const url = c.args[0];
+      if (!url) return;
+      const root = ctx.tsTree!.rootNode;
+      if (!coreTaintedByRequest(url, root, rubyProfile, RUBY_REQUEST_SOURCE)) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: SSRF_MESSAGE, sanitizedNote: "" });
     },
   },
   {

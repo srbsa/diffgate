@@ -159,6 +159,32 @@ function taintedByRequest(node: TsNode, root: TsNode): boolean {
   return coreTaintedByRequest(node, root, javaProfile, JAVA_REQUEST_SOURCE);
 }
 
+// SSRF — URL/URI construction and HTTP-client fetches whose URL is request-tainted (arg0).
+const SSRF_NEW_TYPES = new Set(["URL", "URI", "HttpGet", "HttpPost", "HttpPut", "HttpDelete", "HttpHead", "HttpUriRequest"]);
+const SSRF_METHODS = new Set(["getForObject", "getForEntity", "postForObject", "postForEntity", "getForList", "exchange"]);
+
+/** The URL argument of an SSRF sink, or null. */
+function ssrfUrlArg(node: TsNode): TsNode | null {
+  if (node.type === "object_creation_expression") {
+    const leaf = newTypeLeaf(node);
+    if (leaf && SSRF_NEW_TYPES.has(leaf)) { const a = node.childForFieldName("arguments"); return a ? a.namedChildren[0] ?? null : null; }
+    return null;
+  }
+  if (node.type === "method_invocation") {
+    const c = invokeParts(node);
+    if (!c) return null;
+    if (SSRF_METHODS.has(c.name)) return c.args[0] ?? null;
+    if (c.name === "newBuilder" && c.object?.text === "HttpRequest") return c.args[0] ?? null;
+  }
+  return null;
+}
+
+const SSRF_MESSAGE =
+  "An outbound HTTP request is made to a request-controlled URL (`new URL(...)`, `RestTemplate.getForObject`, " +
+  "Apache `HttpGet`, …) built from `request.getParameter`/`getHeader`/…. An attacker can point it at internal " +
+  "services or the cloud metadata endpoint (`169.254.169.254`) — server-side request forgery. Validate the URL " +
+  "against an allowlist of permitted hosts (not a denylist), and re-check the host after any redirects.";
+
 // --- messages ----------------------------------------------------------------
 
 const SQL_MESSAGE =
@@ -280,6 +306,23 @@ export const JAVA_RULES: TsAstRule[] = [
         if (isStaticConst(arg0, root, javaProfile)) return;
         emitFinding(node, ctx, emit, { sanitized: false, message: DESER_MESSAGE, sanitizedNote: "" });
       }
+    },
+  },
+  {
+    id: "ssrf",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "SSRF sink",
+    languages: ["java"],
+    message: SSRF_MESSAGE,
+    sinkQuery: "[(method_invocation) (object_creation_expression)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      const url = ssrfUrlArg(node);
+      if (!url) return;
+      const root = ctx.tsTree!.rootNode;
+      if (!taintedByRequest(url, root)) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: SSRF_MESSAGE, sanitizedNote: "" });
     },
   },
   {

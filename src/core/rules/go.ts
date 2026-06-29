@@ -192,6 +192,26 @@ function ptSinkPathArgs(call: TsNode): TsNode[] | null {
   return sink.idx.map((i) => args[i]).filter((a): a is TsNode => !!a);
 }
 
+// --- SSRF --------------------------------------------------------------------
+// net/http outbound requests whose URL is request-tainted. `http.Get`/`Post`/`Head`/`PostForm` take the
+// URL at arg0; `http.NewRequest(method, url, body)` at arg1; `NewRequestWithContext(ctx, method, url, …)` at arg2.
+const SSRF_HTTP_FUNCS = new Map<string, number>([
+  ["Get", 0], ["Post", 0], ["Head", 0], ["PostForm", 0], ["NewRequest", 1], ["NewRequestWithContext", 2],
+]);
+
+function ssrfUrlArg(call: TsNode): TsNode | null {
+  const c = selectorCall(call);
+  if (!c || c.op !== "http") return null;
+  const idx = SSRF_HTTP_FUNCS.get(c.field);
+  return idx === undefined ? null : (goArgs(call)[idx] ?? null);
+}
+
+const SSRF_MESSAGE =
+  "An outbound HTTP request (`http.Get`/`http.NewRequest`/…) is made to a request-controlled URL " +
+  "(`r.FormValue`/`r.URL.Query()`/…). An attacker can point it at internal services or the cloud metadata " +
+  "endpoint (`169.254.169.254`) — server-side request forgery. Validate the URL against an allowlist of " +
+  "permitted hosts (not a denylist), and re-check the host after any redirects.";
+
 // --- messages ----------------------------------------------------------------
 
 const SQL_MESSAGE =
@@ -264,6 +284,24 @@ export const GO_RULES: TsAstRule[] = [
       // configured binary path (safe) — flagging it unconditionally is the noisy gosec-G204 failure mode
       // that breaks the zero-false-block guarantee; require request taint for the clear-cut RCE.
       if (taintedByRequest(sink.name, root)) block();
+    },
+  },
+  {
+    id: "ssrf",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "SSRF sink",
+    languages: ["go"],
+    message: SSRF_MESSAGE,
+    sinkQuery: "(call_expression) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "call_expression") return;
+      const url = ssrfUrlArg(node);
+      if (!url) return;
+      const root = ctx.tsTree!.rootNode;
+      if (!taintedByRequest(url, root)) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: SSRF_MESSAGE, sanitizedNote: "" });
     },
   },
   {

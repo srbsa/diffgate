@@ -148,3 +148,19 @@ precise("go: a dynamic sink on an unchanged line is not flagged", () => {
   const r = analyze({ filePath: "x.go", content, changedLines: new Set([1]) });
   assert.equal(r.findings.filter((f) => f.ruleId === "sql-injection").length, 0);
 });
+
+// --- SSRF: request-tainted URL into net/http -----------------------------------------------------
+function ssrf(content) { const f = findings(content, "ssrf"); return f.length ? f[0] : null; }
+precise("go ssrf: http.Get of request data is flagged (advisory)", () => {
+  const f = ssrf(`package m\nimport "net/http"\nfunc h(r *http.Request){ http.Get(r.URL.Query().Get("u")) }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("go ssrf: http.NewRequest (url is arg1) of request data is flagged", () => {
+  assert.ok(ssrf(`package m\nimport "net/http"\nfunc h(r *http.Request){ http.NewRequest("GET", r.FormValue("u"), nil) }`));
+});
+precise("go ssrf: a static URL is NOT flagged", () => {
+  assert.equal(ssrf(`package m\nimport "net/http"\nfunc h(){ http.Get("https://api/health") }`), null);
+});
+precise("go ssrf: cache.Get with request data is NOT flagged (not net/http)", () => {
+  assert.equal(ssrf(`package m\nfunc h(r *http.Request){ cache.Get(r.FormValue("k")) }`), null);
+});

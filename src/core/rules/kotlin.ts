@@ -156,6 +156,23 @@ function pathSanitized(node: TsNode, root: TsNode): boolean {
   return sawSanitizer && !KT_REQUEST_SOURCE.test(remaining);
 }
 
+// SSRF — JVM URL/URI construction and OkHttp `.url(...)` whose URL is request-tainted (arg0).
+const SSRF_CTORS = new Set(["URL", "URI"]);
+
+function ssrfUrlArg(node: TsNode): TsNode | null {
+  const c = ktCall(node);
+  if (!c) return null;
+  if (c.receiver === null && SSRF_CTORS.has(c.method)) return c.args[0] ?? null; // URL(url) / URI(url)
+  if (c.method === "url") return c.args[0] ?? null; // OkHttp Request.Builder().url(url)
+  return null;
+}
+
+const SSRF_MESSAGE =
+  "An outbound HTTP request is made to a request-controlled URL (`URL(...)`/`URI(...)`/OkHttp `.url(...)`) built " +
+  "from `getParameter`/`@RequestParam`/Ktor `call.parameters`. An attacker can point it at internal services or the " +
+  "cloud metadata endpoint (`169.254.169.254`) — server-side request forgery. Validate the URL against an allowlist " +
+  "of permitted hosts (not a denylist), and re-check the host after any redirects.";
+
 // --- messages ----------------------------------------------------------------
 
 const SQL_MESSAGE =
@@ -241,6 +258,23 @@ export const KOTLIN_RULES: TsAstRule[] = [
       const c = ktCall(node);
       if (!c || !DESER_METHODS.has(c.method) || !c.receiver) return; // require a receiver (ois.readObject())
       emitFinding(node, ctx, emit, { sanitized: false, message: DESER_MESSAGE, sanitizedNote: "" });
+    },
+  },
+  {
+    id: "ssrf",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "SSRF sink",
+    languages: ["kotlin"],
+    message: SSRF_MESSAGE,
+    sinkQuery: "(call_expression) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      const url = ssrfUrlArg(node);
+      if (!url) return;
+      const root = ctx.tsTree!.rootNode;
+      if (!taintedByRequest(url, root)) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: SSRF_MESSAGE, sanitizedNote: "" });
     },
   },
   {

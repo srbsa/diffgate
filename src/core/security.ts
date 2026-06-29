@@ -22,6 +22,9 @@ export const SECURITY_RULES = new Set([
   // AST injection classes (PHP + Python tsast). Blocking by default; SECURITY_RULES membership gives them
   // the same trust-label + reachability treatment as sql-injection, instead of falling through unlabeled.
   "command-injection", "code-injection", "file-inclusion", "unsafe-deserialization",
+  // SSRF (advisory across all languages) — request-tainted URL into an outbound-request sink; eligible
+  // for reachability escalation like the other injection advisories.
+  "ssrf",
 ]);
 
 /** Deterministic trust label for a single finding (see Finding.trust). Pure; no graph call. */

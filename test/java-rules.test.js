@@ -137,3 +137,16 @@ precise("java: a dynamic sink on an unchanged line is not flagged", () => {
   const r = analyze({ filePath: "T.java", content, changedLines: new Set([1]) });
   assert.equal(r.findings.filter((f) => f.ruleId === "sql-injection").length, 0);
 });
+
+// --- SSRF: request-tainted URL into URL/RestTemplate ---------------------------------------------
+function ssrf(content) { const f = findings(content, "ssrf"); return f.length ? f[0] : null; }
+precise("java ssrf: new URL of request data is flagged (advisory)", () => {
+  const f = ssrf(`public class T { void m(javax.servlet.http.HttpServletRequest req) throws Exception { new java.net.URL(req.getParameter("u")).openStream(); } }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("java ssrf: RestTemplate.getForObject of request data is flagged", () => {
+  assert.ok(ssrf(`public class T { void m(javax.servlet.http.HttpServletRequest req){ rest.getForObject(req.getParameter("u"), String.class); } }`));
+});
+precise("java ssrf: a static URL is NOT flagged", () => {
+  assert.equal(ssrf(`public class T { void m() throws Exception { new java.net.URL("https://api/x").openStream(); } }`), null);
+});

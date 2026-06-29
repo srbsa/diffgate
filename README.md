@@ -130,6 +130,8 @@ How deeply DiffGate analyzes a change depends on the file's language — be expl
 | **Floor (pattern)** | C/C++, Rust, Swift, Scala, … | Secrets, destructive/schema changes, auth/crypto, dynamic exec / shell-out, raw queries, network calls, TODO. Cross-language injection advisories that escalate via the code graph. |
 | **Text** | YAML, Terraform, JSON, any text | Secrets and TODO/FIXME markers. |
 
+**SSRF** is covered across all eight Deep-AST languages as a cross-language advisory: a request-tainted URL into an outbound-request sink (`fetch`/`requests`/`http.Get`/`Net::HTTP`/`curl`/`new URL`/`HttpClient`/OkHttp). Library-qualified and tainted-only, so static/config URLs and generic `.get` calls aren't flagged.
+
 **Fast by design — and scoped to match.** A review runs in milliseconds on the changed lines, which is exactly what lets the same check sit in the agent and editor inner loop. That speed is a deliberate trade: DiffGate is the deterministic **gate on the diff**, not an exhaustive whole-repo taint engine. Coverage is per-language (deep where there's an AST, a pattern floor elsewhere), the security rules are tuned to the residue agents actually ship rather than to maximize raw rule count, and a clean result means *"nothing matched at this language's tier,"* not *"proven safe."* For deep cross-file taint analysis across many languages, pair it with a dedicated SAST. Full per-language detail and the code-graph boundary: **[docs/SCOPE.md](docs/SCOPE.md)**.
 
 ---

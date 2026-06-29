@@ -1,6 +1,6 @@
 {
   "name": "diffgate-review",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "A deterministic second pair of eyes for AI-generated code — diff-aware, low-noise security review in your coding agent (MCP), editor, and CLI.",
   "type": "module",
   "repository": {

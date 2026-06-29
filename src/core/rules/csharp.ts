@@ -178,6 +178,35 @@ function receiverNewType(node: TsNode, root: TsNode, depth = 0): string | null {
   return null;
 }
 
+// SSRF — HttpClient / WebClient / WebRequest fetches and URL construction whose URL is request-tainted.
+const SSRF_METHODS = new Set([
+  "GetAsync", "GetStringAsync", "GetByteArrayAsync", "GetStreamAsync", "PostAsync", "PutAsync", "DeleteAsync",
+  "PatchAsync", "DownloadString", "DownloadData", "DownloadFile", "OpenRead", "DownloadStringAsync", "DownloadDataAsync",
+]);
+const SSRF_NEW_TYPES = new Map<string, number>([["Uri", 0], ["HttpRequestMessage", 1]]);
+
+/** The URL argument of an SSRF sink, or null. */
+function ssrfUrlArg(node: TsNode): TsNode | null {
+  if (node.type === "object_creation_expression") {
+    const leaf = newTypeLeaf(node);
+    const idx = leaf ? SSRF_NEW_TYPES.get(leaf) : undefined;
+    return idx === undefined ? null : (csArgs(node)[idx] ?? null);
+  }
+  if (node.type === "invocation_expression") {
+    const c = memberInvoke(node);
+    if (!c) return null;
+    if (SSRF_METHODS.has(c.name)) return csArgs(node)[0] ?? null;
+    if (c.name === "Create" && c.obj === "WebRequest") return csArgs(node)[0] ?? null;
+  }
+  return null;
+}
+
+const SSRF_MESSAGE =
+  "An outbound HTTP request is made to a request-controlled URL (`HttpClient.GetAsync`, `WebClient.DownloadString`, " +
+  "`WebRequest.Create`, `new Uri(...)`) built from `Request.Query`/`Request.Form`/…. An attacker can point it at " +
+  "internal services or the cloud metadata endpoint (`169.254.169.254`) — server-side request forgery. Validate the " +
+  "URL against an allowlist of permitted hosts (not a denylist), and re-check the host after any redirects.";
+
 // --- messages ----------------------------------------------------------------
 
 const SQL_MESSAGE =
@@ -328,6 +357,23 @@ export const CSHARP_RULES: TsAstRule[] = [
       if (!tainted) return;
       const sanitized = requestSanitized(tainted, root, csharpProfile, CS_REQUEST_SOURCE, PT_SANITIZERS);
       emitFinding(node, ctx, emit, { sanitized, message: PT_MESSAGE, sanitizedNote: PT_SANITIZED });
+    },
+  },
+  {
+    id: "ssrf",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "SSRF sink",
+    languages: ["csharp"],
+    message: SSRF_MESSAGE,
+    sinkQuery: "[(invocation_expression) (object_creation_expression)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      const url = ssrfUrlArg(node);
+      if (!url) return;
+      const root = ctx.tsTree!.rootNode;
+      if (!taintedByRequest(url, root)) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: SSRF_MESSAGE, sanitizedNote: "" });
     },
   },
   {

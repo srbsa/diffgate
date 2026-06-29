@@ -434,6 +434,36 @@ function deserSanitizedNote(): string {
   );
 }
 
+// --- SSRF -------------------------------------------------------------------
+// An outbound HTTP request whose URL is request-tainted. Qualified by library (requests/httpx/urllib3/
+// aiohttp) so a generic `.get` (dict/cache) is never mistaken for an HTTP fetch.
+const SSRF_MODULES = /^(?:requests|httpx|urllib3|aiohttp)$/;
+const SSRF_HTTP_METHODS = new Set(["get", "post", "put", "delete", "patch", "head", "options", "request"]);
+
+/** The URL argument of an outbound-request sink, or null. */
+function ssrfUrlArg(call: TsNode): TsNode | null {
+  const fn = call.childForFieldName("function");
+  if (!fn) return null;
+  const args = call.childForFieldName("arguments");
+  if (fn.type === "identifier" && fn.text === "urlopen") return args ? args.namedChild(0) : null;
+  if (fn.type === "attribute") {
+    const attr = fn.childForFieldName("attribute")?.text;
+    const obj = fn.childForFieldName("object");
+    if (!attr) return null;
+    if (attr === "urlopen") return args ? args.namedChild(0) : null; // urllib.request.urlopen
+    if (SSRF_HTTP_METHODS.has(attr) && obj && SSRF_MODULES.test(obj.text)) {
+      return args ? args.namedChild(attr === "request" ? 1 : 0) : null; // requests.request(method, url)
+    }
+  }
+  return null;
+}
+
+const SSRF_MESSAGE =
+  "An outbound HTTP request (`requests`/`httpx`/`urllib`/…) is made to a request-controlled URL " +
+  "(`request.args`/`request.GET`/…). An attacker can point it at internal services or the cloud metadata " +
+  "endpoint (`169.254.169.254`) — server-side request forgery. Validate the URL against an allowlist of " +
+  "permitted hosts (not a denylist), and re-check the host after any redirects.";
+
 export const PYTHON_RULES: TsAstRule[] = [
   {
     id: "sql-injection",
@@ -500,6 +530,24 @@ export const PYTHON_RULES: TsAstRule[] = [
       const sanitized = pathSanitized(tainted, root);
       emitFinding(node, ctx, emit, pythonProfile,
         sanitized ? { sanitized: true, message: PT_MESSAGE, sanitizedNote: ptSanitizedNote() } : { sanitized: false, message: PT_MESSAGE, sanitizedNote: "" });
+    },
+  },
+  {
+    id: "ssrf",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "SSRF sink",
+    languages: ["python"],
+    message: SSRF_MESSAGE,
+    sinkQuery: "(call) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "call") return;
+      const url = ssrfUrlArg(node);
+      if (!url) return;
+      const root = ctx.tsTree!.rootNode;
+      if (!taintedByRequest(url, root)) return;
+      emitFinding(node, ctx, emit, pythonProfile, { sanitized: false, message: SSRF_MESSAGE, sanitizedNote: "" });
     },
   },
   {

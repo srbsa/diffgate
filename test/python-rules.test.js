@@ -317,3 +317,19 @@ precise("python: a dynamic sink on an unchanged line is not flagged", () => {
   const r = analyze({ filePath: "x.py", content, changedLines: new Set([1]) });
   assert.equal(r.findings.filter((f) => f.ruleId === "sql-injection").length, 0);
 });
+
+// --- SSRF: request-tainted URL into an outbound-request sink ---------------------------------------
+function ssrf(content) { const f = findings(content, "ssrf"); return f.length ? f[0] : null; }
+precise("python ssrf: requests.get of request data is flagged (advisory)", () => {
+  const f = ssrf(`def v(request):\n    requests.get(request.args["url"])\n`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("python ssrf: urllib urlopen of request data is flagged", () => {
+  assert.ok(ssrf(`def v(request):\n    urllib.request.urlopen(request.GET["u"])\n`));
+});
+precise("python ssrf: a static URL is NOT flagged", () => {
+  assert.equal(ssrf(`def v():\n    requests.get("https://api.example.com/health")\n`), null);
+});
+precise("python ssrf: dict.get with request data is NOT flagged (not an HTTP client)", () => {
+  assert.equal(ssrf(`def v(request):\n    d.get(request.args["k"])\n`), null);
+});

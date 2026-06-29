@@ -103,6 +103,19 @@ function containsRequestData(n: AstNode | null | undefined, ctx: RuleContext): b
   return false;
 }
 
+/** Whether a dotted callee name (`memberName`) is an outbound HTTP-request sink whose first argument is a
+ *  URL — for SSRF. Qualified by library so generic `.get`/`.post` on unrelated objects don't match. */
+function isSsrfSink(name: string): boolean {
+  return (
+    name === "fetch" || name.endsWith(".fetch") ||
+    name === "axios" || /(?:^|\.)axios\.(?:get|post|put|delete|patch|head|request)$/.test(name) ||
+    /(?:^|\.)(?:http|https)\.(?:get|request)$/.test(name) ||
+    name === "got" || /(?:^|\.)got\.(?:get|post|put|delete|patch|head)$/.test(name) ||
+    /(?:^|\.)superagent\.(?:get|post)$/.test(name) ||
+    /(?:^|\.)needle\.(?:get|post|head)$/.test(name)
+  );
+}
+
 function getStaticText(n: AstNode): string {
   const node = n as any;
   if (node.type === "TemplateLiteral") {
@@ -587,6 +600,28 @@ export const BUILTIN_RULES: Rule[] = [
     },
   },
   {
+    id: "ssrf",
+    type: "ast",
+    tier: "orange",
+    blocking: false,
+    title: "SSRF sink",
+    languages: JS,
+    message:
+      "An outbound HTTP request (`fetch`/`axios`/`http.get`/…) is made to a URL built from request-controlled " +
+      "data (`req.query`/`req.params`/`req.body`). An attacker can point it at internal services or the cloud " +
+      "metadata endpoint (`169.254.169.254`) — server-side request forgery. Validate the URL against an allowlist " +
+      "of permitted hosts (not a denylist), and resolve + re-check the host after any redirects.",
+    visit(node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
+      if (node.type !== "CallExpression") return;
+      const name = memberName((node as any).callee as AstNode);
+      if (!name || !isSsrfSink(name)) return;
+      const url = ((node as any).arguments || [])[0] as AstNode | undefined;
+      if (url && containsRequestData(url, ctx)) {
+        emit({ loc: node.loc, code: (ctx.lines[node.loc!.start.line - 1] || "").trim() });
+      }
+    },
+  },
+  {
     id: "nosql-injection",
     type: "pattern",
     tier: "orange",
@@ -832,6 +867,7 @@ export const RULE_PACKS: Record<string, string[]> = {
     "code-injection",
     "file-inclusion",
     "unsafe-deserialization",
+    "ssrf",
   ],
   "compatibility": [
     "public-api-change",
