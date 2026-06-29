@@ -170,3 +170,28 @@ precise("csharp ssrf: WebRequest.Create of request data is flagged", () => {
 precise("csharp ssrf: a static URL is NOT flagged", () => {
   assert.equal(ssrf(`public class T { void M(HttpClient c) { c.GetStringAsync("https://api/x"); } }`), null);
 });
+
+// --- XXE: explicit opt-in to external-entity resolution (advisory) ---------------------------------
+function xxe(content) { const f = findings(content, "xxe"); return f.length ? f[0] : null; }
+precise("csharp xxe: legacy new XmlTextReader(...) is flagged (advisory)", () => {
+  const f = xxe(W(`var r = new XmlTextReader(id);`));
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("csharp xxe: XmlTextReader hardened with DtdProcessing.Prohibit is NOT flagged", () => {
+  assert.equal(xxe(W(`var r = new XmlTextReader(id); r.DtdProcessing = DtdProcessing.Prohibit;`)), null);
+});
+precise("csharp xxe: DtdProcessing = DtdProcessing.Parse is flagged", () => {
+  assert.ok(xxe(W(`var s = new XmlReaderSettings(); s.DtdProcessing = DtdProcessing.Parse;`)));
+});
+precise("csharp xxe: DtdProcessing.Parse with XmlResolver = null is NOT flagged (safe)", () => {
+  assert.equal(xxe(W(`var s = new XmlReaderSettings(); s.DtdProcessing = DtdProcessing.Parse; s.XmlResolver = null;`)), null);
+});
+precise("csharp xxe: explicit XmlResolver = new XmlUrlResolver() is flagged", () => {
+  assert.ok(xxe(W(`var d = new XmlDocument(); d.XmlResolver = new XmlUrlResolver();`)));
+});
+precise("csharp xxe: modern XmlReader.Create with no DTD opt-in is NOT flagged", () => {
+  assert.equal(xxe(W(`var r = XmlReader.Create(id);`)), null);
+});
+precise("csharp xxe: the hardened XmlSecureResolver is NOT flagged (no false positive)", () => {
+  assert.equal(xxe(W(`var d = new XmlDocument(); d.XmlResolver = new XmlSecureResolver(new XmlUrlResolver(), perms);`)), null);
+});

@@ -7,9 +7,8 @@
 //   • Native deserialization (`ObjectInputStream.readObject`) is the canonical Java RCE sink, flagged on
 //     presence (every Java SAST does) — the gadget risk doesn't depend on a locally-visible dynamic value.
 //
-// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal.
-// Honest gaps (future): XXE (DocumentBuilderFactory/SAXParser hardening), StringBuilder-built SQL,
-// SpEL/OGNL expression injection, SSRF.
+// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · ssrf · xxe.
+// Honest gaps (future): StringBuilder-built SQL, SpEL/OGNL expression injection.
 
 import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
 import {
@@ -178,6 +177,37 @@ function ssrfUrlArg(node: TsNode): TsNode | null {
   }
   return null;
 }
+
+// XXE — an XML parser created without disabling DOCTYPE/external entities. Triggers on factory/reader
+// creation; suppressed when the file shows any recognized hardening (so a parser secured elsewhere in the
+// same file is not re-flagged). Advisory: parsing trusted XML is common, and hardening can be cross-file.
+const XXE_FACTORY_OBJECTS = new Set(["DocumentBuilderFactory", "SAXParserFactory", "XMLInputFactory", "TransformerFactory", "SchemaFactory"]);
+const XXE_FACTORY_METHODS = new Set(["newInstance", "newDefaultInstance", "newNSInstance"]);
+const XXE_NEW_TYPES = new Set(["SAXReader", "SAXBuilder"]); // dom4j / JDOM
+// Any of these tokens anywhere in the file = the parser is being hardened → suppress (OWASP XXE cheat sheet).
+const XXE_HARDENED = /disallow-doctype-decl|FEATURE_SECURE_PROCESSING|external-general-entities|external-parameter-entities|load-external-dtd|ACCESS_EXTERNAL_DTD|ACCESS_EXTERNAL_STYLESHEET|ACCESS_EXTERNAL_SCHEMA|SUPPORT_DTD|isSupportingExternalEntities|setExpandEntityReferences\s*\(\s*false/;
+
+/** True when `node` creates an XML parser factory/reader that defaults to resolving external entities. */
+function isXxeSink(node: TsNode): boolean {
+  if (node.type === "method_invocation") {
+    const c = invokeParts(node);
+    if (!c) return false;
+    if (c.name === "createXMLReader" && c.object?.text.split(".").pop() === "XMLReaderFactory") return true;
+    return XXE_FACTORY_METHODS.has(c.name) && !!c.object && XXE_FACTORY_OBJECTS.has(c.object.text.split(".").pop() || "");
+  }
+  if (node.type === "object_creation_expression") {
+    const leaf = newTypeLeaf(node);
+    return !!leaf && XXE_NEW_TYPES.has(leaf);
+  }
+  return false;
+}
+
+const XXE_MESSAGE =
+  "An XML parser is created (`DocumentBuilderFactory`/`SAXParserFactory`/`XMLInputFactory`/`TransformerFactory`/" +
+  "dom4j `SAXReader`) without disabling DOCTYPE declarations and external entities. If it parses attacker-controlled " +
+  "XML, an attacker can read local files, perform SSRF, or exhaust resources (billion-laughs) via an external entity " +
+  "(XXE). Disable DTDs — `dbf.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true)` — set " +
+  "`setXIncludeAware(false)` and `setExpandEntityReferences(false)`, or enable `XMLConstants.FEATURE_SECURE_PROCESSING`.";
 
 const SSRF_MESSAGE =
   "An outbound HTTP request is made to a request-controlled URL (`new URL(...)`, `RestTemplate.getForObject`, " +
@@ -353,6 +383,21 @@ export const JAVA_RULES: TsAstRule[] = [
       if (!tainted) return;
       const sanitized = requestSanitized(tainted, root, javaProfile, JAVA_REQUEST_SOURCE, PT_SANITIZERS);
       emitFinding(node, ctx, emit, { sanitized, message: PT_MESSAGE, sanitizedNote: PT_SANITIZED });
+    },
+  },
+  {
+    id: "xxe",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "XML external entity (XXE) sink",
+    languages: ["java"],
+    message: XXE_MESSAGE,
+    sinkQuery: "[(method_invocation) (object_creation_expression)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (!isXxeSink(node)) return;
+      if (XXE_HARDENED.test(ctx.tsTree!.rootNode.text)) return; // hardened in-file → not a finding
+      emitFinding(node, ctx, emit, { sanitized: false, message: XXE_MESSAGE, sanitizedNote: "" });
     },
   },
 ];

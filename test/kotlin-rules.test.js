@@ -144,3 +144,24 @@ precise("kotlin ssrf: URL() of request data is flagged (advisory)", () => {
 precise("kotlin ssrf: a static URL is NOT flagged", () => {
   assert.equal(ssrf(`fun s() { URL("https://api/x").readText() }`), null);
 });
+
+precise("kotlin sql: every dynamic part wrapped in a recognized escaper down-tiers to review", () => {
+  const f = sqli(`fun m(id: String) { stmt.executeQuery("SELECT * FROM t WHERE id=" + escapeSql(id)) }`);
+  assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
+});
+precise("kotlin sql: a raw concatenation (no escaper) still blocks", () => {
+  assert.ok(sqli(`fun m(id: String) { stmt.executeQuery("SELECT * FROM t WHERE id=" + id) }`)?.blocking);
+});
+
+// --- XXE: JVM XML parser created without disabling external entities (advisory) --------------------
+function xxe(content) { const f = findings(content, "xxe"); return f.length ? f[0] : null; }
+precise("kotlin xxe: DocumentBuilderFactory.newInstance() without hardening is flagged (advisory)", () => {
+  const f = xxe(`fun m() { val dbf = DocumentBuilderFactory.newInstance() }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("kotlin xxe: a hardened factory (disallow-doctype-decl) is NOT flagged", () => {
+  assert.equal(xxe(`fun m() { val dbf = DocumentBuilderFactory.newInstance(); dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }`), null);
+});
+precise("kotlin xxe: dom4j SAXReader() construction is flagged", () => {
+  assert.ok(xxe(`fun m() { val r = SAXReader() }`));
+});

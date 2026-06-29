@@ -369,6 +369,38 @@ const PT_SANITIZED =
   "The request value here is wrapped in a recognized path sanitizer (`basename`/`realpath`) — likely " +
   "safe, but verify it actually contains the path. Down-tiered from a blocking finding to review.";
 
+const CORS_MESSAGE =
+  "CORS is configured to allow any origin — a wildcard `Access-Control-Allow-Origin: *` or the request's " +
+  "own `Origin` reflected back. If cookies or tokens are used, arbitrary websites can make credentialed " +
+  "cross-origin requests to this API. Set an explicit allowlist of trusted origins and echo the request " +
+  "origin only when it is on that list; never send `*` (or a reflected origin) alongside credentials.";
+
+// `Access-Control-Allow-Origin` set to `*` (wildcard) or to a request-reflected origin is permissive.
+const CORS_HEADER = /access-control-allow-origin/i;
+const CORS_WILDCARD = /:\s*\*/;          // `…Origin: *` inside a combined header string
+const CORS_STAR_VALUE = /^\s*["']\s*\*\s*["']\s*$/; // a standalone `'*'` value argument
+// Framework header setters: `$resp->headers->set(name, val)`, `response()->header(name, val)`,
+// PSR-7 `$resp->withHeader(name, val)`. Gated on an `Access-Control-Allow-Origin` first argument, so a
+// generic `$cache->set('k', v)` is never mistaken for a CORS write.
+const CORS_SETTER_METHODS = new Set(["set", "header", "withHeader"]);
+
+/** True when `call` configures a permissive (`*` or request-reflected) CORS origin. */
+function isCorsPermissive(call: TsNode, root: TsNode): boolean {
+  const name = callName(call);
+  if (!name) return false;
+  if (call.type === "function_call_expression" && name.toLowerCase() === "header") {
+    const a0 = callArgs(call)[0];
+    if (!a0 || !CORS_HEADER.test(a0.text)) return false;
+    return CORS_WILDCARD.test(a0.text) || taintedByRequest(a0, root); // wildcard or reflected origin
+  }
+  if (CORS_SETTER_METHODS.has(name)) {
+    const args = callArgs(call);
+    if (args.length < 2 || !CORS_HEADER.test(args[0].text)) return false;
+    return CORS_STAR_VALUE.test(args[1].text) || taintedByRequest(args[1], root);
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------
@@ -588,6 +620,26 @@ export const PHP_RULES: TsAstRule[] = [
       if (!tainted) return;
       const sanitized = requestSanitized(tainted, root, PT_SANITIZERS);
       emitFinding(node, ctx, emit, { sanitized, message: PT_MESSAGE, sanitizedNote: PT_SANITIZED });
+    },
+  },
+  {
+    id: "permissive-cors",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "Permissive CORS policy",
+    languages: ["php"],
+    message: CORS_MESSAGE,
+    sinkQuery: "[(function_call_expression) (member_call_expression) (nullsafe_member_call_expression) (scoped_call_expression)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (!isCall(node)) return;
+      if (!isCorsPermissive(node, ctx.tsTree!.rootNode)) return;
+      const line = node.startPosition.row + 1;
+      const loc = {
+        start: { line, column: node.startPosition.column },
+        end: { line: node.endPosition.row + 1, column: node.endPosition.column },
+      };
+      emit({ loc, code: (ctx.lines[line - 1] || "").trim() });
     },
   },
 ];

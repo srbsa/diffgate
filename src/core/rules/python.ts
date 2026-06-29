@@ -311,14 +311,81 @@ function arg0(call: TsNode): TsNode | null {
   return args ? args.namedChild(0) : null;
 }
 
-/** The `object`/`attribute` of an attribute-call (`subprocess.run` → {obj:"subprocess", attr:"run"}). */
-function attrCall(call: TsNode): { obj: string; attr: string } | null {
+// --- import-alias resolution ------------------------------------------------
+// Sinks are matched by module name (`subprocess.run`, `pickle.loads`, `requests.get`). An aliased or
+// `from`-import binds a DIFFERENT local name to the same callable, so without resolving them
+// `import subprocess as sp; sp.run(x, shell=True)` and `from os import system; system(x)` are misses.
+// We build a per-file alias map (cached on the tree root) and normalize a call back to its
+// `{module, attr}` before sink matching — improving recall, never adding a false positive (an alias
+// only ever maps to the real module it was imported from).
+interface ImportAliases {
+  /** Local module name → real dotted module path. `import subprocess as sp` → sp→subprocess. */
+  module: Map<string, string>;
+  /** Local function name → its origin module + original name. `from os import system as sh` → sh→{os,system}. */
+  fromFn: Map<string, { module: string; name: string }>;
+}
+const ALIAS_CACHE = new WeakMap<TsNode, ImportAliases>();
+
+function importAliases(root: TsNode): ImportAliases {
+  const cached = ALIAS_CACHE.get(root);
+  if (cached) return cached;
+  const module = new Map<string, string>();
+  const fromFn = new Map<string, { module: string; name: string }>();
+  for (const imp of root.descendantsOfType("import_statement")) {
+    for (const child of imp.namedChildren) {
+      if (child.type === "aliased_import") {
+        const n = child.childForFieldName("name");
+        const a = child.childForFieldName("alias");
+        if (n && a) module.set(a.text, n.text); // import os.path as osp → osp→os.path
+      }
+    }
+  }
+  for (const imp of root.descendantsOfType("import_from_statement")) {
+    const mod = imp.childForFieldName("module_name");
+    if (!mod) continue;
+    const moduleName = mod.text;
+    for (const child of imp.namedChildren) {
+      if (child.id === mod.id) continue;
+      if (child.type === "dotted_name" || child.type === "identifier") {
+        fromFn.set(child.text, { module: moduleName, name: child.text }); // from subprocess import run
+      } else if (child.type === "aliased_import") {
+        const n = child.childForFieldName("name");
+        const a = child.childForFieldName("alias");
+        if (n && a) fromFn.set(a.text, { module: moduleName, name: n.text }); // from os import system as sh
+      }
+    }
+  }
+  const out = { module, fromFn };
+  ALIAS_CACHE.set(root, out);
+  return out;
+}
+
+/** Resolve a possibly-aliased module reference (`sp` → `subprocess`, `sp.foo` → `subprocess.foo`). */
+function resolveModule(obj: string, aliases: ImportAliases): string {
+  const head = obj.split(".")[0];
+  const real = aliases.module.get(head);
+  if (!real) return obj;
+  return obj === head ? real : real + obj.slice(head.length);
+}
+
+/** The `{object, attribute}` a call targets, with import aliases resolved. Handles both the attribute
+ *  form (`subprocess.run(...)` / aliased `sp.run(...)`) and the bare `from`-import form
+ *  (`from subprocess import run; run(...)` → {obj:"subprocess", attr:"run"}). */
+function attrCall(call: TsNode, root: TsNode): { obj: string; attr: string } | null {
+  const aliases = importAliases(root);
   const fn = call.childForFieldName("function");
-  if (!fn || fn.type !== "attribute") return null;
-  const o = fn.childForFieldName("object");
-  const a = fn.childForFieldName("attribute");
-  if (!o || !a) return null;
-  return { obj: o.text, attr: a.text };
+  if (!fn) return null;
+  if (fn.type === "attribute") {
+    const o = fn.childForFieldName("object");
+    const a = fn.childForFieldName("attribute");
+    if (!o || !a) return null;
+    return { obj: resolveModule(o.text, aliases), attr: a.text };
+  }
+  if (fn.type === "identifier") {
+    const f = aliases.fromFn.get(fn.text);
+    if (f) return { obj: f.module, attr: f.name };
+  }
+  return null;
 }
 
 /** Whether the call passes a truthy `shell=True` keyword (the gate that makes subprocess use a shell). */
@@ -341,8 +408,8 @@ const CMD_COND_SHELL = new Set(["run", "call", "check_call", "check_output", "Po
 const CMD_SHLEX_QUOTE = /(?:^|\.)(?:shlex|pipes)\.quote$/;
 
 /** If `call` is an OS-command sink, the command argument plus whether it always invokes a shell. */
-function cmdSink(call: TsNode): { arg: TsNode; alwaysShell: boolean } | null {
-  const c = attrCall(call);
+function cmdSink(call: TsNode, root: TsNode): { arg: TsNode; alwaysShell: boolean } | null {
+  const c = attrCall(call, root);
   if (!c) return null;
   const a = arg0(call);
   if (!a) return null;
@@ -398,8 +465,8 @@ const DESER_ATTRS = new Set(["load", "loads"]);
 const YAML_SAFE_LOADER = /(?:^|\.)(?:SafeLoader|CSafeLoader|BaseLoader)$/;
 
 /** If `call` deserializes untrusted data, the data argument plus whether a safe loader neutralizes it. */
-function deserSink(call: TsNode): { arg: TsNode; sanitized: boolean } | null {
-  const c = attrCall(call);
+function deserSink(call: TsNode, root: TsNode): { arg: TsNode; sanitized: boolean } | null {
+  const c = attrCall(call, root);
   if (!c) return null;
   const a = arg0(call);
   if (!a) return null;
@@ -440,19 +507,27 @@ function deserSanitizedNote(): string {
 const SSRF_MODULES = /^(?:requests|httpx|urllib3|aiohttp)$/;
 const SSRF_HTTP_METHODS = new Set(["get", "post", "put", "delete", "patch", "head", "options", "request"]);
 
-/** The URL argument of an outbound-request sink, or null. */
-function ssrfUrlArg(call: TsNode): TsNode | null {
+/** The URL argument of an outbound-request sink, or null. Resolves import aliases so
+ *  `import requests as rq; rq.get(url)` and `from requests import get; get(url)` are covered. */
+function ssrfUrlArg(call: TsNode, root: TsNode): TsNode | null {
   const fn = call.childForFieldName("function");
   if (!fn) return null;
   const args = call.childForFieldName("arguments");
-  if (fn.type === "identifier" && fn.text === "urlopen") return args ? args.namedChild(0) : null;
+  const urlAt = (n: string) => (args ? args.namedChild(n === "request" ? 1 : 0) : null); // requests.request(method, url)
+  if (fn.type === "identifier") {
+    if (fn.text === "urlopen") return args ? args.namedChild(0) : null;
+    const f = importAliases(root).fromFn.get(fn.text);
+    if (f && f.name === "urlopen") return args ? args.namedChild(0) : null; // from urllib.request import urlopen
+    if (f && SSRF_MODULES.test(f.module) && SSRF_HTTP_METHODS.has(f.name)) return urlAt(f.name);
+    return null;
+  }
   if (fn.type === "attribute") {
     const attr = fn.childForFieldName("attribute")?.text;
     const obj = fn.childForFieldName("object");
     if (!attr) return null;
     if (attr === "urlopen") return args ? args.namedChild(0) : null; // urllib.request.urlopen
-    if (SSRF_HTTP_METHODS.has(attr) && obj && SSRF_MODULES.test(obj.text)) {
-      return args ? args.namedChild(attr === "request" ? 1 : 0) : null; // requests.request(method, url)
+    if (SSRF_HTTP_METHODS.has(attr) && obj && SSRF_MODULES.test(resolveModule(obj.text, importAliases(root)))) {
+      return urlAt(attr);
     }
   }
   return null;
@@ -543,7 +618,7 @@ export const PYTHON_RULES: TsAstRule[] = [
     sinkQuery: "(call) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "call") return;
-      const url = ssrfUrlArg(node);
+      const url = ssrfUrlArg(node, ctx.tsTree!.rootNode);
       if (!url) return;
       const root = ctx.tsTree!.rootNode;
       if (!taintedByRequest(url, root)) return;
@@ -591,7 +666,7 @@ export const PYTHON_RULES: TsAstRule[] = [
     sinkQuery: "(call) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "call") return;
-      const sink = cmdSink(node);
+      const sink = cmdSink(node, ctx.tsTree!.rootNode);
       if (!sink) return;
       // subprocess.run/Popen/… are only a shell sink with shell=True; the list-arg form is always safe.
       if (!sink.alwaysShell && !hasShellTrue(node)) return;
@@ -632,9 +707,9 @@ export const PYTHON_RULES: TsAstRule[] = [
     sinkQuery: "(call) @sink",
     visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
       if (node.type !== "call") return;
-      const sink = deserSink(node);
-      if (!sink) return;
       const root = ctx.tsTree!.rootNode;
+      const sink = deserSink(node, root);
+      if (!sink) return;
       if (isStaticConst(sink.arg, root, pythonProfile)) return; // a literal payload is a fixture, not untrusted input
       emitFinding(node, ctx, emit, pythonProfile,
         sink.sanitized ? { sanitized: true, message: DESER_MESSAGE, sanitizedNote: deserSanitizedNote() } : { sanitized: false, message: DESER_MESSAGE, sanitizedNote: "" });

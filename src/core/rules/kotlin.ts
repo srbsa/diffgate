@@ -6,9 +6,9 @@
 //     and represents a simple `$x` template as `string_content "$"` + `string_content "x"` (only braced
 //     `${…}` produces an `interpolation` node). This file uses positional helpers and handles both forms.
 //
-// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal.
+// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · ssrf · xxe.
 // Honest gaps (future): XSS (Android WebView/templating), Android SQLite specifics beyond rawQuery/execSQL,
-// XXE, SSRF, Ktor-specific request sources beyond the common ones.
+// Ktor-specific request sources beyond the common ones.
 
 import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
 import {
@@ -24,6 +24,10 @@ const SQL_FRAGMENT_METHODS = new Set([
 ]);
 // Generic-named SQL sinks — require a SQL keyword to fire.
 const SQL_KEYWORD_METHODS = new Set(["execute", "update", "query", "queryForObject", "queryForList"]);
+// Recognized SQL escapers/quoters (down-tier, never suppress) — same JVM vocabulary as the Java rule
+// (`StringEscapeUtils.escapeSql`, ESAPI, a custom `quoteIdentifier`). Escaping is weaker than a bound
+// parameter, so a fully-escaped query drops to a review note rather than blocking.
+const SQL_SANITIZERS = /^(?:escapeSql|escape|quoteIdentifier)$/;
 
 // Command-execution sinks (method names): `Runtime…exec(...)`, `ProcessBuilder(...)`.
 const CMD_METHODS = new Set(["exec", "ProcessBuilder"]);
@@ -125,6 +129,14 @@ function emitFinding(
 }
 
 /** A value that builds a string from a dynamic template / concatenation, following intra-file def-use. */
+/** A `call_expression` whose method is a recognized SQL escaper (`escapeSql`/`escape`/`quoteIdentifier`). */
+function isSqlSanitizerCall(node: TsNode): boolean {
+  const u = unwrap(node, kotlinProfile);
+  if (u.type !== "call_expression") return false;
+  const c = ktCall(u);
+  return !!c && SQL_SANITIZERS.test(c.method);
+}
+
 function isDynamicStr(node: TsNode, root: TsNode, depth = 0): boolean {
   if (depth > 6) return false;
   const n = unwrap(node, kotlinProfile);
@@ -167,6 +179,31 @@ function ssrfUrlArg(node: TsNode): TsNode | null {
   return null;
 }
 
+// XXE — JVM XML parser created without disabling DOCTYPE/external entities (same vocabulary as Java).
+// Triggers on factory/reader creation; suppressed when the file shows recognized hardening. Advisory.
+const XXE_FACTORY_OBJECTS = new Set(["DocumentBuilderFactory", "SAXParserFactory", "XMLInputFactory", "TransformerFactory", "SchemaFactory"]);
+const XXE_FACTORY_METHODS = new Set(["newInstance", "newDefaultInstance", "newNSInstance"]);
+const XXE_NEW_TYPES = new Set(["SAXReader", "SAXBuilder"]);
+const XXE_HARDENED = /disallow-doctype-decl|FEATURE_SECURE_PROCESSING|external-general-entities|external-parameter-entities|load-external-dtd|ACCESS_EXTERNAL_DTD|ACCESS_EXTERNAL_STYLESHEET|ACCESS_EXTERNAL_SCHEMA|SUPPORT_DTD|isSupportingExternalEntities|setExpandEntityReferences\s*\(\s*false/;
+
+/** True when a `call_expression` creates an XML parser factory/reader that defaults to resolving entities. */
+function isXxeSink(c: { receiver: TsNode | null; method: string }): boolean {
+  if (c.receiver === null && XXE_NEW_TYPES.has(c.method)) return true; // SAXReader()/SAXBuilder()
+  if (c.method === "createXMLReader") return true;
+  if (XXE_FACTORY_METHODS.has(c.method) && c.receiver) {
+    const leaf = c.receiver.text.split(".").pop() || "";
+    return XXE_FACTORY_OBJECTS.has(leaf);
+  }
+  return false;
+}
+
+const XXE_MESSAGE =
+  "An XML parser is created (`DocumentBuilderFactory`/`SAXParserFactory`/`XMLInputFactory`/`TransformerFactory`/" +
+  "dom4j `SAXReader`) without disabling DOCTYPE declarations and external entities. If it parses attacker-controlled " +
+  "XML, an attacker can read local files, perform SSRF, or exhaust resources (billion-laughs) via an external entity " +
+  "(XXE). Disable DTDs — `dbf.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true)` — set " +
+  "`setXIncludeAware(false)`/`setExpandEntityReferences(false)`, or enable `XMLConstants.FEATURE_SECURE_PROCESSING`.";
+
 const SSRF_MESSAGE =
   "An outbound HTTP request is made to a request-controlled URL (`URL(...)`/`URI(...)`/OkHttp `.url(...)`) built " +
   "from `getParameter`/`@RequestParam`/Ktor `call.parameters`. An attacker can point it at internal services or the " +
@@ -180,6 +217,9 @@ const SQL_MESSAGE =
   "`String.format` rather than a parameterized statement. If any value is user-controlled, an attacker can " +
   "read, modify, or delete arbitrary data. Use a `PreparedStatement` with `?` placeholders (or named JPA " +
   "parameters) and bind the values; never build SQL from request data.";
+const SQL_SANITIZED =
+  "Every dynamic part here is wrapped in a recognized escaper — likely safe, but escaping is weaker than a " +
+  "bound parameter; verify it covers every value and context. Down-tiered from a blocking finding to review.";
 
 const CMD_MESSAGE =
   "An OS command is built from a dynamic value (string template / concatenation) and passed to " +
@@ -225,7 +265,9 @@ export const KOTLIN_RULES: TsAstRule[] = [
       let src = arg0;
       if (unwrap(src, kotlinProfile).type === "identifier") src = declInit(unwrap(src, kotlinProfile).text, root, kotlinProfile) || src;
       if (keyworded && !fragment && !looksLikeSql(unwrap(src, kotlinProfile), kotlinProfile)) return;
-      emitFinding(node, ctx, emit, { sanitized: false, message: SQL_MESSAGE, sanitizedNote: "" });
+      const dyn = dynamicParts(src, root, kotlinProfile);
+      const sanitized = dyn.length > 0 && dyn.every(isSqlSanitizerCall);
+      emitFinding(node, ctx, emit, { sanitized, message: SQL_MESSAGE, sanitizedNote: SQL_SANITIZED });
     },
   },
   {
@@ -296,6 +338,22 @@ export const KOTLIN_RULES: TsAstRule[] = [
       if (!tainted) return;
       const sanitized = pathSanitized(tainted, root);
       emitFinding(node, ctx, emit, { sanitized, message: PT_MESSAGE, sanitizedNote: PT_SANITIZED });
+    },
+  },
+  {
+    id: "xxe",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "XML external entity (XXE) sink",
+    languages: ["kotlin"],
+    message: XXE_MESSAGE,
+    sinkQuery: "(call_expression) @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      const c = ktCall(node);
+      if (!c || !isXxeSink(c)) return;
+      if (XXE_HARDENED.test(ctx.tsTree!.rootNode.text)) return; // hardened in-file → not a finding
+      emitFinding(node, ctx, emit, { sanitized: false, message: XXE_MESSAGE, sanitizedNote: "" });
     },
   },
 ];

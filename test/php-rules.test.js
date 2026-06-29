@@ -304,3 +304,34 @@ precise("php ssrf: a static URL is NOT flagged", () => {
 precise("php ssrf: curl_setopt with a non-URL option is NOT flagged", () => {
   assert.equal(ssrf(`<?php\nfunction v($ch){ curl_setopt($ch, CURLOPT_TIMEOUT, $_GET["t"]); }`), null);
 });
+
+// --- permissive CORS -------------------------------------------------------------------------------
+const cors = one("permissive-cors");
+precise("php cors: header('Access-Control-Allow-Origin: *') is flagged (advisory)", () => {
+  const f = cors(`function v(){ header("Access-Control-Allow-Origin: *"); }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("php cors: a reflected request Origin is flagged", () => {
+  assert.ok(cors(`function v(){ header("Access-Control-Allow-Origin: " . $_SERVER["HTTP_ORIGIN"]); }`));
+});
+precise("php cors: $resp->headers->set('Access-Control-Allow-Origin', '*') is flagged", () => {
+  assert.ok(cors(`function v($resp){ $resp->headers->set("Access-Control-Allow-Origin", "*"); }`));
+});
+precise("php cors: response()->header('Access-Control-Allow-Origin', '*') is flagged", () => {
+  assert.ok(cors(`function v($r){ $r->header("Access-Control-Allow-Origin", "*"); }`));
+});
+precise("php cors: PSR-7 withHeader(..., '*') is flagged", () => {
+  assert.ok(cors(`function v($r){ return $r->withHeader("Access-Control-Allow-Origin", "*"); }`));
+});
+precise("php cors: an explicit allowlisted origin is NOT flagged", () => {
+  assert.equal(cors(`function v(){ header("Access-Control-Allow-Origin: https://app.example.com"); }`), null);
+});
+precise("php cors: a wildcard SUBDOMAIN value (not a bare *) is NOT flagged", () => {
+  assert.equal(cors(`function v(){ header("Access-Control-Allow-Origin: https://*.example.com"); }`), null);
+});
+precise("php cors: a generic ->set() on a non-CORS header is NOT flagged (no false positive)", () => {
+  assert.equal(cors(`function v($cache){ $cache->set("user", "*"); }`), null);
+});
+precise("php cors: a non-Origin CORS header set to * is NOT flagged", () => {
+  assert.equal(cors(`function v(){ header("Access-Control-Allow-Methods: *"); }`), null);
+});

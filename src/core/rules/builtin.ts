@@ -868,6 +868,7 @@ export const RULE_PACKS: Record<string, string[]> = {
     "file-inclusion",
     "unsafe-deserialization",
     "ssrf",
+    "xxe",
   ],
   "compatibility": [
     "public-api-change",

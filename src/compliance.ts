@@ -30,6 +30,8 @@ export const RULE_CONTROLS: Record<string, string[]> = {
   "path-traversal": ["CC6.6", "CC7.1"],
   "prototype-pollution": ["CC6.6", "CC7.1"],
   "permissive-cors": ["CC6.6"],
+  "ssrf": ["CC6.6", "CC7.1"],
+  "xxe": ["CC6.6", "CC7.1"],
   "auth-crypto": ["CC6.1"],
   "dangerous-exec": ["CC6.8", "CC7.1"],
   "public-api-change": ["CC8.1"],

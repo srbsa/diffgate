@@ -7,7 +7,33 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.7.1] — 2026-06-29
+## [0.7.2] — 2026-06-29
+
+_First published release of the 0.7 line. **0.7.0 and 0.7.1 were never published** (committed locally only); their language-parity and SSRF work ships here, plus this release's four additions: Python import-alias resolution, PHP permissive-CORS, cross-language XXE (JVM + .NET), and Kotlin SQL sanitizer parity. **689 tests green.**_
+
+### Added
+
+- **XXE — a new cross-language advisory** ([`xxe`], orange / non-blocking) on the JVM and .NET. Fires on an XML parser created without disabling DOCTYPE/external-entity resolution, and is **suppressed when the file shows recognized hardening** (OWASP XXE cheat-sheet markers) so a parser secured elsewhere in the same file isn't re-flagged:
+  - **Java / Kotlin** ([java.ts](src/core/rules/java.ts), [kotlin.ts](src/core/rules/kotlin.ts)): `DocumentBuilderFactory`/`SAXParserFactory`/`XMLInputFactory`/`TransformerFactory`/`SchemaFactory` `newInstance()`, `XMLReaderFactory.createXMLReader()`, and dom4j/JDOM `new SAXReader()`/`new SAXBuilder()`. Suppressed by `disallow-doctype-decl`, `FEATURE_SECURE_PROCESSING`, `external-general/parameter-entities`, `load-external-dtd`, `ACCESS_EXTERNAL_DTD/STYLESHEET/SCHEMA`, `SUPPORT_DTD`, `isSupportingExternalEntities`, or `setExpandEntityReferences(false)`.
+  - **C#** ([csharp.ts](src/core/rules/csharp.ts)): only the explicit opt-ins to external resolution — legacy `new XmlTextReader(...)`, `DtdProcessing = DtdProcessing.Parse` without a null `XmlResolver`, or `XmlResolver = new XmlUrlResolver()`. The modern safe-by-default APIs (`XmlReader.Create`, `DtdProcessing.Prohibit`, `XmlResolver = null`) and the hardened `XmlSecureResolver` are **not** flagged (bug-bashed false-positive). `xxe` joined the `web-security` pack + SOC-2 control map.
+
+- **PHP `permissive-cors`** ([php.ts](src/core/rules/php.ts), orange / non-blocking) — a wildcard `header("Access-Control-Allow-Origin: *")` or a request-reflected `Origin` (`$_SERVER['HTTP_ORIGIN']`), including framework setters (`$resp->headers->set(...)`, `response()->header(...)`, PSR-7 `->withHeader(...)`). Gated on an `Access-Control-Allow-Origin` argument, so a generic `$cache->set('k','*')`, an allowlisted origin, and a wildcard *subdomain* (`https://*.example.com`) are correctly not flagged. Brings PHP to **eight** AST classes and reuses the existing `permissive-cors` id (already in the pack + compliance map).
+
+### Improved
+
+- **Python import-alias resolution** ([python.ts](src/core/rules/python.ts)) — closes the known 0.7.0 limitation. Module-based sinks (command-injection, unsafe-deserialization, SSRF) now resolve `import subprocess as sp; sp.run(...)`, `from os import system; system(...)`, `from os import system as sh`, and `import pickle as p; p.loads(...)` back to their origin module before sink matching. A per-file alias map (cached on the tree root) only ever maps an alias to the module it was imported from, so recall improves with **no new false positives** — `from json import loads` and `from mycache import get` stay clean.
+- **Kotlin SQL sanitizer parity** ([kotlin.ts](src/core/rules/kotlin.ts)) — Kotlin's `sql-injection` now down-tiers a fully-escaped query (`escapeSql`/`escape`/`quoteIdentifier`) to a review note instead of blocking, matching the Java rule on the same JVM vocabulary. (Go's SQL/command rules intentionally have no down-tier — there is no recognized escaper; the safe form is placeholders / argument vectors, already not flagged.)
+
+### Fixed
+
+- **Stray NUL bytes made two source files binary to git** (no line diffs — corrosive for a diff-review engine reviewing its own changes): a NUL in a [treesitter.ts](src/core/parsers/treesitter.ts) comment, and a NUL written as a raw byte (instead of the `"\u0000"` escape) in the [session.ts](src/core/session.ts) finding-fingerprint hash separator. Both are now plain text; the `session.ts` string is byte-identical at runtime, so persisted dismiss/confirm fingerprints are unchanged. A new [test/hygiene.test.js](test/hygiene.test.js) gate fails the suite if any tracked text file ever carries a NUL again.
+- **`package-lock.json` version** was stuck at `0.6.1` while `package.json` is `0.7.2` (an `npm ci` mismatch); synced to `0.7.2`.
+
+[`xxe`]: src/core/rules/
+
+## [0.7.1] — unreleased
+
+_Committed locally, never published to npm/marketplace — this work ships in **0.7.2**._
 
 ### Added
 
@@ -24,7 +50,9 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 [`ssrf`]: src/core/rules/
 
-## [0.7.0] — 2026-06-29
+## [0.7.0] — unreleased
+
+_Committed locally, never published to npm/marketplace — this work ships in **0.7.2**._
 
 _Language parity expansion: every mainstream backend language brought to maximum feasible AST depth. DiffGate now does real tree-sitter AST analysis for **11 languages** (JS/TS via Babel; Python, PHP, Go, Ruby, Java, C#, Kotlin via tree-sitter) — Python reached PHP's 7-class depth, and Go, Ruby, Java, C#, and Kotlin graduated from the regex floor to Deep (AST). Each language is sink-targeted, parameterization/sanitizer-aware, and tuned to never false-block. Shared engine ([tsast-core](src/core/rules/tsast-core.ts)) extended with declarative `sinkQuery` discovery and a `LanguageProfile` that absorbed every grammar's def-use shape (Go `expression_list`, C# positional declarators, Kotlin field-less `property_declaration`) and callee field — so a new language is a profile + name-sets, not a new engine. 623 tests green._
 

@@ -150,3 +150,22 @@ precise("java ssrf: RestTemplate.getForObject of request data is flagged", () =>
 precise("java ssrf: a static URL is NOT flagged", () => {
   assert.equal(ssrf(`public class T { void m() throws Exception { new java.net.URL("https://api/x").openStream(); } }`), null);
 });
+
+// --- XXE: XML parser created without disabling external entities (advisory) ------------------------
+function xxe(content) { const f = findings(content, "xxe"); return f.length ? f[0] : null; }
+precise("java xxe: DocumentBuilderFactory.newInstance() without hardening is flagged (advisory)", () => {
+  const f = xxe(`public class T { void m() throws Exception { DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance(); dbf.newDocumentBuilder().parse(s); } }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("java xxe: a hardened factory (disallow-doctype-decl) is NOT flagged", () => {
+  assert.equal(xxe(`public class T { void m() throws Exception { DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance(); dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true); } }`), null);
+});
+precise("java xxe: XMLInputFactory hardened with SUPPORT_DTD=false is NOT flagged", () => {
+  assert.equal(xxe(`public class T { void m() { XMLInputFactory f = XMLInputFactory.newInstance(); f.setProperty(XMLInputFactory.SUPPORT_DTD, false); } }`), null);
+});
+precise("java xxe: dom4j SAXReader construction is flagged", () => {
+  assert.ok(xxe(`public class T { void m() { org.dom4j.io.SAXReader r = new SAXReader(); } }`));
+});
+precise("java xxe: FEATURE_SECURE_PROCESSING hardening is NOT flagged", () => {
+  assert.equal(xxe(`public class T { void m() throws Exception { TransformerFactory tf = TransformerFactory.newInstance(); tf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true); } }`), null);
+});

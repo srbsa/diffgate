@@ -8,8 +8,8 @@
 //     variants are.)
 //   • `BinaryFormatter.Deserialize` (and friends) is the canonical .NET deserialization RCE sink.
 //
-// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · xss-sink.
-// Honest gaps (future): Json.NET `TypeNameHandling`, XXE (`XmlDocument`/`XmlReader` hardening), SSRF, LDAP.
+// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · xss-sink · ssrf · xxe.
+// Honest gaps (future): Json.NET `TypeNameHandling`, LDAP injection.
 
 import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
 import {
@@ -200,6 +200,20 @@ function ssrfUrlArg(node: TsNode): TsNode | null {
   }
   return null;
 }
+
+// XXE (.NET) — modern parsers are safe by default, so we flag only the explicit opt-ins to external-entity
+// resolution: a legacy `new XmlTextReader(...)`, an explicit `DtdProcessing.Parse` (without a null resolver),
+// or assigning a real `XmlResolver`. Suppressed when the file shows the hardening (`DtdProcessing.Prohibit` /
+// `ProhibitDtd = true` / `XmlResolver = null`). Advisory.
+const CS_XXE_HARDENED = /DtdProcessing\.Prohibit|ProhibitDtd\s*=\s*true|XmlResolver\s*=\s*null/;
+const CS_XXE_RESOLVER_NULL = /XmlResolver\s*=\s*null/;
+
+const XXE_MESSAGE =
+  "An XML parser is configured to resolve external entities — a legacy `new XmlTextReader(...)`, " +
+  "`DtdProcessing = DtdProcessing.Parse` without a null `XmlResolver`, or an explicit `XmlResolver = new " +
+  "XmlUrlResolver()`. If it parses attacker-controlled XML, an attacker can read local files or perform SSRF " +
+  "via an external entity (XXE). Set `DtdProcessing = DtdProcessing.Prohibit` (the modern default) and " +
+  "`XmlResolver = null`.";
 
 const SSRF_MESSAGE =
   "An outbound HTTP request is made to a request-controlled URL (`HttpClient.GetAsync`, `WebClient.DownloadString`, " +
@@ -402,6 +416,37 @@ export const CSHARP_RULES: TsAstRule[] = [
         return u.type === "invocation_expression" && XSS_SANITIZERS.test(memberInvoke(u)?.name || "");
       });
       emitFinding(node, ctx, emit, { sanitized, message: XSS_MESSAGE, sanitizedNote: XSS_SANITIZED });
+    },
+  },
+  {
+    id: "xxe",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "XML external entity (XXE) sink",
+    languages: ["csharp"],
+    message: XXE_MESSAGE,
+    sinkQuery: "[(object_creation_expression) (assignment_expression)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      const file = ctx.tsTree!.rootNode.text;
+      let trigger = false;
+      if (node.type === "object_creation_expression") {
+        // `new XmlTextReader(...)` — unsafe by default on legacy frameworks. Suppress if the file hardens it.
+        if (newTypeLeaf(node) === "XmlTextReader" && !CS_XXE_HARDENED.test(file)) trigger = true;
+      } else if (node.type === "assignment_expression") {
+        const left = node.childForFieldName("left");
+        const right = node.childForFieldName("right");
+        const name = left?.type === "member_access_expression" ? left.childForFieldName("name")?.text : null;
+        // `… .DtdProcessing = DtdProcessing.Parse` enables DTDs — vulnerable unless a null resolver is also set.
+        if (name === "DtdProcessing" && right && /Parse/.test(right.text) && !CS_XXE_RESOLVER_NULL.test(file)) trigger = true;
+        // `… .XmlResolver = new XmlUrlResolver()` — explicitly opting back into external resolution.
+        // `XmlSecureResolver` is the *hardened* resolver (access-restricted), so it is deliberately excluded.
+        else if (name === "XmlResolver" && right && unwrap(right, csharpProfile).type === "object_creation_expression") {
+          if (newTypeLeaf(unwrap(right, csharpProfile)) === "XmlUrlResolver") trigger = true;
+        }
+      }
+      if (!trigger) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: XXE_MESSAGE, sanitizedNote: "" });
     },
   },
 ];

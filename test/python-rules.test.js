@@ -333,3 +333,36 @@ precise("python ssrf: a static URL is NOT flagged", () => {
 precise("python ssrf: dict.get with request data is NOT flagged (not an HTTP client)", () => {
   assert.equal(ssrf(`def v(request):\n    d.get(request.args["k"])\n`), null);
 });
+
+// --- 6. import-alias resolution: aliased / from-imported sinks are still caught -------------------
+precise("python alias: `import subprocess as sp; sp.run(..., shell=True)` blocks", () => {
+  assert.ok(cmd(`import subprocess as sp\ndef v(name):\n    sp.run("rm " + name, shell=True)\n`)?.blocking);
+});
+precise("python alias: `from os import system; system(x)` blocks", () => {
+  assert.ok(cmd(`from os import system\ndef v(name):\n    system("ls " + name)\n`)?.blocking);
+});
+precise("python alias: `from os import system as sh; sh(x)` blocks", () => {
+  assert.ok(cmd(`from os import system as sh\ndef v(name):\n    sh("ls " + name)\n`)?.blocking);
+});
+precise("python alias: `import pickle as p; p.loads(x)` blocks", () => {
+  assert.ok(deser(`import pickle as p\ndef v(data):\n    return p.loads(data)\n`)?.blocking);
+});
+precise("python alias: `from pickle import loads; loads(x)` blocks", () => {
+  assert.ok(deser(`from pickle import loads\ndef v(data):\n    return loads(data)\n`)?.blocking);
+});
+precise("python alias: `import requests as rq; rq.get(taint)` is flagged", () => {
+  assert.ok(ssrf(`import requests as rq\ndef v(request):\n    rq.get(request.args["url"])\n`));
+});
+precise("python alias: `from requests import get; get(taint)` is flagged", () => {
+  assert.ok(ssrf(`from requests import get\ndef v(request):\n    get(request.args["url"])\n`));
+});
+precise("python alias: `from urllib.request import urlopen; urlopen(taint)` is flagged", () => {
+  assert.ok(ssrf(`from urllib.request import urlopen\ndef v(request):\n    urlopen(request.GET["u"])\n`));
+});
+precise("python alias: an alias to an UNRELATED module is NOT flagged (no false positive)", () => {
+  // `from json import loads` is safe — must not be mistaken for pickle.loads.
+  assert.equal(deser(`from json import loads\ndef v(data):\n    return loads(data)\n`), null);
+});
+precise("python alias: a from-imported safe HTTP-looking name on a non-HTTP module is NOT flagged", () => {
+  assert.equal(ssrf(`from mycache import get\ndef v(request):\n    get(request.args["k"])\n`), null);
+});
