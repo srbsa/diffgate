@@ -7,6 +7,40 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Cerebras + Gemini providers** — `--provider=cerebras` (base `https://api.cerebras.ai/v1`, env `CEREBRAS_API_KEY`) and `--provider=gemini` (base `https://generativelanguage.googleapis.com/v1beta/openai`, env `GEMINI_API_KEY`) registered in the provider registry. Both use the OpenAI wire. Cerebras free tier: 5 RPM; use `--delay-ms=13000`.
+
+- **`diffgate marginal` new flags**: `--delay-ms=N` inserts an N-millisecond pause between scenario API calls (essential for providers with low RPM free tiers); `--scenarios=id1,id2,...` runs only the named subset (useful for targeted re-runs or cost-controlled frontier checks).
+
+- **4 new `diffgate marginal` scenarios** covering the expanded Deep-AST language surface:
+  - `python-sql-search` — Python LIKE search; probes f-string/`%`-concat SQLi in psycopg2.
+  - `php-sql-search` — PHP string-concatenation SQLi via PDO (tests AST-precise PHP sql-injection rule).
+  - `java-xxe-parse` — Java `DocumentBuilderFactory` without XXE hardening (tests the v0.7.2 XXE rule).
+  - `python-ssrf-webhook` — Flask `POST /webhook/test` fetching a user-supplied URL (tests Python SSRF rule).
+
+- **`python-sql-lookup` promoted** from `knownGap` to a scored scenario: Python SQLi is now AST-precise via tree-sitter (v0.7.0), so a catch here is real signal, not an ambiguous gap probe. The corpus is now **21 scenarios, 20 scored, 1 gap** (`nosql-auth-fields` — destructured-field NoSQL injection, still undetected).
+
+### Improved
+
+- **Python SSRF taint sources**: `request.get_json()` added alongside `request.json` so inline Flask JSON-body chains (`requests.get(request.get_json().get('url'))`) are now caught. **Remaining gap**: a two-hop chain through an intermediate variable (`data = request.get_json(); url = data.get('url'); requests.get(url)`) is not traced (dict-method call propagation required). Gap documented in `docs/SCOPE.md`.
+
+### Experiment results (2026-06-29)
+
+`diffgate marginal` run across Cerebras `gpt-oss-120b` (21 scenarios, K=2), `zai-glm-4.7` (8 key scenarios, K=2), and gpt-5.5 (java-xxe-parse only, K=3 independent runs) on the expanded corpus. Key findings:
+
+- **Python/PHP SQLi**: 0% defect rate across all models — parameterized queries are default for capable models; engine correctness confirmed, marginal agent value near zero.
+- **Java XXE (real frontier-resistant signal)**: gpt-5.5 produces unhardened `DocumentBuilderFactory` in 2/3 samples (both modes); gpt-oss-120b drops hardening in edit mode (2/2); zai-glm-4.7 fires in both modes. Suppress-on-hardening works correctly.
+- **`python-pickle-load` now DEFECT, not advisory**: v0.7 Python AST rules fire `unsafe-deserialization` (blocking) rather than `dangerous-exec` (advisory). Caught 2/2 in both modes by gpt-oss-120b.
+- **Python SSRF**: 0% due to two-hop dict chain gap (documented above and in `docs/SCOPE.md`).
+- **gpt-oss-120b full corpus**: greenfield 15% [7–29%], edit 20% [10–35%]; edit > greenfield (consistent with all prior models).
+
+Full cross-model table added to `docs/MEASUREMENT.md`.
+
+---
+
 ## [0.7.2] — 2026-06-29
 
 _First published release of the 0.7 line. **0.7.0 and 0.7.1 were never published** (committed locally only); their language-parity and SSRF work ships here, plus this release's four additions: Python import-alias resolution, PHP permissive-CORS, cross-language XXE (JVM + .NET), and Kotlin SQL sanitizer parity. **689 tests green.**_
