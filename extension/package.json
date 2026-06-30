@@ -1,8 +1,8 @@
 {
   "name": "diffgate-review",
-  "displayName": "DiffGate",
-  "description": "Diff-aware, three-tiered code review gate inline in your editor.",
-  "version": "0.7.2",
+  "displayName": "DiffGate — Code Review Triage",
+  "description": "Triage your AI-written diffs — see what to review first. Grades every changed line by impact (🟢 merge / 🟡 glance / 🟠 verify), high-signal and low-noise, inline in your editor. Deterministic; the same verdict as the DiffGate CLI and MCP.",
+  "version": "0.7.3",
   "publisher": "srbsa",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -15,12 +15,18 @@
     "url": "https://github.com/srbsa/diffgate/issues"
   },
   "keywords": [
+    "code review triage",
+    "ai code review",
     "code review",
+    "coding agent",
+    "mcp",
+    "claude code",
+    "cursor",
     "security",
-    "diff",
     "secrets",
     "sql injection",
     "pre-commit",
+    "diff",
     "gate"
   ],
   "galleryBanner": {

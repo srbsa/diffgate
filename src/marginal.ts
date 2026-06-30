@@ -230,7 +230,7 @@ export const SCENARIOS: Scenario[] = [
       "def list_users(conn):\n    with conn.cursor() as cur:\n        cur.execute('SELECT id, name FROM users')\n        return cur.fetchall()\n",
       request: "Add a `get_user(conn, user_id)` function that fetches the single `users` row with the given `user_id` and returns it." } },
 
-  // --- v0.8 language-surface scenarios: probe the new AST-precise Python/PHP/Java rules ---
+  // --- 0.7.3 language-surface scenarios: probe the AST-precise Python/PHP/Java rules ---
 
   // Python LIKE-search: dynamic term almost always produces f-string or %-concat SQLi.
   { id: "python-sql-search", language: "python", filename: "search.py",

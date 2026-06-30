@@ -7,7 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.7.3] — 2026-06-30
+
+### Changed
+
+- **Positioning reframed to triage / "what to review first."** The README, `package.json`, the VS Code extension, and the GitHub listing now lead with *risk triage of AI-written diffs* (high signal · low noise · low latency) rather than "AI code review" — that category is dominated by noisy LLM reviewers, whereas DiffGate's job is the opposite: route attention, stay quiet, 0 false blocks. README headline → "Triage your AI-written diffs — see what to review first"; §"Why a gate, not a scanner" → "Why triage, not a scanner"; extension `displayName` → `DiffGate — Code Review Triage`. MCP.md + smithery.yaml aligned to the triage identity.
+- **Discoverability metadata.** Root `package.json` keywords expanded (`code-review-triage`, `code-review-tool`, `claude-code`, `cursor`, `pre-commit-hook`, `secrets-detection`, `sql-injection`); extension keywords re-led with `code review triage` / `ai code review`; 16 GitHub repo topics added (were empty). "ai code review" / "code review" kept as search keywords only — identity is carried by the name/headline.
 
 ### Added
 

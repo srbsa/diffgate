@@ -1,7 +1,7 @@
 {
   "name": "diffgate-review",
-  "version": "0.7.2",
-  "description": "A deterministic second pair of eyes for AI-generated code — diff-aware, low-noise security review in your coding agent (MCP), editor, and CLI.",
+  "version": "0.7.3",
+  "description": "Triage for AI-generated code review — grades each changed line green/yellow/orange by impact so your attention lands where it matters. High-signal, low-noise (0 false blocks), deterministic, and fast. In your coding agent (MCP), editor, and CLI.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -60,15 +60,20 @@
   },
   "keywords": [
     "code-review",
+    "code-review-triage",
     "ai-code-review",
+    "code-review-tool",
+    "coding-agent",
+    "mcp",
+    "claude-code",
+    "cursor",
+    "pre-commit-hook",
     "security-gate",
     "diff-analysis",
     "static-analysis",
-    "diff",
-    "mcp",
-    "coding-agent",
-    "vscode",
-    "pre-commit"
+    "secrets-detection",
+    "sql-injection",
+    "vscode"
   ],
   "license": "Apache-2.0"
 }

@@ -1,6 +1,6 @@
 # DiffGate MCP Server
 
-Expose the diffgate engine to any coding agent that supports MCP (Claude Code, Cursor, Continue, etc.).
+Expose the DiffGate triage engine to any coding agent that supports MCP (Claude Code, Cursor, Continue, etc.) — high-signal, low-noise risk findings on only the changed lines, zero LLM tokens.
 
 ## Quick start
 
@@ -14,7 +14,7 @@ npm install -g diffgate-review   # install once globally
 npx @smithery/cli install diffgate-review --client claude
 ```
 
-Zero config — the deterministic gate needs no API key. (Optional AI for `diffgate_explain` /
+Zero config — the deterministic triage needs no API key. (Optional AI for `diffgate_explain` /
 `diffgate_deep_review` is set per-repo in `.diffgate.json`, see below.)
 
 ### Claude Code (one command)

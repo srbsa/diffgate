@@ -68,7 +68,7 @@ Assemble the table from the per-model `--json` files. The corpus is 21 scenarios
 
 ---
 
-## v0.8 expansion: new language scenarios + Cerebras + gpt-5.5
+## 0.7.3 expansion: new language scenarios + Cerebras + gpt-5.5
 
 **Scope change since the 2026-06-23 run:** 4 new scenarios added (`python-sql-search`, `php-sql-search`, `java-xxe-parse`, `python-ssrf-webhook`) + `python-sql-lookup` promoted from `knownGap` (Python SQLi is now AST-precise via tree-sitter). Total: 21 scenarios (20 scored, 1 gap).
 

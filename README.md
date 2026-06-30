@@ -2,14 +2,14 @@
 
 [![npm version](https://img.shields.io/npm/v/diffgate-review?logo=npm)](https://www.npmjs.com/package/diffgate-review)
 [![npm downloads](https://img.shields.io/npm/dm/diffgate-review)](https://www.npmjs.com/package/diffgate-review)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/srbsa.diffgate-review?logo=visualstudiocode&label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=srbsa.diffgate-review)
+[![VS Code Marketplace](https://vsmarketplacebadges.dev/version/srbsa.diffgate-review.svg)](https://marketplace.visualstudio.com/items?itemName=srbsa.diffgate-review)
 [![Open VSX](https://img.shields.io/open-vsx/v/srbsa/diffgate-review?logo=eclipseide&label=Open%20VSX)](https://open-vsx.org/extension/srbsa/diffgate-review)
 [![License](https://img.shields.io/github/license/srbsa/diffgate)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/srbsa/diffgate?style=social)](https://github.com/srbsa/diffgate)
 
-**The deterministic gate for AI-generated code — the same verdict from your agent's first keystroke to the merge button.** If that sounds useful, **[star the repo ⭐](https://github.com/srbsa/diffgate)** — it's how others find it.
+**Triage your AI-written diffs — see what to review first.** DiffGate grades every changed line by real-world impact — 🟢 merge, 🟡 glance, 🟠 verify — so your attention lands on the few changes that can hurt you and skims the rest. **High signal, low noise** (100% precision, 0 false blocks), deterministic, and fast enough for the inner loop — the *same verdict from your agent's first keystroke to the merge button.* If that sounds useful, **[star the repo ⭐](https://github.com/srbsa/diffgate)** — it's how others find it.
 
-Coding agents ship diffs faster than anyone can review them, and the model that wrote the code has the same blind spots reviewing it. DiffGate is a separate, **deterministic** check that runs on **only the lines that changed** (vs the committed baseline), sorts each change into one of three risk tiers, and **gates** the high-impact ones — running your tests only when a change actually warrants it. Not a model grading its own homework. Not a whole-repo scanner burying you in findings. The same engine, and the same verdict, in your agent, your editor, your terminal, and your PR.
+Coding agents ship diffs faster than anyone can review them, and the model that wrote the code has the same blind spots reviewing it. DiffGate is a separate, **deterministic** pass that runs on **only the lines that changed** (vs the committed baseline) and sorts each one into a risk tier — in milliseconds — so you skim the safe majority and spend attention where impact actually is. High-impact changes don't just get flagged; they get **gated** — DiffGate runs your tests only when a change warrants it, and escalates to a block only when it's earned. Not a model grading its own homework. Not a whole-repo scanner burying you in findings. The same engine and the same verdict in your agent, your editor, your terminal, and your PR — solo today, the whole team when you scale it.
 
 | Tier | Meaning | What you do | Examples |
 |------|---------|-------------|----------|
@@ -19,9 +19,9 @@ Coding agents ship diffs faster than anyone can review them, and the model that 
 
 ---
 
-## Why a gate, not a scanner
+## Why triage, not a scanner
 
-A linter flags; DiffGate **decides what deserves your attention, your tests, or a block** — and stays quiet otherwise. That's the whole product:
+A linter flags everything; DiffGate **decides what deserves your attention, your tests, or a block** — high signal, low noise, and stays quiet otherwise. That's the whole product:
 
 - **Diff-scoped.** Findings report only on the lines that changed, against the committed baseline — no whole-file noise, no re-litigating code you didn't touch.
 - **Tiered triage, not a flat list.** Three tiers route attention: green merges, yellow is a glance, orange is gated.
