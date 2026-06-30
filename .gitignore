@@ -10,6 +10,7 @@ extension/dist/
 # env / secrets
 .env
 .env.*
+!.env.example
 *.pem
 
 # editor / OS
