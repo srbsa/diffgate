@@ -6,6 +6,8 @@ export const PROVIDERS: Record<string, ProviderPreset> = {
   openrouter: { wire: "openai", baseURL: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENROUTER_API_KEY", defaultModel: "openai/gpt-5.4-mini", local: false, extraHeaders: { "X-Title": "DiffGate" } },
   groq: { wire: "openai", baseURL: "https://api.groq.com/openai/v1", apiKeyEnv: "GROQ_API_KEY", defaultModel: "llama-3.3-70b-versatile", local: false },
   together: { wire: "openai", baseURL: "https://api.together.xyz/v1", apiKeyEnv: "TOGETHER_API_KEY", defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo", local: false },
+  cerebras: { wire: "openai", baseURL: "https://api.cerebras.ai/v1", apiKeyEnv: "CEREBRAS_API_KEY", defaultModel: "gpt-oss-120b", local: false },
+  gemini: { wire: "openai", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai", apiKeyEnv: "GEMINI_API_KEY", defaultModel: "gemini-2.5-flash", local: false },
   lmstudio: { wire: "openai", baseURL: "http://localhost:1234/v1", apiKeyEnv: null, defaultModel: null, local: true },
   ollama: { wire: "openai", baseURL: "http://localhost:11434/v1", apiKeyEnv: null, defaultModel: "llama3.1", local: true },
   custom: { wire: "openai", baseURL: null, apiKeyEnv: null, defaultModel: null, local: false },

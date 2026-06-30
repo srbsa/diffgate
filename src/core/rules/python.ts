@@ -223,7 +223,10 @@ function xssSanitizedNote(): string {
 // Mirrors the JS `path-traversal` rule, and improves on it: it is **wrapper-aware** — a request value
 // neutralized by `secure_filename`/`basename`/`safe_join` down-tiers to review instead of blocking.
 // Sink-targeted (`open`/`send_file`/`send_static_file`) and only fires when the path carries request data.
-const PT_REQUEST_SOURCE = /\brequest\.(?:args|form|values|GET|POST|data|json|files|query_params|params)\b/;
+// `request.get_json()` is the canonical Flask JSON-body parser; include it alongside `request.json`
+// so `requests.get(request.get_json().get("url"))` triggers SSRF. Two-hop chains (data = get_json();
+// url = data.get("url"); requests.get(url)) still escape taint — that requires dict-call propagation.
+const PT_REQUEST_SOURCE = /\brequest\.(?:args|form|values|GET|POST|data|json|get_json|files|query_params|params)\b/;
 const PT_SANITIZERS = /(?:^|\.)(?:secure_filename|basename|safe_join)$/;
 
 /** If `call` is a path-read sink, its argument expressions; else null. `open` only as the builtin

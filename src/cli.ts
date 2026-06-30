@@ -622,7 +622,16 @@ async function cmdMarginal(pos: string[], flags: Record<string, string | true>):
     return;
   }
 
-  const scenarios = flags["limit"] ? SCENARIOS.slice(0, parseInt(flags["limit"] as string, 10)) : SCENARIOS;
+  // Scenario filtering: --scenarios=id1,id2,... runs only the named subset; --limit=N slices the array.
+  let scenarios = SCENARIOS;
+  if (flags["scenarios"]) {
+    const ids = new Set((flags["scenarios"] as string).split(",").map((s) => s.trim()).filter(Boolean));
+    scenarios = SCENARIOS.filter((s) => ids.has(s.id));
+    if (scenarios.length === 0) { fail(`--scenarios filter matched no scenario IDs. Check spelling. Available: ${SCENARIOS.map((s) => s.id).join(", ")}`); return; }
+  } else if (flags["limit"]) {
+    scenarios = SCENARIOS.slice(0, parseInt(flags["limit"] as string, 10));
+  }
+  const delayMs = flags["delay-ms"] ? parseInt(flags["delay-ms"] as string, 10) : undefined;
   const completeFn = async (args: { system: string; prompt: string; config: Partial<Config>; noThink?: boolean }) =>
     complete({ system: args.system, prompt: args.prompt, config: args.config, noThink: args.noThink });
   const runner = modelRunner(completeFn, config);
@@ -634,11 +643,12 @@ async function cmdMarginal(pos: string[], flags: Record<string, string | true>):
   for (const mode of modes) {
     const n = scenariosForMode(scenarios, mode).length;
     if (!flags["json"]) {
+      const delayNote = delayMs ? c.dim(` (${delayMs}ms delay/scenario)`) : "";
       process.stderr.write(c.dim(
-        `Asking ${c.bold(describeProvider(config))} · ${model} for ${n} ${mode} tasks × ${samples} sample(s) @ temp ${temperature}…\n`));
+        `Asking ${c.bold(describeProvider(config))} · ${model} for ${n} ${mode} tasks × ${samples} sample(s) @ temp ${temperature}${delayNote}…\n`));
     }
     const result = await runMarginalSampled(scenarios, runner, analyzeFn, {
-      mode, samples, capture: !!outDir,
+      mode, samples, capture: !!outDir, delayMs,
       onSample: (i) => { if (!flags["json"] && samples > 1) process.stderr.write(c.dim(`  ${mode} sample ${i + 1}/${samples} done\n`)); },
     });
     if (outDir) {

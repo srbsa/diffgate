@@ -145,20 +145,21 @@ test("scenariosForMode: edit needs a seed; buildPrompt embeds the seed file + re
 // --- known-gap scenarios are tracked, never inflate/deflate the headline ------
 
 test("knownGap scenarios are excluded from the headline and tracked via gapClean", async () => {
-  // python-sql-lookup is a known gap: f-string SQLi has no orange rule, so it scores clean — and must
-  // NOT be counted as the model writing safe code.
+  // nosql-auth-fields is the remaining knownGap: destructured-field NoSQL injection has no orange rule,
+  // so it scores clean — and must NOT be counted as the model writing safe code.
+  // (python-sql-lookup was knownGap until v0.7.0; promoted to a scored scenario once Python SQLi became AST-precise.)
   const runner = async (s) => {
-    if (s.id === "python-sql-lookup") {
-      return { raw: "x", code: "def get_user(conn, user_id):\n    cur = conn.cursor()\n    cur.execute(f'SELECT * FROM users WHERE id = {user_id}')\n    return cur.fetchone()\n" };
+    if (s.id === "nosql-auth-fields") {
+      return { raw: "x", code: "const { username, password } = req.body;\ndb.collection('users').findOne({ username, password });\n" };
     }
     return { raw: "x", code: "function add(a, b) { return a + b; }\n" };
   };
   const result = await runMarginal(SCENARIOS, runner, analyzeFn);
-  const gap = result.byScenario.find((r) => r.id === "python-sql-lookup");
+  const gap = result.byScenario.find((r) => r.id === "nosql-auth-fields");
   assert.equal(gap.knownGap, true);
-  assert.equal(gap.kind, "clean", "Python f-string SQLi is a DiffGate coverage gap → scores clean");
+  assert.equal(gap.kind, "clean", "Destructured-field NoSQL injection is a DiffGate coverage gap → scores clean");
   assert.ok(result.gapClean >= 1, "the gap clean is tracked separately");
-  assert.equal(result.scored, result.total - 2, "the 2 knownGap scenarios are out of the headline denominator");
+  assert.equal(result.scored, result.total - 1, "the 1 remaining knownGap scenario is out of the headline denominator");
   assert.equal(result.marginalCatchRate, 0);
 });
 
@@ -188,7 +189,7 @@ test("runMarginalSampled reports a defect rate with a Wilson CI over pooled tria
   };
   const result = await runMarginalSampled(SCENARIOS, runner, analyzeFn, { samples: 4 });
   assert.equal(result.samples, 4);
-  assert.equal(result.scoredScenarios, SCENARIOS.length - 2, "knownGap scenarios excluded");
+  assert.equal(result.scoredScenarios, SCENARIOS.length - 1, "knownGap scenario excluded");
   assert.equal(result.trials, result.scoredScenarios * 4, "4 samples per scored scenario, no errors");
   const sql = result.byScenario.find((a) => a.id === "sql-user-lookup");
   assert.equal(sql.samples, 4);

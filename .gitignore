@@ -23,6 +23,9 @@ Thumbs.db
 
 # test scratch
 /tmp/
+
+# marginal experiment output (large generated LLM outputs; reproducible via diffgate marginal)
+/out/
 .claude/settings.json
 .claude/settings.local.json
 .claude/output-styles/compressor-slim.md
