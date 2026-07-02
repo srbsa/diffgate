@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.7] — 2026-07-02
+
+### Fixed
+
+- `action.yml` rejected by the GitHub Actions Marketplace: the name `DiffGate` collided with an existing action/user/org name, and the description exceeded the 125-char cap. Renamed to `DiffGate Review Triage`; shortened the description to match the one already used for the MCP registry listing.
+
 ## [0.7.6] — 2026-07-02
 
 ### Added
