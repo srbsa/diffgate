@@ -1,8 +1,5 @@
-name: DiffGate
-description: >-
-  Triage for AI-generated code review — grades each changed line green/yellow/orange
-  by impact so reviewers spend attention where it matters. High-signal, low-noise
-  (0 false blocks), deterministic.
+name: DiffGate Review Triage
+description: Triage AI-generated diffs — grades changed lines by impact. High-signal, low-noise, deterministic.
 author: srbsa
 branding:
   icon: shield
