@@ -7,6 +7,17 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.6] — 2026-07-02
+
+### Added
+
+- **Distribution plumbing** — no functional changes to the engine. Adds the pieces needed to be discoverable outside npm/VS Code:
+  - `server.json` + `mcpName` in `package.json` for the official MCP Registry; `publish-npm.yml` now syncs the registry listing via `mcp-publisher` (GitHub-OIDC auth) on every tagged release.
+  - `Dockerfile` + `publish-docker.yml` — publishes an image to GHCR on tag, satisfying Glama's listing requirements.
+  - `.pre-commit-hooks.yaml` for the pre-commit.com hooks registry. Runs the published package via `npx` rather than pre-commit's `language: node` (which would try to build `dist/` — gitignored, CI-built — from source and fails).
+  - `action.yml` — composite GitHub Action wrapping `diffgate check`, for the Actions Marketplace.
+  - `.claude-plugin/plugin.json` + `.mcp.json` + `skills/diffgate/SKILL.md` — packages DiffGate as a Claude Code plugin with a bundled MCP server and a `/diffgate` skill.
+
 ## [0.7.5] — 2026-07-02
 
 ### Changed

@@ -1,0 +1,10 @@
+- id: diffgate
+  name: DiffGate
+  description: Triage staged changes and block on high-impact (orange) findings — high-signal, low-noise, deterministic.
+  # Runs the published npm package via npx rather than pre-commit's `language: node`
+  # env (which builds the hook's own repo from source — diffgate's dist/ is gitignored
+  # and built via CI, so that path has no build output to package).
+  entry: npx --yes diffgate-review@latest check --staged --no-gate
+  language: system
+  pass_filenames: false
+  always_run: true

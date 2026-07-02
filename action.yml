@@ -1,0 +1,79 @@
+name: DiffGate
+description: >-
+  Triage for AI-generated code review — grades each changed line green/yellow/orange
+  by impact so reviewers spend attention where it matters. High-signal, low-noise
+  (0 false blocks), deterministic.
+author: srbsa
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  version:
+    description: diffgate-review npm version or dist-tag to run.
+    required: false
+    default: latest
+  node-version:
+    description: Node.js version to set up before running DiffGate.
+    required: false
+    default: '24'
+  base:
+    description: >-
+      Base ref to diff against (e.g. origin/main). Defaults to the pull request's
+      base branch when running on a pull_request event.
+    required: false
+    default: ''
+  fail-on:
+    description: Minimum tier that fails the check (green|yellow|orange).
+    required: false
+    default: orange
+  post-review:
+    description: >-
+      Post an inline PR review + commit status. Requires checkout with
+      fetch-depth: 0 and github-token.
+    required: false
+    default: 'true'
+  github-token:
+    description: Token used to post the PR review/commit status.
+    required: false
+    default: ${{ github.token }}
+  args:
+    description: Extra raw arguments appended to the diffgate check command.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        DG_VERSION: ${{ inputs.version }}
+        DG_BASE: ${{ inputs.base }}
+        DG_FAIL_ON: ${{ inputs.fail-on }}
+        DG_POST_REVIEW: ${{ inputs.post-review }}
+        DG_EXTRA_ARGS: ${{ inputs.args }}
+        DG_BASE_REF: ${{ github.base_ref }}
+        DG_PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        base="$DG_BASE"
+        if [ -z "$base" ] && [ -n "$DG_BASE_REF" ]; then
+          base="origin/$DG_BASE_REF"
+        fi
+
+        args=(check "--fail-on=$DG_FAIL_ON")
+        [ -n "$base" ] && args+=("--base=$base")
+        if [ "$DG_POST_REVIEW" = "true" ] && [ -n "$DG_PR_NUMBER" ]; then
+          args+=("--pr=$DG_PR_NUMBER")
+        fi
+        if [ -n "$DG_EXTRA_ARGS" ]; then
+          read -ra extra <<< "$DG_EXTRA_ARGS"
+          args+=("${extra[@]}")
+        fi
+
+        npx --yes "diffgate-review@$DG_VERSION" "${args[@]}"

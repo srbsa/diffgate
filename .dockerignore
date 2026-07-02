@@ -1,0 +1,9 @@
+node_modules
+dist
+extension
+research
+docs
+.git
+.github
+*.md
+test
