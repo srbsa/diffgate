@@ -42,11 +42,12 @@ Modern agents already avoid the textbook bugs (SQL injection, XSS, secrets) unpr
 ```bash
 npm install -g diffgate-review
 cd your-repo
-diffgate init          # auto-detects language + test command, writes .diffgate.json
-diffgate check         # review your pending changes right now
+diffgate init                    # auto-detects language + test command, writes .diffgate.json
+diffgate check --since=HEAD~20   # see what it catches in your own history — no PR required
+diffgate check                   # review your pending changes right now
 ```
 
-No uncommitted changes yet? See the output on bundled examples first:
+No git history or uncommitted changes yet? See the output on bundled examples first:
 
 ```bash
 diffgate init --demo   # live scan, no config or git changes needed
