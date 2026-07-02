@@ -92,3 +92,56 @@ test("shannonEntropy: random strings score higher than repetitive ones", () => {
   assert.ok(shannonEntropy("aaaaaaaa") < 1);
   assert.ok(shannonEntropy("a8Fk2Lq9Zx") > 3);
 });
+
+// --- D. AI-era provider key formats (0.7.4) -----------------------------------
+// The tool's identity is "triage AI-written diffs" — AI-generated code disproportionately embeds
+// AI-provider keys, often INLINE (a bare key in a fetch header has no `key = "…"` assignment shape
+// for the generic pattern). Each format must be flagged blocking + high-confidence, and must also be
+// recognized by classifySecret's KNOWN_TOKEN_RE (the two lists must stay in sync).
+const FAKE_KEYS = {
+  anthropic: "sk-ant-api03-" + "A".repeat(40),
+  openaiProject: "sk-proj-" + "B".repeat(40),
+  openaiLegacy: "sk-" + "C".repeat(20) + "T3BlbkFJ" + "D".repeat(20),
+  huggingface: "hf_" + "E".repeat(34),
+  gitlab: "glpat-" + "F".repeat(20),
+  npm: "npm_" + "G".repeat(36),
+};
+
+for (const [provider, key] of Object.entries(FAKE_KEYS)) {
+  test(`hardcoded-secret: ${provider} key format is flagged blocking + high-confidence`, () => {
+    const res = analyze({ filePath: "c.js", content: `const k = "${key}";\n`, config: cfg });
+    const f = find(res, "hardcoded-secret");
+    assert.ok(f, `${provider} key must be flagged`);
+    assert.equal(f.tier, "orange");
+    assert.equal(f.blocking, true);
+    assert.match(f.message, /high confidence/i, "must carry the known-provider confidence note");
+  });
+  test(`classifySecret: ${provider} format matches KNOWN_TOKEN_RE`, () => {
+    assert.match(classifySecret(key).note || "", /provider key format/i);
+  });
+}
+
+test("hardcoded-secret: a BARE inline AI key (no assignment shape) is still caught", () => {
+  const res = analyze({
+    filePath: "c.js",
+    content: `fetch(url, { headers: { "x-api-key": "${FAKE_KEYS.anthropic}" } });\n`,
+    config: cfg,
+  });
+  assert.ok(find(res, "hardcoded-secret"), "inline header keys have no key= shape — the format must carry it");
+});
+
+test("hardcoded-secret: prose/short lookalikes of the new prefixes are NOT flagged", () => {
+  for (const content of [
+    `// keys start with the sk-proj- prefix\n`,
+    `const mode = "sk-ant";\n`,
+    `const pkg = "npm_package_name";\n`, // npm_ requires exactly 36 alnum after the prefix
+  ]) {
+    const res = analyze({ filePath: "c.js", content, config: cfg });
+    assert.equal(find(res, "hardcoded-secret"), undefined, `must not flag: ${content.trim()}`);
+  }
+});
+
+test("hardcoded-secret: an env reference for an AI key stays unflagged", () => {
+  const res = analyze({ filePath: "c.js", content: `const k = process.env.ANTHROPIC_API_KEY;\n`, config: cfg });
+  assert.equal(find(res, "hardcoded-secret"), undefined);
+});

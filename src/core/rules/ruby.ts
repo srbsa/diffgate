@@ -11,8 +11,10 @@
 //     `system("git", "checkout", x)` is safe just like Go's `exec.Command`. Backticks / `%x{}` (`subshell`)
 //     always use the shell.
 //
-// Coverage: sql-injection · command-injection · code-injection · unsafe-deserialization · xss-sink.
-// Honest gaps (future): mass-assignment, open-redirect, `render inline:` SSTI, dynamic `send`/`constantize`.
+// Coverage: sql-injection · command-injection · code-injection · unsafe-deserialization · ssrf ·
+// xss-sink · permissive-cors.
+// Honest gaps (future): path-traversal (`File.read(params[:file])`, `send_file params[:path]`),
+// mass-assignment, open-redirect, `render inline:` SSTI, dynamic `send`/`constantize`.
 
 import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
 import {
@@ -169,6 +171,32 @@ function callMethodMatches(node: TsNode, re: RegExp): boolean {
   const full = c.receiver ? `${c.receiver.text}.${c.method}` : c.method;
   return re.test(full) || re.test(c.method);
 }
+
+// --- permissive CORS -----------------------------------------------------------
+// Wildcard / reflected `Access-Control-Allow-Origin`. Distinctive, config-string-shaped triggers only:
+//   • rack-cors DSL: `origins '*'` inside an `allow do` block (receiver-less call named `origins`).
+//   • raw header write: `response.set_header('Access-Control-Allow-Origin', '*')`,
+//     `headers['Access-Control-Allow-Origin'] = '*'`, or the request's own Origin reflected back.
+const CORS_HEADER_RE = /access-control-allow-origin/i;
+const CORS_SETTER_METHODS = new Set(["set_header", "add_header"]);
+const RUBY_ORIGIN_REFLECT = /\brequest\.(?:headers\s*\[\s*["']Origin["']\s*\]|origin\b)/i;
+
+/** A string literal whose entire content is `*`. */
+function isStarString(node: TsNode): boolean {
+  const n = unwrap(node, rubyProfile);
+  return n.type === "string" && !isInterpolating(n) && staticText(n).trim() === "*";
+}
+
+/** A permissive origin VALUE: `'*'` or the request's own Origin echoed back. */
+function isPermissiveOriginValue(node: TsNode): boolean {
+  return isStarString(node) || RUBY_ORIGIN_REFLECT.test(node.text);
+}
+
+const CORS_MESSAGE =
+  "CORS is configured to allow any origin — rack-cors `origins '*'`, a wildcard " +
+  "`Access-Control-Allow-Origin: *` header, or the request's own Origin reflected back. If cookies or " +
+  "tokens are used, arbitrary websites can make credentialed cross-origin requests to this API. Set an " +
+  "explicit allowlist of trusted origins; never send `*` (or a reflected origin) alongside credentials.";
 
 // --- messages ----------------------------------------------------------------
 
@@ -359,6 +387,35 @@ export const RUBY_RULES: TsAstRule[] = [
       if (!isDynamicValue(value, root)) return; // a static HTML literal is safe
       const sanitized = valueSanitized(value, root, rubyProfile, (n) => callMethodMatches(n, XSS_SANITIZERS));
       emitFinding(node, ctx, emit, { sanitized, message: XSS_MESSAGE, sanitizedNote: XSS_SANITIZED });
+    },
+  },
+  {
+    id: "permissive-cors",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "Permissive CORS policy",
+    languages: ["ruby"],
+    message: CORS_MESSAGE,
+    sinkQuery: "[(call) (assignment)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      let hit = false;
+      const c = callParts(node);
+      if (c) {
+        // rack-cors DSL: a receiver-less `origins '*'`.
+        if (c.receiver === null && c.method === "origins" && c.args.some(isStarString)) hit = true;
+        // `response.set_header('Access-Control-Allow-Origin', <'*'|reflected>)`.
+        else if (CORS_SETTER_METHODS.has(c.method) && c.args.length >= 2 &&
+                 CORS_HEADER_RE.test(c.args[0].text) && isPermissiveOriginValue(c.args[1])) hit = true;
+      } else if (node.type === "assignment") {
+        // `headers['Access-Control-Allow-Origin'] = <'*'|reflected>`.
+        const left = node.childForFieldName("left");
+        const right = node.childForFieldName("right");
+        if (left && right && left.type === "element_reference" &&
+            CORS_HEADER_RE.test(left.text) && isPermissiveOriginValue(right)) hit = true;
+      }
+      if (!hit) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: CORS_MESSAGE, sanitizedNote: "" });
     },
   },
 ];

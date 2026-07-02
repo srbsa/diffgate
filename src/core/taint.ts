@@ -110,8 +110,10 @@ export function shannonEntropy(s: string): number {
 const PLACEHOLDER_RE =
   /^(?:change[_-]?me|change[_-]?this|password|passwd|pwd|secret|token|apikey|api[_-]?key|example(?:key)?|sample|test(?:ing)?|dummy|fake|placeholder|redacted|none|null|undefined|todo|foo(?:bar)?|xxx+|your[_-].*|my[_-].*|<.*>|\.{3,}|\*{3,})$/i;
 
+// Must stay in sync with the `hardcoded-secret` provider patterns in rules/builtin.ts — a format listed
+// there but not here would be reported without the high-confidence note (and vice versa never matched).
 const KNOWN_TOKEN_RE =
-  /AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_\-]{35}|sk_live_[0-9a-zA-Z]{16,}|-----BEGIN/;
+  /AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_\-]{35}|sk_live_[0-9a-zA-Z]{16,}|sk-ant-[A-Za-z0-9_-]{24,}|sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|hf_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36}|-----BEGIN/;
 
 export interface SecretVerdict {
   /** Drop this match — it's a placeholder / env reference / low-entropy constant, not a real secret. */

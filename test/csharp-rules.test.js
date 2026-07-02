@@ -122,6 +122,11 @@ precise("csharp path: File.ReadAllText of request data is flagged (advisory)", (
   assert.ok(f && f.tier === "orange" && f.blocking === false);
 });
 
+precise("csharp path: a mix of sanitized + raw request data stays orange (cannot hide the raw value)", () => {
+  const f = pt(`public class T { void M(HttpRequest Request){ File.ReadAllText(Path.GetFileName(Request.Query["a"]) + Request.Query["b"]); } }`);
+  assert.ok(f && f.tier === "orange" && f.tierAdjusted !== "deescalated", "one unsanitized request value must keep it orange");
+});
+
 precise("csharp path: a Path.GetFileName wrapper down-tiers to review", () => {
   const f = pt(`public class T { void M(HttpRequest Request){ File.ReadAllText(Path.GetFileName(Request.Query["f"])); } }`);
   assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
@@ -194,4 +199,29 @@ precise("csharp xxe: modern XmlReader.Create with no DTD opt-in is NOT flagged",
 });
 precise("csharp xxe: the hardened XmlSecureResolver is NOT flagged (no false positive)", () => {
   assert.equal(xxe(W(`var d = new XmlDocument(); d.XmlResolver = new XmlSecureResolver(new XmlUrlResolver(), perms);`)), null);
+});
+
+// --- permissive CORS: AllowAnyOrigin / wildcard / reflected (0.7.4) --------------------------------
+function csCors(content) { const f = findings(content, "permissive-cors"); return f.length ? f[0] : null; }
+precise("cs cors: AllowAnyOrigin() is flagged (advisory)", () => {
+  const f = csCors(`class C { void Cfg(CorsPolicyBuilder b){ b.AllowAnyOrigin(); } }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("cs cors: WithOrigins(\"*\") is flagged", () => {
+  assert.ok(csCors(`class C { void Cfg(CorsPolicyBuilder b){ b.WithOrigins("*"); } }`));
+});
+precise("cs cors: Headers.Add/Append of ACAO * are flagged", () => {
+  assert.ok(csCors(`class C { void F(){ Response.Headers.Add("Access-Control-Allow-Origin", "*"); } }`));
+  assert.ok(csCors(`class C { void F(){ context.Response.Headers.Append("Access-Control-Allow-Origin", "*"); } }`));
+});
+precise("cs cors: Headers[\"…\"] = \"*\" and a reflected Request Origin are flagged", () => {
+  assert.ok(csCors(`class C { void F(){ Response.Headers["Access-Control-Allow-Origin"] = "*"; } }`));
+  assert.ok(csCors(`class C { void F(){ Response.Headers["Access-Control-Allow-Origin"] = Request.Headers["Origin"]; } }`));
+});
+precise("cs cors: an explicit origin allowlist is NOT flagged", () => {
+  assert.equal(csCors(`class C { void Cfg(CorsPolicyBuilder b){ b.WithOrigins("https://app.example.com"); } }`), null);
+});
+precise("cs cors: unrelated Add('*') / non-CORS headers are NOT flagged", () => {
+  assert.equal(csCors(`class C { void F(){ map.Add("glob", "*"); } }`), null);
+  assert.equal(csCors(`class C { void F(){ Response.Headers["X-Custom"] = "*"; } }`), null);
 });

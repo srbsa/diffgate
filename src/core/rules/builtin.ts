@@ -103,6 +103,118 @@ function containsRequestData(n: AstNode | null | undefined, ctx: RuleContext): b
   return false;
 }
 
+// `path.basename` strips every directory component, so wrapping tainted input in it neutralizes
+// `../` traversal regardless of the input's content — mirrors the `secure_filename`/`safe_join`
+// (Python), `GetFileName`/`getName` (C#/Java/Kotlin), and `filepath.Base` (Go) sanitizer-wrapper
+// recognition already used by the tsast per-language `path-traversal` rules.
+const PT_SANITIZER_RE = /(?:^|\.)basename$/i;
+
+interface PathTaint {
+  tainted: boolean;
+  /** True once every tainted leaf reaching here passed through a recognized sanitizer wrapper. */
+  sanitized: boolean;
+  sanitizer: string | null;
+}
+
+const PT_CLEAN: PathTaint = { tainted: false, sanitized: false, sanitizer: null };
+
+/**
+ * Trace whether `node` carries request-controlled data into a path-traversal sink, and whether
+ * every tainted leaf is wrapped by a recognized sanitizer (`path.basename`). A sanitizer call
+ * neutralizes its entire argument subtree — matching `resolvesToSanitizer`'s intent — but a value
+ * built from a mix of sanitized and raw request data (e.g. `sanitized + req.query.x`) stays
+ * unsanitized overall, so a missed sanitizer can never hide a real vulnerability.
+ */
+function pathTaintStatus(node: AstNode | null | undefined, ctx: RuleContext, seen: Set<string> = new Set()): PathTaint {
+  if (!node) return PT_CLEAN;
+  const n = node as any;
+  if (isRequestData(n)) return { tainted: true, sanitized: false, sanitizer: null };
+  if (n.type === "CallExpression") {
+    const name = memberName(n.callee as AstNode);
+    const argStatuses: PathTaint[] = ((n.arguments || []) as AstNode[]).map((a) => pathTaintStatus(a, ctx, seen));
+    const taintedArgs = argStatuses.filter((s) => s.tainted);
+    if (taintedArgs.length === 0) return PT_CLEAN;
+    if (name && PT_SANITIZER_RE.test(name)) return { tainted: true, sanitized: true, sanitizer: name };
+    const raw = taintedArgs.find((s) => !s.sanitized);
+    return raw
+      ? { tainted: true, sanitized: false, sanitizer: null }
+      : { tainted: true, sanitized: true, sanitizer: taintedArgs.find((s) => s.sanitizer)?.sanitizer ?? null };
+  }
+  if (n.type === "TemplateLiteral") {
+    const statuses: PathTaint[] = ((n.expressions || []) as AstNode[]).map((e) => pathTaintStatus(e, ctx, seen));
+    const tainted = statuses.filter((s) => s.tainted);
+    if (tainted.length === 0) return PT_CLEAN;
+    const raw = tainted.find((s) => !s.sanitized);
+    return raw
+      ? { tainted: true, sanitized: false, sanitizer: null }
+      : { tainted: true, sanitized: true, sanitizer: tainted.find((s) => s.sanitizer)?.sanitizer ?? null };
+  }
+  if (n.type === "BinaryExpression" && n.operator === "+") {
+    const l = pathTaintStatus(n.left, ctx, seen);
+    const r = pathTaintStatus(n.right, ctx, seen);
+    if (!l.tainted && !r.tainted) return PT_CLEAN;
+    const raw = (l.tainted && !l.sanitized) || (r.tainted && !r.sanitized);
+    return raw
+      ? { tainted: true, sanitized: false, sanitizer: null }
+      : { tainted: true, sanitized: true, sanitizer: l.sanitizer || r.sanitizer };
+  }
+  if (n.type === "AwaitExpression") return pathTaintStatus(n.argument as AstNode, ctx, seen);
+  if (n.type === "Identifier" && ctx.ast && !seen.has(n.name)) {
+    seen.add(n.name);
+    const decl = findDeclarationInit(n.name, ctx.ast);
+    if (decl) return pathTaintStatus(decl, ctx, seen);
+  }
+  return PT_CLEAN;
+}
+
+/**
+ * Whether `varName` is validated anywhere in the file via `<varName>.startsWith(...)` — the
+ * canonical Node.js root-prefix containment check this rule's own message recommends. Coarse (file-
+ * wide, not flow-sensitive to "before the sink"), but that's the safe direction: we only ever
+ * down-tier on a match, never suppress, so a guard we fail to see just keeps the finding blocking.
+ */
+function hasConfinementGuard(varName: string, ctx: RuleContext): boolean {
+  if (!ctx.ast) return false;
+  let found = false;
+  walk(ctx.ast, (n) => {
+    if (found) return;
+    const node = n as any;
+    if (node.type !== "CallExpression") return;
+    const name = memberName(node.callee as AstNode);
+    if (!name || !name.endsWith(".startsWith")) return;
+    const obj = (node.callee as any)?.object;
+    if (obj && obj.type === "Identifier" && obj.name === varName) found = true;
+  });
+  return found;
+}
+
+// `.exec()` is ambiguous in JS/TS: `RegExp.prototype.exec` (harmless) shares a name with
+// `child_process`-style shell-out wrappers (dangerous). Recognize the RegExp receiver so the
+// dangerous-exec AST rule below can skip it, mirroring the sanitizer-wrapper awareness used for
+// path-traversal. ALL_CAPS / `_RE` / `Pattern`/`Regex`-suffixed names are a weaker fallback signal
+// for cases the literal/constructor trace can't reach (e.g. an imported regex constant).
+const REGEX_NAME_HINT_RE = /(?:^[A-Z][A-Z0-9_]*$|_RE$|Regex$|Pattern$)/;
+
+function isRegexLiteralNode(n: AstNode): boolean {
+  const node = n as any;
+  return node.type === "RegExpLiteral" || (node.type === "NewExpression" && node.callee?.type === "Identifier" && node.callee.name === "RegExp");
+}
+
+function isRegexReceiver(node: AstNode | null | undefined, ctx: RuleContext, seen: Set<string> = new Set()): boolean {
+  if (!node) return false;
+  const n = node as any;
+  if (isRegexLiteralNode(n)) return true;
+  if (n.type === "Identifier") {
+    if (REGEX_NAME_HINT_RE.test(n.name)) return true;
+    if (ctx.ast && !seen.has(n.name)) {
+      seen.add(n.name);
+      const decl = findDeclarationInit(n.name, ctx.ast);
+      if (decl) return isRegexReceiver(decl, ctx, seen);
+    }
+  }
+  return false;
+}
+
 /** Whether a dotted callee name (`memberName`) is an outbound HTTP-request sink whose first argument is a
  *  URL — for SSRF. Qualified by library so generic `.get`/`.post` on unrelated objects don't match. */
 function isSsrfSink(name: string): boolean {
@@ -254,6 +366,14 @@ export const BUILTIN_RULES: Rule[] = [
       /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
       /\bAIza[0-9A-Za-z_\-]{35}\b/,
       /\bsk_live_[0-9a-zA-Z]{16,}\b/,
+      // AI-provider + registry key formats — AI-written diffs disproportionately embed these inline
+      // (a bare key in a fetch header has no `key = "…"` shape for the generic pattern to catch).
+      /\bsk-ant-[A-Za-z0-9_-]{24,}\b/, // Anthropic (sk-ant-api03-…/sk-ant-oat01-…)
+      /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}\b/, // OpenAI project/service-account/admin keys
+      /\bsk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}\b/, // OpenAI legacy user keys (T3BlbkFJ marker)
+      /\bhf_[A-Za-z0-9]{30,}\b/, // Hugging Face
+      /\bglpat-[A-Za-z0-9_-]{20,}\b/, // GitLab personal access token
+      /\bnpm_[A-Za-z0-9]{36}\b/, // npm granular/automation token
       /(?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["'][^"'\s]{8,}["']/i,
     ],
     // Drop env/placeholder/low-entropy matches; keep known provider key formats (high confidence).
@@ -330,6 +450,9 @@ export const BUILTIN_RULES: Rule[] = [
     // Python's `__import__` advisory is dropped; Go/Ruby/Java's safe forms (arg-vector exec, opaque
     // non-dynamic command args) are correctly not flagged — all prefer zero false positives.
     skipIfAstLangs: ["php", "python", "go", "ruby", "java", "kotlin"],
+    // JS/TS have their own AST sibling rule below — it disambiguates `.exec()` (RegExp vs.
+    // shell-out) via the parsed receiver, which this regex can't do.
+    excludeLanguages: JS,
     message: "Dynamic code execution or shell-out. Audit for command/code injection — never pass unsanitized input here.",
     patterns: [
       /\beval\s*\(/,
@@ -345,6 +468,39 @@ export const BUILTIN_RULES: Rule[] = [
       /\b(?:IO\.popen|Open3\.\w+|Process\.spawn|Kernel\.(?:system|exec))\b/,
       /%x[{(\[]/,
     ],
+  },
+  {
+    id: "dangerous-exec",
+    type: "ast",
+    tier: "orange",
+    title: "Dynamic execution / shell-out",
+    languages: JS,
+    message: "Dynamic code execution or shell-out. Audit for command/code injection — never pass unsanitized input here.",
+    visit(node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
+      const n = node as any;
+      if (n.type === "CallExpression") {
+        if (n.callee?.type === "Identifier" && n.callee.name === "eval") {
+          emit({ loc: node.loc });
+          return;
+        }
+        const name = memberName(n.callee as AstNode);
+        if (name && /\.exec(?:Sync|File|FileSync)?$/.test(name)) {
+          if (!isRegexReceiver(n.callee.object as AstNode, ctx)) emit({ loc: node.loc });
+          return;
+        }
+        if (name && /(?:^|\.)spawn(?:Sync)?$/.test(name)) {
+          emit({ loc: node.loc });
+          return;
+        }
+      }
+      if (n.type === "NewExpression" && n.callee?.type === "Identifier" && n.callee.name === "Function") {
+        emit({ loc: node.loc });
+        return;
+      }
+      if ((n.type === "StringLiteral" || n.type === "Literal") && n.value === "child_process") {
+        emit({ loc: node.loc });
+      }
+    },
   },
   {
     id: "leftover-debugger",
@@ -581,19 +737,32 @@ export const BUILTIN_RULES: Rule[] = [
       "A file path is constructed from request-controlled data (`req.params`, `req.query`, `req.body`). " +
       "Without canonicalization and a root-prefix check, an attacker can read arbitrary files via `../../etc/passwd`. " +
       "Use `path.resolve()`, then assert the result starts with your allowed base directory before opening the file.",
-    visit(node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
+    visit(node: AstNode, parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
       if (node.type === "CallExpression") {
         const name = memberName(node.callee as AstNode);
         if (name && (
           /\b(fs|fs\/promises)\.(readFile|readFileSync|createReadStream|writeFile|writeFileSync|createWriteStream|open|openSync|rm|rmSync|unlink|unlinkSync)\b/.test(name) ||
           /\bpath\.(join|resolve|normalize)\b/.test(name)
         )) {
-          const hasInput = ((node as any).arguments || []).some((arg: any) => containsRequestData(arg, ctx));
-          if (hasInput) {
-            emit({
-              loc: node.loc,
-              code: (ctx.lines[node.loc!.start.line - 1] || "").trim(),
-            });
+          const args = ((node as any).arguments || []) as AstNode[];
+          const statuses = args.map((arg) => pathTaintStatus(arg, ctx));
+          const tainted = statuses.filter((s) => s.tainted);
+          if (tainted.length > 0) {
+            const hasRaw = tainted.some((s) => !s.sanitized);
+            let sanitizer = hasRaw ? null : (tainted.find((s) => s.sanitizer)?.sanitizer ?? "basename");
+            if (hasRaw) {
+              // Fall back to the file-wide `<name>.startsWith(base)` containment idiom: if the raw
+              // sink argument, or the variable this call's result is assigned to, is later validated
+              // that way, treat it as guarded rather than raw.
+              const candidates = new Set<string>();
+              for (const arg of args) if ((arg as any).type === "Identifier") candidates.add((arg as any).name);
+              const p = parent as any;
+              if (p && p.type === "VariableDeclarator" && p.id?.type === "Identifier") candidates.add(p.id.name);
+              for (const nm of candidates) {
+                if (hasConfinementGuard(nm, ctx)) { sanitizer = "startsWith containment check"; break; }
+              }
+            }
+            emitMaybeSanitized(emit, node, ctx, sanitizer);
           }
         }
       }

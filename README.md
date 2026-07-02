@@ -94,6 +94,7 @@ The local loop is the wedge — fix while the context is fresh — and the **sam
 ```bash
 diffgate check                 # review pending changes (the gate)
 diffgate check --staged        # staged-only (pre-commit)
+diffgate check --since=HEAD~20 # audit recent history, per-commit (see below)
 diffgate check --agent         # machine verdict for coding agents
 diffgate scan <path>           # analyze files directly (no git needed)
 diffgate watch                 # live review as you edit
@@ -101,6 +102,20 @@ diffgate guidelines            # review diff against AGENTS.md / CLAUDE.md etc.
 diffgate feedback <rule> <f> <l> --dismiss   # suppress a false positive (shared via git)
 diffgate mcp                   # start the MCP stdio server
 ```
+
+**Audit recent AI-authored history.** Point `check` at commits already in your log — each
+finding is attributed to a specific commit, so you get a story, not a repo-wide report card:
+
+```bash
+diffgate check --since=HEAD~20        # last 20 commits, one block per commit
+diffgate check --since="2 weeks ago"  # by date instead of a rev
+diffgate check --ai-authored          # only agent commits (Claude/Copilot/Cursor/… — heuristic)
+diffgate check --author="Claude"      # matches author *and* Co-authored-by trailers
+diffgate check <sha>                  # a single commit by hash
+```
+
+History mode is report-only (it audits the past — it never runs your test command or blocks a
+commit) and honors `--json` and `--limit=<n>` (default 50). Merge commits are skipped.
 
 Run `diffgate --help` for the full list (`report`, `bench`, `stats`, `graph`, `marginal`, …).
 
@@ -133,13 +148,13 @@ Sink classes per Deep-AST language (full detail — every sanitizer and safe-for
 
 - **Python** (7) — SQL · XSS · path traversal · CORS · command · code · deserialization
 - **PHP** (8) — SQL · command · code · file inclusion · deserialization · XSS · path traversal · CORS
-- **Go** (3) — SQL · command · path traversal
-- **Ruby** (5) — SQL · command · code · deserialization · XSS
-- **Java** (5) — SQL · command · deserialization · path traversal · XXE
-- **C#** (6) — SQL · command · deserialization · path traversal · XSS · XXE
-- **Kotlin** (5) — SQL · command · deserialization · path traversal · XXE
+- **Go** (4) — SQL · command · path traversal · CORS
+- **Ruby** (6) — SQL · command · code · deserialization · XSS · CORS
+- **Java** (6) — SQL · command · deserialization · path traversal · XXE · CORS
+- **C#** (7) — SQL · command · deserialization · path traversal · XSS · XXE · CORS
+- **Kotlin** (6) — SQL · command · deserialization · path traversal · XXE · CORS
 
-**SSRF** is a cross-language advisory across all eight Deep-AST languages (a request-tainted URL into an outbound-request sink; library-qualified and tainted-only, so static/config URLs aren't flagged). **XXE** covers the JVM (Java, Kotlin) and .NET (C#), suppressed when the file shows recognized hardening.
+**SSRF** is a cross-language advisory across all eight Deep-AST languages (a request-tainted URL into an outbound-request sink; library-qualified and tainted-only, so static/config URLs aren't flagged). **XXE** covers the JVM (Java, Kotlin) and .NET (C#), suppressed when the file shows recognized hardening. **Permissive CORS** now also covers all eight — wildcard `Access-Control-Allow-Origin`, allow-all framework configs (gin/rs-cors, Spring `@CrossOrigin`, ASP.NET `AllowAnyOrigin()`, Ktor `anyHost()`, rack-cors), and request-reflected origins; explicit allowlists aren't flagged.
 
 | Tier | Languages | Depth |
 |------|-----------|-------|

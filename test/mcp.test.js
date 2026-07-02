@@ -315,8 +315,18 @@ test("handleAnalyze: injection with no graph is labeled trust:'unconfirmed'", as
 
 // --- handleCheckStaged -------------------------------------------------------
 
+test("handleCheckStaged errors on a non-git dir instead of a false 'clean'", async () => {
+  const dir = tmpDir({});
+  try {
+    await assert.rejects(() => handleCheckStaged({ cwd: dir }), /Not a git repository/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("handleCheckStaged returns { files, tier, counts, blocking } shape", async () => {
   const dir = tmpDir({});
+  execSync("git init -q", { cwd: dir });
   const result = await handleCheckStaged({ cwd: dir });
   assert.ok("files" in result, "should have files");
   assert.ok("tier" in result, "should have tier");

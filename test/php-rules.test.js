@@ -240,6 +240,10 @@ precise("php: basename() on the request value down-tiers to review", () => {
   const f = pt(`function g(){ readfile(basename($_GET['f'])); }`);
   assert.ok(f && !f.blocking && f.tierAdjusted === "deescalated");
 });
+precise("php: a mix of sanitized + raw request data stays orange (cannot hide the raw value)", () => {
+  const f = pt(`function g(){ readfile(basename($_GET['a']) . $_GET['b']); }`);
+  assert.ok(f && f.tier === "orange" && f.tierAdjusted !== "deescalated", "one unsanitized request value must keep it orange");
+});
 precise("php: a static path, or a non-request variable path, is NOT flagged", () => {
   assert.equal(pt(`function g(){ fopen("/etc/app.conf", "r"); }`), null);
   assert.equal(pt(`function g($p){ file_get_contents($p); }`), null);

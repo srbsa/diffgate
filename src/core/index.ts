@@ -8,7 +8,15 @@ export {
   repoRoot,
   headSha,
   blameLine,
+  listCommits,
+  getCommitChangedFiles,
+  getBlobAtRef,
+  isCommitish,
+  isValidRange,
+  AI_AUTHOR_PATTERN,
 } from "./git.js";
+export { reviewCommit, reviewHistory } from "./history.js";
+export type { HistoryResult } from "./history.js";
 export { detectLanguage, hasAstSupport } from "./parsers/index.js";
 export { initTreeSitter, treeSitterReady, treeSitterLanguages, parseTs } from "./parsers/treesitter.js";
 export { computeChangedLines } from "./linediff.js";

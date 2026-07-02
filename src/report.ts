@@ -1,6 +1,6 @@
 import path from "path";
 import { TIER_META } from "./core/tiers.js";
-import type { Tier, TierCounts, AnalyzeResult } from "./core/types.js";
+import type { Tier, TierCounts, AnalyzeResult, CommitReview } from "./core/types.js";
 
 const useColor = process.stdout.isTTY && !process.env["NO_COLOR"];
 const wrap = (open: string) => (s: string) => (useColor ? `\x1b[${open}m${s}\x1b[0m` : String(s));
@@ -114,4 +114,58 @@ export function formatReport(files: AnalyzeResult[], { counts, tier }: { counts:
 
 export function heading(text: string): string {
   return c.bold(c.blue(text));
+}
+
+function relativeDate(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  const secs = Math.max(0, (Date.now() - t) / 1000);
+  const units: [number, string][] = [
+    [31536000, "year"], [2592000, "month"], [604800, "week"],
+    [86400, "day"], [3600, "hour"], [60, "minute"],
+  ];
+  for (const [size, name] of units) {
+    const n = Math.floor(secs / size);
+    if (n >= 1) return `${n} ${name}${n === 1 ? "" : "s"} ago`;
+  }
+  return "just now";
+}
+
+/** Renders a history scan as a per-commit story: each flagged commit with attribution, then a
+ *  one-line tally of the clean ones ("8 other commits: clean ✅"). */
+export function formatHistory(
+  result: { commits: CommitReview[]; scanned: number; withFindings: number },
+  cwd: string
+): string {
+  const flagged = result.commits.filter((r) => r.files.length > 0);
+  const header =
+    `${c.bold("🛡  DiffGate")} ${c.dim("—")} history scan: ` +
+    `${result.scanned} commit${result.scanned === 1 ? "" : "s"}, ` +
+    `${result.withFindings} with findings`;
+  if (result.scanned === 0) {
+    return `${header}\n\n  ${c.dim("No commits matched the selection.")}`;
+  }
+  if (flagged.length === 0) {
+    return `${header}\n\n  ${c.green("✔ No DiffGate findings across the scanned commits. Clear ✅")}`;
+  }
+  const blocks = flagged.map((r) => {
+    const cm = r.commit;
+    const author = cm.coAuthors[0] ? `${cm.author} + ${shortAuthor(cm.coAuthors[0])}` : cm.author;
+    const head =
+      `${c.bold(c.blue(cm.shortSha))}  ${c.dim(`(${author}, ${relativeDate(cm.date)})`)}  ${cm.subject}`;
+    const body = r.files.map((f) => formatFile(f, cwd)).join("\n");
+    return `${head}\n${body}`;
+  });
+  const cleanCount = result.scanned - flagged.length;
+  const footer =
+    cleanCount > 0
+      ? `\n\n  ${c.dim(`${cleanCount} other commit${cleanCount === 1 ? "" : "s"}:`)} ${c.green("clean ✅")}`
+      : "";
+  return header + "\n\n" + blocks.join("\n\n") + footer;
+}
+
+function shortAuthor(coAuthor: string): string {
+  // "Claude <noreply@anthropic.com>" → "Claude"
+  const m = coAuthor.match(/^\s*([^<]+?)\s*(?:<|$)/);
+  return (m ? m[1] : coAuthor).trim();
 }

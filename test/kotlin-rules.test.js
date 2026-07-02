@@ -119,6 +119,11 @@ precise("kotlin path: File(request data) is flagged (advisory)", () => {
   assert.ok(f && f.tier === "orange" && f.blocking === false);
 });
 
+precise("kotlin path: a mix of sanitized + raw request data stays orange (cannot hide the raw value)", () => {
+  const f = pt(`fun m(req: HttpServletRequest) { File(FilenameUtils.getName(req.getParameter("a")) + req.getParameter("b")).readText() }`);
+  assert.ok(f && f.tier === "orange" && f.tierAdjusted !== "deescalated", "one unsanitized request value must keep it orange");
+});
+
 precise("kotlin path: a FilenameUtils.getName wrapper down-tiers to review", () => {
   const f = pt(`fun m(req: HttpServletRequest) { File(FilenameUtils.getName(req.getParameter("f"))).readText() }`);
   assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
@@ -164,4 +169,34 @@ precise("kotlin xxe: a hardened factory (disallow-doctype-decl) is NOT flagged",
 });
 precise("kotlin xxe: dom4j SAXReader() construction is flagged", () => {
   assert.ok(xxe(`fun m() { val r = SAXReader() }`));
+});
+
+// --- permissive CORS: Ktor anyHost / @CrossOrigin / wildcard / reflected (0.7.4) -------------------
+function ktCors(content) { const f = findings(content, "permissive-cors"); return f.length ? f[0] : null; }
+precise("kt cors: Ktor anyHost() is flagged (advisory)", () => {
+  const f = ktCors(`fun cfg() { install(CORS) { anyHost() } }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("kt cors: bare @CrossOrigin (defaults to all origins) is flagged", () => {
+  assert.ok(ktCors(`class C { @CrossOrigin\n fun a(): String = "x" }`));
+});
+precise("kt cors: @CrossOrigin(origins = [\"*\"]) is flagged", () => {
+  assert.ok(ktCors(`class C { @CrossOrigin(origins = ["*"])\n fun a(): String = "x" }`));
+});
+precise("kt cors: allowedOrigins(\"*\") is flagged", () => {
+  assert.ok(ktCors(`fun cfg(r: CorsRegistry) { r.addMapping("/**").allowedOrigins("*") }`));
+});
+precise("kt cors: setHeader/append of ACAO * and a reflected Origin are flagged", () => {
+  assert.ok(ktCors(`fun f(response: HttpServletResponse) { response.setHeader("Access-Control-Allow-Origin", "*") }`));
+  assert.ok(ktCors(`fun f(call: ApplicationCall) { call.response.headers.append("Access-Control-Allow-Origin", "*") }`));
+  assert.ok(ktCors(`fun f(request: HttpServletRequest, response: HttpServletResponse) { response.setHeader("Access-Control-Allow-Origin", request.getHeader("Origin")) }`));
+});
+precise("kt cors: explicit origins are NOT flagged", () => {
+  assert.equal(ktCors(`class C { @CrossOrigin(origins = ["https://app.example.com"])\n fun a(): String = "x" }`), null);
+  assert.equal(ktCors(`fun cfg(r: CorsRegistry) { r.addMapping("/**").allowedOrigins("https://app.example.com") }`), null);
+});
+precise("kt cors: unrelated hosts/annotations/headers are NOT flagged", () => {
+  assert.equal(ktCors(`fun cfg() { install(CORS) { allowHost("app.example.com") } }`), null);
+  assert.equal(ktCors(`class C { @GetMapping("/a")\n fun a(): String = "x" }`), null);
+  assert.equal(ktCors(`fun f(m: HeadersBuilder) { m.append("X-Custom", "*") }`), null);
 });

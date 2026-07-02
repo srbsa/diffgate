@@ -127,6 +127,11 @@ precise("java path: a FilenameUtils.getName wrapper down-tiers to review", () =>
   assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
 });
 
+precise("java path: a mix of sanitized + raw request data stays orange (cannot hide the raw value)", () => {
+  const f = pt(`public class T { void m(javax.servlet.http.HttpServletRequest req){ new java.io.File(org.apache.commons.io.FilenameUtils.getName(req.getParameter("a")) + req.getParameter("b")); } }`);
+  assert.ok(f && f.tier === "orange" && f.tierAdjusted !== "deescalated", "one unsanitized request value must keep it orange");
+});
+
 precise("java path: a static path is NOT flagged", () => {
   assert.equal(pt(`public class T { void m(){ new java.io.File("/etc/app.conf"); } }`), null);
 });
@@ -168,4 +173,34 @@ precise("java xxe: dom4j SAXReader construction is flagged", () => {
 });
 precise("java xxe: FEATURE_SECURE_PROCESSING hardening is NOT flagged", () => {
   assert.equal(xxe(`public class T { void m() throws Exception { TransformerFactory tf = TransformerFactory.newInstance(); tf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true); } }`), null);
+});
+
+// --- permissive CORS: @CrossOrigin defaults + wildcard/reflected (0.7.4) --------------------------
+function jCors(content) { const f = findings(content, "permissive-cors"); return f.length ? f[0] : null; }
+precise("java cors: bare @CrossOrigin (defaults to all origins) is flagged (advisory)", () => {
+  const f = jCors(`class C { @CrossOrigin\n@GetMapping("/a") String a(){ return "x"; } }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("java cors: @CrossOrigin(origins = \"*\") is flagged", () => {
+  assert.ok(jCors(`class C { @CrossOrigin(origins = "*")\nString a(){ return "x"; } }`));
+});
+precise("java cors: @CrossOrigin(maxAge = …) leaves origins at the permissive default — flagged", () => {
+  assert.ok(jCors(`class C { @CrossOrigin(maxAge = 3600)\nString a(){ return "x"; } }`));
+});
+precise("java cors: allowedOrigins(\"*\") / addAllowedOrigin(\"*\") are flagged", () => {
+  assert.ok(jCors(`class C { void cfg(CorsRegistry r){ r.addMapping("/**").allowedOrigins("*"); } }`));
+  assert.ok(jCors(`class C { void cfg(CorsConfiguration c){ c.addAllowedOrigin("*"); } }`));
+});
+precise("java cors: setHeader ACAO * and reflected Origin are flagged", () => {
+  assert.ok(jCors(`class C { void f(HttpServletResponse response){ response.setHeader("Access-Control-Allow-Origin", "*"); } }`));
+  assert.ok(jCors(`class C { void f(HttpServletRequest request, HttpServletResponse response){ response.setHeader("Access-Control-Allow-Origin", request.getHeader("Origin")); } }`));
+});
+precise("java cors: an explicit origin (key or implicit value form) is NOT flagged", () => {
+  assert.equal(jCors(`class C { @CrossOrigin(origins = "https://app.example.com")\nString a(){ return "x"; } }`), null);
+  assert.equal(jCors(`class C { @CrossOrigin("https://app.example.com")\nString a(){ return "x"; } }`), null);
+  assert.equal(jCors(`class C { void cfg(CorsRegistry r){ r.addMapping("/**").allowedOrigins("https://app.example.com"); } }`), null);
+});
+precise("java cors: unrelated annotations and non-CORS headers are NOT flagged", () => {
+  assert.equal(jCors(`class C { @GetMapping("/a")\nString a(){ return "x"; } }`), null);
+  assert.equal(jCors(`class C { void f(HttpServletResponse response){ response.setHeader("X-Custom", "*"); } }`), null);
 });

@@ -7,8 +7,9 @@
 //   • Native deserialization (`ObjectInputStream.readObject`) is the canonical Java RCE sink, flagged on
 //     presence (every Java SAST does) — the gadget risk doesn't depend on a locally-visible dynamic value.
 //
-// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · ssrf · xxe.
-// Honest gaps (future): StringBuilder-built SQL, SpEL/OGNL expression injection.
+// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · ssrf · xxe ·
+// permissive-cors.
+// Honest gaps (future): StringBuilder-built SQL, SpEL/OGNL expression injection, template-engine XSS.
 
 import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
 import {
@@ -201,6 +202,61 @@ function isXxeSink(node: TsNode): boolean {
   }
   return false;
 }
+
+// --- permissive CORS -----------------------------------------------------------
+// Wildcard / defaulted / reflected `Access-Control-Allow-Origin` (Spring MVC + servlet):
+//   • `@CrossOrigin` with no origin restriction — the bare annotation (and one that sets only e.g.
+//     `maxAge`) defaults to allowing ALL origins — or an explicit `origins = "*"` / `"*"` value.
+//   • `.allowedOrigins("*")` / `.addAllowedOrigin("*")` / `.setAllowedOrigins(List.of("*"))` (and the
+//     `…OriginPattern(s)` variants) on a CORS registry/configuration.
+//   • raw header write: `response.setHeader("Access-Control-Allow-Origin", "*")`, or the request's own
+//     Origin reflected back (`request.getHeader("Origin")`).
+const CORS_HEADER_RE = /access-control-allow-origin/i;
+const CORS_STAR_RE = /"\s*\*\s*"/;
+const CORS_ORIGIN_METHODS = new Set([
+  "allowedOrigins", "allowedOriginPatterns", "addAllowedOrigin", "addAllowedOriginPattern",
+  "setAllowedOrigins", "setAllowedOriginPatterns",
+]);
+const CORS_HEADER_SETTERS = new Set(["setHeader", "addHeader"]);
+// Annotation keys that restrict the origin set — if any is present, permissiveness needs an explicit `*`.
+const CORS_ANNOTATION_ORIGIN_KEYS = /\b(?:value|origins|originPatterns)\s*=/;
+
+/** The unqualified leaf of an annotation's name (`org.springframework.….CrossOrigin` → `CrossOrigin`). */
+function annotationLeaf(node: TsNode): string | null {
+  const name = node.childForFieldName("name");
+  return name ? (name.text.split(".").pop() || name.text) : null;
+}
+
+/** True when an annotation/marker_annotation/method_invocation configures a permissive CORS policy. */
+function isCorsPermissive(node: TsNode, root: TsNode): boolean {
+  if (node.type === "marker_annotation") return annotationLeaf(node) === "CrossOrigin"; // bare = all origins
+  if (node.type === "annotation") {
+    if (annotationLeaf(node) !== "CrossOrigin") return false;
+    const args = node.childForFieldName("arguments");
+    if (!args) return true;
+    if (CORS_STAR_RE.test(args.text)) return true; // explicit `*`
+    // implicit-value form `@CrossOrigin("https://x")` restricts origins; a key form restricts too.
+    const restricts = CORS_ANNOTATION_ORIGIN_KEYS.test(args.text) ||
+      args.namedChildren.some((a) => a.type === "string_literal");
+    return !restricts; // only maxAge/methods/… set → origins default to ALL
+  }
+  if (node.type !== "method_invocation") return false;
+  const c = invokeParts(node);
+  if (!c) return false;
+  if (CORS_ORIGIN_METHODS.has(c.name)) return c.args.some((a) => CORS_STAR_RE.test(a.text));
+  if (CORS_HEADER_SETTERS.has(c.name) && c.args.length >= 2 && CORS_HEADER_RE.test(c.args[0].text)) {
+    return CORS_STAR_RE.test(c.args[1].text) || taintedByRequest(c.args[1], root); // wildcard or reflected
+  }
+  return false;
+}
+
+const CORS_MESSAGE =
+  "CORS is configured to allow any origin — a bare `@CrossOrigin` (its default allows ALL origins), an " +
+  "explicit `\"*\"` origin, or the request's own Origin reflected back into " +
+  "`Access-Control-Allow-Origin`. If cookies or tokens are used, arbitrary websites can make credentialed " +
+  "cross-origin requests to this API. Set an explicit allowlist of trusted origins " +
+  "(`@CrossOrigin(origins = \"https://app.example.com\")` / `.allowedOrigins(...)`); never send `*` (or a " +
+  "reflected origin) alongside credentials.";
 
 const XXE_MESSAGE =
   "An XML parser is created (`DocumentBuilderFactory`/`SAXParserFactory`/`XMLInputFactory`/`TransformerFactory`/" +
@@ -398,6 +454,20 @@ export const JAVA_RULES: TsAstRule[] = [
       if (!isXxeSink(node)) return;
       if (XXE_HARDENED.test(ctx.tsTree!.rootNode.text)) return; // hardened in-file → not a finding
       emitFinding(node, ctx, emit, { sanitized: false, message: XXE_MESSAGE, sanitizedNote: "" });
+    },
+  },
+  {
+    id: "permissive-cors",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "Permissive CORS policy",
+    languages: ["java"],
+    message: CORS_MESSAGE,
+    sinkQuery: "[(method_invocation) (annotation) (marker_annotation)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (!isCorsPermissive(node, ctx.tsTree!.rootNode)) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: CORS_MESSAGE, sanitizedNote: "" });
     },
   },
 ];

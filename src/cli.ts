@@ -26,6 +26,9 @@ import {
   overallTier,
   TIER_ORDER,
   reviewChanges,
+  reviewHistory,
+  isCommitish,
+  isValidRange,
   getRecallProvider,
   initTreeSitter,
   reviewGuidelines,
@@ -46,7 +49,8 @@ import {
   recordTurn,
   hasAstSupport,
 } from "./core/index.js";
-import { c, formatReport, formatFile, badge, summaryLine } from "./report.js";
+import { c, formatReport, formatHistory, formatFile, badge, summaryLine } from "./report.js";
+import type { HistorySelection } from "./core/types.js";
 import { runMcpServer } from "./mcp.js";
 import { buildPrReview, resolveGithubContext, postPrReview } from "./github.js";
 import { runBench, CORPUS } from "./bench.js";
@@ -60,13 +64,28 @@ declare const __DIFFGATE_VERSION__: string;
 const CLI_PATH = fileURLToPath(import.meta.url);
 const VERSION = typeof __DIFFGATE_VERSION__ !== "undefined" ? __DIFFGATE_VERSION__ : "0.0.0";
 
+// Flags that take a value, so `--flag value` (space-separated) is accepted alongside
+// `--flag=value`. Anything not listed here stays a boolean sentinel on bare `--flag`.
+const VALUE_FLAGS = new Set([
+  "agent-mode", "author", "base", "base-url", "delay-ms", "fail-on", "format",
+  "limit", "max-tokens", "mode", "model", "note", "out", "pr", "provider",
+  "range", "samples", "scenarios", "session", "since", "temperature", "token-param",
+]);
+
 function parseArgs(argv: string[]): { pos: string[]; flags: Record<string, string | true> } {
   const flags: Record<string, string | true> = {};
   const pos: string[] = [];
-  for (const a of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
     if (a.startsWith("--")) {
       const [k, v] = a.slice(2).split("=");
-      flags[k] = v === undefined ? true : v;
+      if (v !== undefined) {
+        flags[k] = v;
+      } else if (VALUE_FLAGS.has(k) && i + 1 < argv.length && !argv[i + 1].startsWith("-")) {
+        flags[k] = argv[++i];
+      } else {
+        flags[k] = true;
+      }
     } else if (a.startsWith("-") && a.length > 1) {
       flags[a.slice(1)] = true;
     } else {
@@ -81,6 +100,25 @@ function fail(msg: string): never {
   process.exit(2);
 }
 
+/** Validate --fail-on. A typo (`--fail-on=oragne`) must fail loudly, not silently gate at the
+ *  default tier — that would change what blocks without anyone noticing. */
+function resolveFailOn(flags: Record<string, string | true>, fallback = "orange"): string {
+  const raw = flags["fail-on"];
+  if (raw === undefined) return fallback;
+  if (raw === true || TIER_ORDER[raw] === undefined) {
+    fail(`--fail-on expects green|yellow|orange, got ${raw === true ? "no value" : `"${raw}"`}.`);
+  }
+  return raw as string;
+}
+
+/** Shared gate exit: 1 when findings reach failOn (unless --no-fail). Machine-readable modes
+ *  (--json/--sarif) route through this too so they can't silently exit 0 on a blocked change. */
+function exitGate(findings: Finding[], failOn: string, flags: Record<string, string | true>): never {
+  const failRank = TIER_ORDER[failOn] ?? 2;
+  const blocked = findings.some((f) => f.blocking || (TIER_ORDER[f.tier] ?? 0) >= failRank);
+  process.exit(blocked && !flags["no-fail"] ? 1 : 0);
+}
+
 function resolveMode(flags: Record<string, string | true>, config: Config): string {
   if (flags["staged"]) return "staged";
   if (flags["working"]) return "working";
@@ -89,13 +127,13 @@ function resolveMode(flags: Record<string, string | true>, config: Config): stri
 
 const AGENT_MODES = ["advisory", "gated", "off"] as const;
 
-/** Resolve `--agent-mode=<mode>`, warning on the two footguns: the space form (`--agent-mode gated`,
- *  which the `key=value` parser drops) and an unknown value. Returns undefined → use configured mode. */
+/** Resolve `--agent-mode=<mode>` (or `--agent-mode mode`), warning on a missing/unknown value.
+ *  Returns undefined → use configured mode. */
 function resolveAgentMode(flags: Record<string, string | true>): (typeof AGENT_MODES)[number] | undefined {
   const raw = flags["agent-mode"];
   if (raw === undefined) return undefined;
   if (raw === true) {
-    console.error(c.yellow("⚠ --agent-mode needs a value: use --agent-mode=advisory|gated|off (the space form is ignored). Falling back to configured mode."));
+    console.error(c.yellow("⚠ --agent-mode needs a value: use --agent-mode=advisory|gated|off or --agent-mode advisory|gated|off. Falling back to configured mode."));
     return undefined;
   }
   if (!(AGENT_MODES as readonly string[]).includes(raw)) {
@@ -190,41 +228,121 @@ function indent(text: string, n: number): string {
   return text.split("\n").map((l) => pad + l).join("\n");
 }
 
-async function cmdCheck(pos: string[], flags: Record<string, string | true>): Promise<void> {
-  const cwd = path.resolve(pos[0] || ".");
+/**
+ * Decide whether `check` should scan git history instead of the working diff, and resolve the
+ * selection. History mode triggers on --since/--range/--author/--ai, or a positional that is a
+ * commit-ish rather than an existing directory. Returns { cwd, sel } or null (→ working-diff mode).
+ */
+function resolveHistorySelection(
+  pos: string[],
+  flags: Record<string, string | true>
+): { cwd: string; sel: HistorySelection } | null {
+  const p0 = pos[0];
+  const p0IsDir = !!p0 && fs.existsSync(p0) && (() => { try { return fs.statSync(p0).isDirectory(); } catch { return false; } })();
+  const cwd = path.resolve(p0IsDir ? (p0 as string) : ".");
+  // A positional that isn't an existing dir but resolves to a commit → single-commit review.
+  const commit = !p0IsDir && p0 && isCommitish(cwd, p0) ? p0 : undefined;
+  const since = typeof flags["since"] === "string" ? (flags["since"] as string) : undefined;
+  const range = typeof flags["range"] === "string" ? (flags["range"] as string) : undefined;
+  const author = typeof flags["author"] === "string" ? (flags["author"] as string) : undefined;
+  // `--ai-authored` (not `--ai` — that's reserved for AI explanations) filters to agent commits.
+  const ai = !!flags["ai-authored"];
+  const limit = typeof flags["limit"] === "string" ? Math.max(1, parseInt(flags["limit"] as string, 10) || 50) : undefined;
+  if (!commit && !since && !range && !author && !ai) return null;
+  const sel: HistorySelection = { commit, since, range, author, ai, ...(limit ? { limit } : {}) };
+  return { cwd, sel };
+}
+
+async function cmdHistory(cwd: string, sel: HistorySelection, flags: Record<string, string | true>): Promise<void> {
+  // Exit 2, not a warn-and-pass: a gate that reports "clean" because it never ran is a false pass.
   if (!isGitRepo(cwd)) {
-    console.log(c.yellow("⚠ Not a git repository.") + ` ${c.dim("`diffgate check` reviews your diff. Use `diffgate scan` to analyze files directly.")}`);
-    process.exit(0);
+    fail(`Not a git repository: ${cwd} — \`diffgate check --since/--range/--author\` audits commit history and needs one.`);
+  }
+  if (sel.range && !isValidRange(cwd, sel.range)) {
+    fail(`--range does not resolve: "${sel.range}". A bad range would silently scan 0 commits and pass.`);
+  }
+  // Validate --fail-on up front so a typo fails before the scan, not after.
+  const failOn = flags["fail-on"] !== undefined ? resolveFailOn(flags) : undefined;
+  const result = reviewHistory(cwd, sel);
+
+  if (flags["json"]) {
+    const out = result.commits.map((r) => ({
+      sha: r.commit.sha,
+      shortSha: r.commit.shortSha,
+      author: r.commit.author,
+      email: r.commit.email,
+      coAuthors: r.commit.coAuthors,
+      date: r.commit.date,
+      subject: r.commit.subject,
+      tier: r.tier,
+      counts: r.counts,
+      blocking: r.blocking,
+      findings: r.files.flatMap((f) => f.findings.map((fd) => ({ file: path.relative(cwd, f.filePath) || f.filePath, ...fd }))),
+    }));
+    console.log(JSON.stringify({ scanned: result.scanned, withFindings: result.withFindings, commits: out }, null, 2));
+  } else {
+    console.log(formatHistory(result, cwd));
+  }
+
+  // History mode is report-only (auditing the past, not gating a commit): exit 0 unless the caller
+  // explicitly asks to fail with --fail-on. Applies to --json output too.
+  if (failOn !== undefined) {
+    const failRank = TIER_ORDER[failOn] ?? 2;
+    const blocked = result.commits.some((r) => r.files.some((f) => f.findings.some((fd) => fd.blocking || (TIER_ORDER[fd.tier] ?? 0) >= failRank)));
+    if (!flags["json"]) {
+      console.log("");
+      console.log(blocked ? c.red(`✖ Findings at/above ${failOn} in history.`) : c.green("✔ No findings at/above threshold."));
+    }
+    process.exit(blocked && !flags["no-fail"] ? 1 : 0);
+  }
+}
+
+async function cmdCheck(pos: string[], flags: Record<string, string | true>): Promise<void> {
+  const hist = resolveHistorySelection(pos, flags);
+  if (hist) return cmdHistory(hist.cwd, hist.sel, flags);
+
+  const cwd = path.resolve(pos[0] || ".");
+  // A positional that is neither an existing directory nor a commit-ish is a typo, not a workspace.
+  if (pos[0] && !fs.existsSync(cwd)) {
+    fail(`No such directory or commit: ${pos[0]}`);
+  }
+  // Exit 2, not warn-and-exit-0: in CI a gate that silently doesn't run is a false pass. (This
+  // also keeps --json stdout parseable — the old warning was printed to stdout.)
+  if (!isGitRepo(cwd)) {
+    fail(`Not a git repository: ${cwd} — \`diffgate check\` reviews your git diff. Use \`diffgate scan\` to analyze files directly.`);
   }
   const { config } = loadConfig(cwd);
   const mode = resolveMode(flags, config);
+  const failOn = resolveFailOn(flags, config.gate.failOn || "orange");
   const base = typeof flags["base"] === "string" ? (flags["base"] as string) : undefined;
+  // An unresolvable base (e.g. origin/main in a shallow CI clone that never fetched it) would make
+  // `git diff <base>` fail silently → 0 changed files → a false pass. Refuse it loudly instead.
+  if (base && !isCommitish(cwd, base)) {
+    fail(`--base ref not found: "${base}". Fetch it first (e.g. \`git fetch origin main\`) — an unresolvable base would silently diff nothing and pass.`);
+  }
   // `--recall` force-enables borrowed recall (semgrep) for this run, overriding the config gate.
   // Off otherwise; in CI it activates automatically when `recall.enabled` is "ci".
   let recall: NonNullable<Parameters<typeof reviewChanges>[1]>["recall"];
   if (flags["recall"]) {
     recall = getRecallProvider(cwd, { ...config, recall: { ...(config.recall || {}), enabled: true } });
-    if (!recall) console.log(c.yellow("⚠ --recall: semgrep not found on PATH — skipping borrowed recall."));
+    if (!recall) console.error(c.yellow("⚠ --recall: semgrep not found on PATH — skipping borrowed recall."));
   }
   const review = reviewChanges(cwd, { mode, base, ...(recall !== undefined ? { recall } : {}) });
   const allFindings = review.files.flatMap((f) => f.findings);
 
   if (flags["json"]) {
     console.log(JSON.stringify({ mode, ...stripForJson(review) }, null, 2));
-    return;
+    exitGate(allFindings, failOn, flags);
   }
 
   if (flags["sarif"] || flags["format"] === "sarif") {
     console.log(toSarif(review.files, cwd, VERSION));
-    return;
+    exitGate(allFindings, failOn, flags);
   }
 
   if (flags["github"] || flags["format"] === "github") {
     printGithubAnnotations(review.files, cwd);
-    const failOn = (flags["fail-on"] as string) || config.gate.failOn || "orange";
-    const failRank = TIER_ORDER[failOn] ?? 2;
-    const blocked = allFindings.some((f) => f.blocking || (TIER_ORDER[f.tier] ?? 0) >= failRank);
-    process.exit(blocked && !flags["no-fail"] ? 1 : 0);
+    exitGate(allFindings, failOn, flags);
   }
 
   if (flags["agent"]) {
@@ -273,7 +391,6 @@ async function cmdCheck(pos: string[], flags: Record<string, string | true>): Pr
     }
   }
 
-  const failOn = (flags["fail-on"] as string) || config.gate.failOn || "orange";
   const failRank = TIER_ORDER[failOn] ?? 2;
   const tripped = allFindings.some((f) => f.blocking || (TIER_ORDER[f.tier] ?? 0) >= failRank);
   const blocked = tripped || gateFailed;
@@ -361,6 +478,11 @@ async function cmdScan(pos: string[], flags: Record<string, string | true>): Pro
   const filePaths = stat!.isDirectory()
     ? [...walkFiles(target, config, target)]
     : [target];
+  // An unreadable/empty target yields 0 files → an empty (passing) report. Say so on stderr so a
+  // "clean" scan of nothing is distinguishable from a clean scan of code.
+  if (filePaths.length === 0) {
+    console.error(c.yellow(`⚠ No scannable files found under ${target} (unreadable, ignored, or binary-only).`));
+  }
 
   const learnings = loadLearnings(repoRoot(baseDir) || baseDir);
   const files: AnalyzeResult[] = [];
@@ -377,27 +499,27 @@ async function cmdScan(pos: string[], flags: Record<string, string | true>): Pro
 
   const allFindings = files.flatMap((f) => f.findings);
   const review = { files, counts: tierCounts(allFindings), tier: overallTier(allFindings), blocking: allFindings.some((f) => f.blocking) };
+  // Scan is report-only by default; --fail-on opts into gating. Validate it before any output.
+  const failOn = flags["fail-on"] !== undefined ? resolveFailOn(flags) : undefined;
 
   if (flags["json"]) {
     console.log(JSON.stringify(stripForJson({ ...review, config }), null, 2));
+    if (failOn !== undefined) exitGate(allFindings, failOn, flags);
     return;
   }
 
   const reviewCwd = stat!.isDirectory() ? target : baseDir;
 
   if (flags["sarif"] || flags["format"] === "sarif") {
-    console.log(toSarif(files, reviewCwd));
+    console.log(toSarif(files, reviewCwd, VERSION));
+    if (failOn !== undefined) exitGate(allFindings, failOn, flags);
     return;
   }
   console.log(formatReport(files, review, reviewCwd));
   if (flags["deep"]) await printDeepReviews(allFindings, files, config, reviewCwd);
   else if (flags["ai"]) await printAiExplanations(allFindings, files, config);
 
-  if (flags["fail-on"]) {
-    const failRank = TIER_ORDER[flags["fail-on"] as string] ?? 2;
-    const tripped = allFindings.some((f) => f.blocking || (TIER_ORDER[f.tier] ?? 0) >= failRank);
-    process.exit(tripped ? 1 : 0);
-  }
+  if (failOn !== undefined) exitGate(allFindings, failOn, flags);
 }
 
 function cmdWatch(pos: string[], _flags: Record<string, string | true>): void {
@@ -486,7 +608,7 @@ function printGithubAnnotations(files: AnalyzeResult[], cwd: string): void {
 }
 
 async function runPrReview(files: AnalyzeResult[], cwd: string, config: Config, flags: Record<string, string | true>): Promise<void> {
-  const failOn = ((flags["fail-on"] as string) || config.gate.failOn || "orange") as Tier;
+  const failOn = resolveFailOn(flags, config.gate.failOn || "orange") as Tier;
   const payload = buildPrReview(files, cwd, { failOn });
   const prFlag = typeof flags["pr"] === "string" ? (flags["pr"] as string) : undefined;
   const ctx = resolveGithubContext(process.env, prFlag, (p) => {
@@ -511,6 +633,9 @@ async function cmdReport(pos: string[], flags: Record<string, string | true>): P
   const { config } = loadConfig(cwd);
   const mode = resolveMode(flags, config);
   const base = typeof flags["base"] === "string" ? (flags["base"] as string) : undefined;
+  if (base && !isCommitish(cwd, base)) {
+    fail(`--base ref not found: "${base}". Fetch it first — an unresolvable base would silently diff nothing.`);
+  }
   const review = reviewChanges(cwd, { mode, base });
   const root = repoRoot(cwd) || cwd;
 
@@ -706,7 +831,8 @@ function renderMarginal(result: SampledResult, model: string): void {
 async function cmdGuidelines(pos: string[], flags: Record<string, string | true>): Promise<void> {
   const cwd = path.resolve(pos[0] || ".");
   const mode = flags["staged"] ? "staged" : "working";
-  const res = await reviewGuidelines(cwd, { mode, log: (m) => console.log(c.dim(m)) });
+  // Progress goes to stderr so `--json` stdout stays parseable.
+  const res = await reviewGuidelines(cwd, { mode, log: (m) => console.error(c.dim(m)) });
   if (flags["json"]) { console.log(JSON.stringify(res, null, 2)); return; }
   if (res.mode === "host") {
     // No model configured — guideline review needs either a provider or an agent host.
@@ -1006,11 +1132,16 @@ ${c.bold("Options")}
   --staged           Review staged changes only (good for pre-commit)
   --working          Review all uncommitted changes (default)
   --base=<ref>       Review the whole branch/PR against a base ref (for CI, e.g. origin/main)
+  --since=<rev|date> Audit recent history per-commit (e.g. HEAD~20 or "2 weeks ago")
+  --range=<A..B>     Audit an explicit commit range, per-commit
+  --author=<pat>     Only commits whose author/co-author matches (case-insensitive)
+  --ai-authored      Only AI-agent commits (Claude/Copilot/Cursor/… — heuristic)
+  --limit=<n>        Cap commits scanned in history mode (default 50)
   --fail-on=<tier>   green|yellow|orange — exit 1 at/above this tier (default orange)
   --no-gate          Skip running the configured testCommand
   --no-fail          Always exit 0 (report only)
   --ai               Add Claude explanations for orange findings
-  --json             Machine-readable output
+  --json             Machine-readable output (still exits per --fail-on; add --no-fail to always exit 0)
   --sarif            SARIF 2.1.0 output (GitHub code scanning)
   --github           GitHub Actions inline PR annotations
   --pr[=<n>]         Post a PR review + commit status (needs GITHUB_TOKEN); --pr-dry-run to preview
@@ -1020,6 +1151,9 @@ ${c.bold("Options")}
 
 ${c.bold("Examples")}
   diffgate check --staged
+  diffgate check --since=HEAD~20  ${c.dim("# audit the last 20 commits, per-commit")}
+  diffgate check --ai-authored    ${c.dim("# only recent AI-agent commits")}
+  diffgate check <sha>            ${c.dim("# review one commit by hash")}
   diffgate scan src/ --fail-on=yellow
   diffgate check --pr             ${c.dim("# in CI: post review to the PR")}
   diffgate report --compliance    ${c.dim("# SOC 2 control evidence")}

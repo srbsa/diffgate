@@ -8,7 +8,8 @@
 //     variants are.)
 //   • `BinaryFormatter.Deserialize` (and friends) is the canonical .NET deserialization RCE sink.
 //
-// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · xss-sink · ssrf · xxe.
+// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · xss-sink · ssrf ·
+// xxe · permissive-cors.
 // Honest gaps (future): Json.NET `TypeNameHandling`, LDAP injection.
 
 import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
@@ -177,6 +178,43 @@ function receiverNewType(node: TsNode, root: TsNode, depth = 0): string | null {
   }
   return null;
 }
+
+// --- permissive CORS -----------------------------------------------------------
+// Wildcard / reflected `Access-Control-Allow-Origin` (ASP.NET / ASP.NET Core):
+//   • policy builder: `.AllowAnyOrigin()` / `.WithOrigins("*")`.
+//   • raw header write: `Response.Headers.Add/Append("Access-Control-Allow-Origin", "*")` or
+//     `Response.Headers["Access-Control-Allow-Origin"] = <"*"|reflected Request Origin>`.
+const CORS_HEADER_RE = /access-control-allow-origin/i;
+const CORS_STAR_RE = /^\s*@?"\s*\*\s*"\s*$/;
+const CORS_HEADER_APPENDERS = new Set(["Add", "Append"]);
+
+/** True when an invocation/assignment configures a permissive (any-origin / reflected) CORS policy. */
+function isCorsPermissive(node: TsNode, root: TsNode): boolean {
+  if (node.type === "invocation_expression") {
+    const c = memberInvoke(node);
+    if (!c) return false;
+    if (c.name === "AllowAnyOrigin") return true;
+    if (c.name === "WithOrigins") return csArgs(node).some((a) => CORS_STAR_RE.test(a.text));
+    if (CORS_HEADER_APPENDERS.has(c.name) && !!c.obj && /\bHeaders$/.test(c.obj)) {
+      const args = csArgs(node);
+      if (args.length < 2 || !CORS_HEADER_RE.test(args[0].text)) return false;
+      return CORS_STAR_RE.test(args[1].text) || taintedByRequest(args[1], root); // wildcard or reflected
+    }
+    return false;
+  }
+  if (node.type !== "assignment_expression") return false;
+  const left = node.childForFieldName("left");
+  const right = node.childForFieldName("right");
+  if (!left || !right || left.type !== "element_access_expression" || !CORS_HEADER_RE.test(left.text)) return false;
+  return CORS_STAR_RE.test(right.text) || taintedByRequest(right, root);
+}
+
+const CORS_MESSAGE =
+  "CORS is configured to allow any origin — `.AllowAnyOrigin()` / `.WithOrigins(\"*\")`, a wildcard " +
+  "`Access-Control-Allow-Origin: *` header, or the request's own Origin reflected back. If cookies or " +
+  "tokens are used, arbitrary websites can make credentialed cross-origin requests to this API. Set an " +
+  "explicit allowlist of trusted origins (`.WithOrigins(\"https://app.example.com\")`); never send `*` " +
+  "(or a reflected origin) alongside credentials.";
 
 // SSRF — HttpClient / WebClient / WebRequest fetches and URL construction whose URL is request-tainted.
 const SSRF_METHODS = new Set([
@@ -447,6 +485,20 @@ export const CSHARP_RULES: TsAstRule[] = [
       }
       if (!trigger) return;
       emitFinding(node, ctx, emit, { sanitized: false, message: XXE_MESSAGE, sanitizedNote: "" });
+    },
+  },
+  {
+    id: "permissive-cors",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "Permissive CORS policy",
+    languages: ["csharp"],
+    message: CORS_MESSAGE,
+    sinkQuery: "[(invocation_expression) (assignment_expression)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (!isCorsPermissive(node, ctx.tsTree!.rootNode)) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: CORS_MESSAGE, sanitizedNote: "" });
     },
   },
 ];

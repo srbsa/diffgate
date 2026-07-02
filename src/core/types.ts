@@ -173,6 +173,44 @@ export interface AnalyzeResult {
   parseError?: string | null;
 }
 
+/** One commit's metadata, used by the history-scan (`check --since/--author/<commit>`). */
+export interface Commit {
+  sha: string;
+  shortSha: string;
+  author: string;
+  email: string;
+  /** ISO 8601 author date. */
+  date: string;
+  subject: string;
+  /** Names/emails from `Co-authored-by:` trailers — where most agent attribution lives. */
+  coAuthors: string[];
+}
+
+/** Result of reviewing a single historical commit's diff. */
+export interface CommitReview {
+  commit: Commit;
+  files: AnalyzeResult[];
+  tier: Tier;
+  counts: TierCounts;
+  blocking: boolean;
+}
+
+/** Selection criteria for which commits a history scan should review. */
+export interface HistorySelection {
+  /** Single commit-ish (e.g. a sha). Takes precedence over range/since. */
+  commit?: string;
+  /** Explicit `A..B` range. */
+  range?: string;
+  /** A rev (→ `<since>..HEAD`) or a git date expression (e.g. "2 weeks ago"). */
+  since?: string;
+  /** Case-insensitive pattern matched against author name/email and co-author trailers. */
+  author?: string;
+  /** Preset filter for common AI-agent authorship signatures. */
+  ai?: boolean;
+  /** Cap on commits reviewed (default 50). */
+  limit?: number;
+}
+
 export interface GateConfig {
   failOn: Tier;
   mode: "staged" | "working";
@@ -464,6 +502,13 @@ interface RuleBase {
    * land for more languages.
    */
   skipIfAstLangs?: string[];
+  /**
+   * Opposite of {@link languages}: this rule never applies to these languages, even when
+   * `languages` is `["*"]`. Used to carve out a language with its own precise sibling rule under
+   * the same id (e.g. `dangerous-exec`'s JS/TS AST rule owns `.exec()` receiver-awareness, so the
+   * broad regex here must not double-fire on JS/TS).
+   */
+  excludeLanguages?: string[];
 }
 
 export interface PatternRule extends RuleBase {

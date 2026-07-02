@@ -644,6 +644,10 @@ function syncGitWatchers(roots: string[]): void {
   }
 }
 
+// Repos whose git-diff review failed and were already reported — refreshWorkspace runs on every
+// save/commit, so without dedupe a broken .diffgate.json would toast on each keystroke-save.
+const reviewFailureWarned = new Set<string>();
+
 function refreshWorkspace(): void {
   if (!settings().get("enable", true)) return;
   const diffMode = settings().get<string>("diffMode", "working");
@@ -661,7 +665,14 @@ function refreshWorkspace(): void {
     let review: ReturnType<typeof reviewChanges>;
     try {
       review = reviewChanges(root, { mode: diffMode });
-    } catch {
+      reviewFailureWarned.delete(root);
+    } catch (e) {
+      // Don't skip silently: with the repo dropped, the sidebar/status bar read "clear" — a false
+      // pass. Tell the user once (per repo, until it recovers) why nothing is being reported.
+      if (!reviewFailureWarned.has(root)) {
+        reviewFailureWarned.add(root);
+        vscode.window.showWarningMessage(`DiffGate: could not review changes in ${path.basename(root)} — ${(e as Error).message}`);
+      }
       continue;
     }
     for (const fr of review.files) {

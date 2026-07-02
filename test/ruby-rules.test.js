@@ -202,3 +202,26 @@ precise("ruby ssrf: a static URL is NOT flagged", () => {
 precise("ruby ssrf: a generic .get on an unrelated receiver is NOT flagged", () => {
   assert.equal(ssrf(`myobj.get(params[:k])`), null);
 });
+
+// --- permissive CORS: rack-cors DSL + wildcard/reflected header writes (0.7.4) --------------------
+function rbCors(content) { const f = findings(content, "permissive-cors"); return f.length ? f[0] : null; }
+precise("ruby cors: rack-cors `origins '*'` is flagged (advisory)", () => {
+  const f = rbCors(`allow do\n  origins '*'\n  resource '*', headers: :any\nend`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("ruby cors: set_header with * is flagged", () => {
+  assert.ok(rbCors(`response.set_header('Access-Control-Allow-Origin', '*')`));
+});
+precise("ruby cors: headers[...] = '*' assignment is flagged", () => {
+  assert.ok(rbCors(`headers['Access-Control-Allow-Origin'] = '*'`));
+});
+precise("ruby cors: reflecting the request Origin is flagged", () => {
+  assert.ok(rbCors(`response.set_header('Access-Control-Allow-Origin', request.headers['Origin'])`));
+});
+precise("ruby cors: an explicit origin allowlist is NOT flagged", () => {
+  assert.equal(rbCors(`allow do\n  origins 'https://app.example.com'\nend`), null);
+});
+precise("ruby cors: an unrelated '*' argument or header is NOT flagged", () => {
+  assert.equal(rbCors(`glob('*')`), null);
+  assert.equal(rbCors(`headers['X-Frame-Options'] = '*'`), null);
+});

@@ -37,6 +37,7 @@ const FILE_RULES: FileRule[] = [
 ];
 
 function ruleAppliesToLanguage(rule: Rule, language: string): boolean {
+  if (rule.excludeLanguages?.includes(language)) return false;
   const langs = rule.languages || ["*"];
   return langs.includes("*") || langs.includes(language);
 }

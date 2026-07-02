@@ -114,6 +114,68 @@ test("language-agnostic rules work on Python", () => {
   assert.ok(find(res, "dangerous-exec"), "dangerous-exec should fire on Python");
 });
 
+test("dangerous-exec (JS/TS): RegExp.exec() is not a shell-out — does not fire", () => {
+  // theonaai/Heron src/discovery/diff.ts:340 — CONTRAST_BOUNDARY is a regex constant, not a process.
+  const named = analyze({
+    filePath: "diff.ts",
+    content: `const CONTRAST_BOUNDARY = /foo/g;\nwhile ((m = CONTRAST_BOUNDARY.exec(sentence)) !== null) {}\n`,
+    config: cfg,
+  });
+  assert.equal(find(named, "dangerous-exec"), undefined, "named regex constant .exec() should not fire");
+
+  const literal = analyze({
+    filePath: "diff.ts",
+    content: `while ((m = /foo/g.exec(sentence)) !== null) {}\n`,
+    config: cfg,
+  });
+  assert.equal(find(literal, "dangerous-exec"), undefined, "regex literal .exec() should not fire");
+
+  const ctor = analyze({
+    filePath: "diff.ts",
+    content: `const re = new RegExp("foo");\nwhile ((m = re.exec(sentence)) !== null) {}\n`,
+    config: cfg,
+  });
+  assert.equal(find(ctor, "dangerous-exec"), undefined, "new RegExp(...) variable .exec() should not fire");
+});
+
+test("dangerous-exec (JS/TS): shell-out .exec() still fires", () => {
+  const cp = analyze({
+    filePath: "diff.ts",
+    content: `import { execSync } from "child_process";\nexecSync(cmd);\n`,
+    config: cfg,
+  });
+  assert.ok(find(cp, "dangerous-exec"), "child_process execSync should fire");
+
+  // Custom process-spawn wrapper — true positive found in the same Heron corpus scan.
+  const wrapper = analyze({
+    filePath: "diff.ts",
+    content: `ctx.conway.exec(userCmd);\n`,
+    config: cfg,
+  });
+  assert.ok(find(wrapper, "dangerous-exec"), "custom .exec() wrapper on a non-regex receiver should fire");
+
+  const spawn = analyze({
+    filePath: "diff.ts",
+    content: `spawn("sh", ["-c", cmd]);\n`,
+    config: cfg,
+  });
+  assert.ok(find(spawn, "dangerous-exec"), "spawn(...) should fire");
+
+  const evalRes = analyze({
+    filePath: "diff.ts",
+    content: `eval(userInput);\n`,
+    config: cfg,
+  });
+  assert.ok(find(evalRes, "dangerous-exec"), "eval(...) should fire");
+
+  const newFn = analyze({
+    filePath: "diff.ts",
+    content: `new Function("return " + userInput)();\n`,
+    config: cfg,
+  });
+  assert.ok(find(newFn, "dangerous-exec"), "new Function(...) should fire");
+});
+
 test("does not throw on unparseable source, still runs pattern rules", () => {
   const res = analyze({
     filePath: "broken.js",
@@ -256,6 +318,74 @@ test("path-traversal: fires when req.params used in path.join", () => {
 test("path-traversal: does NOT fire on static path.join", () => {
   const res = analyze({ filePath: "f.js", content: "const fp = path.join(__dirname, 'static', 'index.html');\n", config: cfg });
   assert.equal(find(res, "path-traversal"), undefined);
+});
+
+test("path-traversal: a path.basename wrapper down-tiers to review", () => {
+  const res = analyze({ filePath: "f.js", content: "const fp = path.join(__dirname, path.basename(req.params.filename));\n", config: cfg });
+  const f = find(res, "path-traversal");
+  assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
+});
+
+test("path-traversal: fires when the fs sink call itself carries raw request data (unguarded)", () => {
+  const res = analyze({ filePath: "f.js", content: "fs.readFileSync(path.join(__dirname, req.query.file));\n", config: cfg });
+  const f = find(res, "path-traversal");
+  assert.ok(f && f.tier === "orange" && f.tierAdjusted !== "deescalated", "unwrapped request data reaching an fs sink must stay orange, not down-tiered");
+});
+
+test("path-traversal: a mix of sanitized + raw request data stays orange (cannot hide the raw value)", () => {
+  const res = analyze({
+    filePath: "f.js",
+    content: "const fp = path.join(__dirname, path.basename(req.params.a) + req.query.b);\n",
+    config: cfg,
+  });
+  const f = find(res, "path-traversal");
+  assert.ok(f && f.tier === "orange" && f.tierAdjusted !== "deescalated", "one unsanitized request value must keep it orange");
+});
+
+test("path-traversal: basename wrapper via a local variable is still recognized (alias tracing)", () => {
+  const res = analyze({
+    filePath: "f.js",
+    content: "const safe = path.basename(req.params.filename);\nconst fp = path.join(__dirname, safe);\n",
+    config: cfg,
+  });
+  const f = find(res, "path-traversal");
+  assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
+});
+
+// The documented "path-traversal-on-guarded-code" gap: `path.resolve` + a `startsWith(baseDir)`
+// root-prefix confinement check, with no wrapper sanitizer at all.
+test("path-traversal: a path.resolve + startsWith(baseDir) containment guard down-tiers to review", () => {
+  const content =
+    "function h(req, res) {\n" +
+    "  const baseDir = '/data/uploads';\n" +
+    "  const target = path.resolve(baseDir, req.params.name);\n" +
+    "  if (!target.startsWith(baseDir)) { return res.status(400).end(); }\n" +
+    "  fs.readFile(target, (err, data) => res.send(data));\n" +
+    "}\n";
+  const res = analyze({ filePath: "f.js", content, config: cfg });
+  const findings = res.findings.filter((f) => f.ruleId === "path-traversal");
+  assert.ok(findings.length > 0, "should still report the guarded construction for review");
+  for (const f of findings) {
+    assert.equal(f.tier, "yellow", `guarded finding at line ${f.line} should be down-tiered`);
+    assert.equal(f.tierAdjusted, "deescalated");
+  }
+});
+
+test("path-traversal: an unrelated startsWith check elsewhere in the file does NOT down-tier", () => {
+  const content =
+    "function h(req, res) {\n" +
+    "  const other = 'x';\n" +
+    "  if (other.startsWith('y')) {}\n" +
+    "  const target = path.join(__dirname, req.params.name);\n" +
+    "  fs.readFile(target, (err, data) => res.send(data));\n" +
+    "}\n";
+  const res = analyze({ filePath: "f.js", content, config: cfg });
+  const findings = res.findings.filter((f) => f.ruleId === "path-traversal");
+  assert.ok(findings.length > 0);
+  for (const f of findings) {
+    assert.equal(f.tier, "orange", "a startsWith check on an unrelated variable must not suppress the real finding");
+    assert.notEqual(f.tierAdjusted, "deescalated");
+  }
 });
 
 test("nosql-injection: fires on find(req.body) direct passthrough", () => {

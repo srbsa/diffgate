@@ -138,6 +138,11 @@ precise("go path: a filepath.Base wrapper down-tiers to review", () => {
   assert.ok(f && f.blocking === false && f.tier === "yellow" && f.tierAdjusted === "deescalated");
 });
 
+precise("go path: a mix of sanitized + raw request data stays orange (cannot hide the raw value)", () => {
+  const f = pt(`package m\nfunc h(w http.ResponseWriter, r *http.Request){ os.ReadFile(filepath.Base(r.FormValue("a")) + r.FormValue("b")) }`);
+  assert.ok(f && f.tier === "orange" && f.tierAdjusted !== "deescalated", "one unsanitized request value must keep it orange");
+});
+
 precise("go path: a static path is NOT flagged", () => {
   assert.equal(pt(`package m\nfunc h(){ os.ReadFile("/etc/config.yaml") }`), null);
 });
@@ -163,4 +168,39 @@ precise("go ssrf: a static URL is NOT flagged", () => {
 });
 precise("go ssrf: cache.Get with request data is NOT flagged (not net/http)", () => {
   assert.equal(ssrf(`package m\nfunc h(r *http.Request){ cache.Get(r.FormValue("k")) }`), null);
+});
+
+// --- permissive CORS: wildcard/reflected/allow-all configs (0.7.4) -------------------------------
+function goCors(content) { const f = findings(content, "permissive-cors"); return f.length ? f[0] : null; }
+precise("go cors: header Set of * is flagged (advisory)", () => {
+  const f = goCors(`package m\nimport "net/http"\nfunc h(w http.ResponseWriter){ w.Header().Set("Access-Control-Allow-Origin", "*") }`);
+  assert.ok(f && f.tier === "orange" && f.blocking === false);
+});
+precise("go cors: reflecting the request Origin is flagged", () => {
+  assert.ok(goCors(`package m\nfunc h(w http.ResponseWriter, r *http.Request){ w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin")) }`));
+});
+precise("go cors: gin AllowAllOrigins:true is flagged", () => {
+  assert.ok(goCors(`package m\nfunc h(){ c := cors.Config{AllowAllOrigins: true}; _ = c }`));
+});
+precise("go cors: AllowOrigins/AllowedOrigins with * is flagged (gin + rs/cors)", () => {
+  assert.ok(goCors(`package m\nfunc h(){ c := cors.Config{AllowOrigins: []string{"*"}}; _ = c }`));
+  assert.ok(goCors(`package m\nfunc h(){ c := cors.Options{AllowedOrigins: []string{"*"}}; _ = c }`));
+});
+precise("go cors: AllowOriginFunc returning constant true is flagged", () => {
+  assert.ok(goCors(`package m\nfunc h(){ c := cors.Config{AllowOriginFunc: func(o string) bool { return true }}; _ = c }`));
+});
+precise("go cors: cors.Default() and cors.AllowAll() are flagged", () => {
+  assert.ok(goCors(`package m\nfunc h(r *gin.Engine){ r.Use(cors.Default()) }`));
+  assert.ok(goCors(`package m\nfunc h(){ c := cors.AllowAll(); _ = c }`));
+});
+precise("go cors: an explicit origin allowlist is NOT flagged", () => {
+  assert.equal(goCors(`package m\nfunc h(w http.ResponseWriter){ w.Header().Set("Access-Control-Allow-Origin", "https://app.example.com") }`), null);
+  assert.equal(goCors(`package m\nfunc h(){ c := cors.Config{AllowOrigins: []string{"https://app.example.com"}}; _ = c }`), null);
+});
+precise("go cors: an AllowOriginFunc with a real check is NOT flagged", () => {
+  assert.equal(goCors(`package m\nfunc h(){ c := cors.Config{AllowOriginFunc: func(o string) bool { return allow[o] }}; _ = c }`), null);
+});
+precise("go cors: unrelated Set/Default calls with * are NOT flagged", () => {
+  assert.equal(goCors(`package m\nfunc h(){ cache.Set("key", "*") }`), null);
+  assert.equal(goCors(`package m\nfunc h(){ v := viper.Default(); _ = v }`), null);
 });

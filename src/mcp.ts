@@ -513,6 +513,11 @@ export async function handleAnalyze(
 
 export async function handleCheckStaged({ cwd: cwdArg, mode = "working" }: { cwd?: string; mode?: string } = {}) {
   const cwd = cwdArg || process.cwd();
+  // Error loudly instead of returning an empty review: outside a git repo there is no diff, so a
+  // "clean" result here would be a false pass the agent can't distinguish from a real one.
+  if (!isGitRepo(cwd)) {
+    throw new Error(`Not a git repository: ${cwd} — diffgate_check_staged reviews a git diff. Pass cwd pointing at the repo root, or use diffgate_analyze for standalone files.`);
+  }
   await initTreeSitter(); // ensure non-JS AST grammars (Python) are loaded before analysis
   const review = reviewChanges(cwd, { mode });
   // Omit `config` from the MCP payload: it bloats the agent context window every call and

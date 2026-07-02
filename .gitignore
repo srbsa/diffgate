@@ -27,6 +27,10 @@ Thumbs.db
 
 # marginal experiment output (large generated LLM outputs; reproducible via diffgate marginal)
 /out/
+
+# internal PR base-rate scan reports (research/ is not shipped)
+research/
+research/out/
 .claude/settings.json
 .claude/settings.local.json
 .claude/output-styles/compressor-slim.md

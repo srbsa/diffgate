@@ -6,7 +6,8 @@
 //     and represents a simple `$x` template as `string_content "$"` + `string_content "x"` (only braced
 //     `${…}` produces an `interpolation` node). This file uses positional helpers and handles both forms.
 //
-// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · ssrf · xxe.
+// Coverage: sql-injection · command-injection · unsafe-deserialization · path-traversal · ssrf · xxe ·
+// permissive-cors.
 // Honest gaps (future): XSS (Android WebView/templating), Android SQLite specifics beyond rawQuery/execSQL,
 // Ktor-specific request sources beyond the common ones.
 
@@ -197,6 +198,50 @@ function isXxeSink(c: { receiver: TsNode | null; method: string }): boolean {
   return false;
 }
 
+// --- permissive CORS -----------------------------------------------------------
+// Wildcard / defaulted / reflected `Access-Control-Allow-Origin` (Spring MVC in Kotlin + Ktor):
+//   • Ktor CORS DSL: `install(CORS) { anyHost() }` — `anyHost()` allows every origin.
+//   • Spring: bare `@CrossOrigin` (its default allows ALL origins) or an explicit `"*"`;
+//     `.allowedOrigins("*")` / `.addAllowedOrigin("*")` and the `…OriginPattern(s)` variants.
+//   • raw header write: `response.setHeader/addHeader(…)` or Ktor `….headers.append(…)` with a
+//     wildcard `*` value or the request's own Origin reflected back.
+const CORS_HEADER_RE = /access-control-allow-origin/i;
+const CORS_STAR_RE = /"\s*\*\s*"/;
+const CORS_ORIGIN_METHODS = new Set([
+  "allowedOrigins", "allowedOriginPatterns", "addAllowedOrigin", "addAllowedOriginPattern",
+  "setAllowedOrigins", "setAllowedOriginPatterns",
+]);
+const CORS_HEADER_SETTERS = new Set(["setHeader", "addHeader", "append", "header"]);
+
+/** True when an `annotation` node is a `@CrossOrigin` that leaves the origin set unrestricted. */
+function isPermissiveCrossOrigin(node: TsNode): boolean {
+  const text = node.text;
+  if (!/@\s*(?:[\w.]+\.)?CrossOrigin\b/.test(text)) return false;
+  const paren = text.indexOf("(");
+  if (paren < 0) return true; // bare @CrossOrigin → default allows all origins
+  const args = text.slice(paren);
+  if (CORS_STAR_RE.test(args)) return true; // explicit `*`
+  // A string argument (implicit value or origins=…) restricts the origin set; only maxAge/methods/… → default ALL.
+  return !/"/.test(args);
+}
+
+/** True when a call configures a permissive (any-origin / reflected) CORS policy. */
+function isCorsPermissiveCall(c: { receiver: TsNode | null; method: string; args: TsNode[] }, root: TsNode): boolean {
+  if (c.receiver === null && c.method === "anyHost") return true; // Ktor CORS DSL
+  if (CORS_ORIGIN_METHODS.has(c.method)) return c.args.some((a) => CORS_STAR_RE.test(a.text));
+  if (CORS_HEADER_SETTERS.has(c.method) && c.args.length >= 2 && CORS_HEADER_RE.test(c.args[0].text)) {
+    return CORS_STAR_RE.test(c.args[1].text) || taintedByRequest(c.args[1], root); // wildcard or reflected
+  }
+  return false;
+}
+
+const CORS_MESSAGE =
+  "CORS is configured to allow any origin — Ktor `anyHost()`, a bare `@CrossOrigin` (its default allows " +
+  "ALL origins), an explicit `\"*\"` origin, or the request's own Origin reflected back into " +
+  "`Access-Control-Allow-Origin`. If cookies or tokens are used, arbitrary websites can make credentialed " +
+  "cross-origin requests to this API. Set an explicit allowlist of trusted origins; never send `*` (or a " +
+  "reflected origin) alongside credentials.";
+
 const XXE_MESSAGE =
   "An XML parser is created (`DocumentBuilderFactory`/`SAXParserFactory`/`XMLInputFactory`/`TransformerFactory`/" +
   "dom4j `SAXReader`) without disabling DOCTYPE declarations and external entities. If it parses attacker-controlled " +
@@ -354,6 +399,26 @@ export const KOTLIN_RULES: TsAstRule[] = [
       if (!c || !isXxeSink(c)) return;
       if (XXE_HARDENED.test(ctx.tsTree!.rootNode.text)) return; // hardened in-file → not a finding
       emitFinding(node, ctx, emit, { sanitized: false, message: XXE_MESSAGE, sanitizedNote: "" });
+    },
+  },
+  {
+    id: "permissive-cors",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "Permissive CORS policy",
+    languages: ["kotlin"],
+    message: CORS_MESSAGE,
+    sinkQuery: "[(call_expression) (annotation)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      let hit = false;
+      if (node.type === "annotation") hit = isPermissiveCrossOrigin(node);
+      else {
+        const c = ktCall(node);
+        if (c) hit = isCorsPermissiveCall(c, ctx.tsTree!.rootNode);
+      }
+      if (!hit) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: CORS_MESSAGE, sanitizedNote: "" });
     },
   },
 ];

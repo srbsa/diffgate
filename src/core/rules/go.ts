@@ -11,8 +11,9 @@
 //     NAME, or (b) a shell program (`sh`/`bash`/`cmd`) with a dynamic argument it will interpret.
 //
 // Coverage (each a separate `tsast` rule sharing the helpers in `tsast-core`):
-//   sql-injection · command-injection · path-traversal.
-// Honest gaps (future): SSRF (`http.Get(taintedURL)`), `text/template`-vs-`html/template` XSS.
+//   sql-injection · command-injection · path-traversal · ssrf · permissive-cors.
+// Honest gaps (future): `text/template`-vs-`html/template` XSS (incl. the `template.HTML(tainted)` cast),
+// unsafe deserialization (gob/yaml on untrusted input).
 
 import type { TsAstRule, TsNode, RuleContext, EmitFn } from "../types.js";
 import {
@@ -212,6 +213,58 @@ const SSRF_MESSAGE =
   "endpoint (`169.254.169.254`) — server-side request forgery. Validate the URL against an allowlist of " +
   "permitted hosts (not a denylist), and re-check the host after any redirects.";
 
+// --- permissive CORS -----------------------------------------------------------
+// Wildcard / reflected `Access-Control-Allow-Origin`. Every trigger is config-string-shaped and
+// distinctive (the same near-zero-FP reason the JS/Python/PHP cors rules earn a finding):
+//   • raw header write: `w.Header().Set/Add("Access-Control-Allow-Origin", "*")`, or the request's own
+//     Origin reflected back (`r.Header.Get("Origin")`) — reflection + credentials is the exploitable combo.
+//   • gin-contrib/cors: `cors.Default()` (allows all origins), `AllowAllOrigins: true`,
+//     `AllowOrigins: []string{"*"}`, `AllowOriginFunc: func(...) bool { return true }`.
+//   • rs/cors: `cors.AllowAll()`, `AllowedOrigins: []string{"*"}`.
+const CORS_HEADER_RE = /access-control-allow-origin/i;
+const GO_ORIGIN_REFLECT = /\.Header\.Get\s*\(\s*"Origin"\s*\)/i;
+const CORS_ALLOW_ALL_FIELD = /^Allow(?:All)?(?:ed)?Origins$/; // AllowAllOrigins | AllowOrigins | AllowedOrigins
+const CORS_ORIGIN_FUNC_FIELD = /^AllowOrigin(?:Request|WithContext)?Func$/;
+const RETURN_TRUE_BODY = /\{\s*return\s+true;?\s*\}\s*$/;
+
+/** `{key, value}` pairs of a composite literal's keyed elements (`cors.Config{A: b, C: d}`). */
+function keyedElements(lit: TsNode): Array<{ key: string; value: TsNode }> {
+  const out: Array<{ key: string; value: TsNode }> = [];
+  for (const el of lit.descendantsOfType("keyed_element")) {
+    const kids = el.namedChildren;
+    if (kids.length >= 2) out.push({ key: kids[0].text, value: kids[kids.length - 1] });
+  }
+  return out;
+}
+
+/** True when a call/composite-literal configures a permissive (any-origin / reflected) CORS policy. */
+function isCorsPermissive(node: TsNode, root: TsNode): boolean {
+  if (node.type === "composite_literal") {
+    return keyedElements(node).some(({ key, value }) =>
+      (key === "AllowAllOrigins" && value.text === "true") ||
+      (CORS_ALLOW_ALL_FIELD.test(key) && key !== "AllowAllOrigins" && /"\s*\*\s*"/.test(value.text)) ||
+      (CORS_ORIGIN_FUNC_FIELD.test(key) && RETURN_TRUE_BODY.test(value.text.replace(/\s+/g, " ")))
+    );
+  }
+  if (node.type !== "call_expression") return false;
+  const c = selectorCall(node);
+  if (!c) return false;
+  // `cors.Default()` (gin-contrib: allows all origins) / `cors.AllowAll()` (rs/cors).
+  if (c.op === "cors" && (c.field === "Default" || c.field === "AllowAll")) return true;
+  // `….Set/Add("Access-Control-Allow-Origin", <"*"|reflected Origin>)`.
+  if (c.field !== "Set" && c.field !== "Add") return false;
+  const args = goArgs(node);
+  if (args.length < 2 || !CORS_HEADER_RE.test(args[0].text)) return false;
+  return stringContent(args[1]).trim() === "*" || coreTaintedByRequest(args[1], root, goProfile, GO_ORIGIN_REFLECT);
+}
+
+const CORS_MESSAGE =
+  "CORS is configured to allow any origin — a wildcard `Access-Control-Allow-Origin: *`, an allow-all " +
+  "config (`AllowAllOrigins: true` / `cors.Default()` / `cors.AllowAll()`), or the request's own Origin " +
+  "reflected back. If cookies or tokens are used, arbitrary websites can make credentialed cross-origin " +
+  "requests to this API. Set an explicit allowlist of trusted origins; never send `*` (or a reflected " +
+  "origin) alongside credentials.";
+
 // --- messages ----------------------------------------------------------------
 
 const SQL_MESSAGE =
@@ -322,6 +375,20 @@ export const GO_RULES: TsAstRule[] = [
       if (!tainted) return;
       const sanitized = pathSanitized(tainted, root);
       emitFinding(node, ctx, emit, { sanitized, message: PT_MESSAGE, sanitizedNote: PT_SANITIZED });
+    },
+  },
+  {
+    id: "permissive-cors",
+    type: "tsast",
+    tier: "orange",
+    blocking: false,
+    title: "Permissive CORS policy",
+    languages: ["go"],
+    message: CORS_MESSAGE,
+    sinkQuery: "[(call_expression) (composite_literal)] @sink",
+    visit(node: TsNode, ctx: RuleContext, emit: EmitFn) {
+      if (!isCorsPermissive(node, ctx.tsTree!.rootNode)) return;
+      emitFinding(node, ctx, emit, { sanitized: false, message: CORS_MESSAGE, sanitizedNote: "" });
     },
   },
 ];
