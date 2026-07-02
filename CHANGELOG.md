@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.5] — 2026-07-02
+
+### Changed
+
+- README-only republish. 0.7.4's README fix landed in commit [2611797](https://github.com/srbsa/diffgate/commit/2611797) after the 0.7.4 tag/publish had already run, so npm/marketplace pages were serving a stale README. No functional changes.
+
 ## [0.7.4] — 2026-07-02
 
 ### Added
