@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "diffgate",
   "display_name": "DiffGate",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "description": "Triage AI-generated diffs — grades changed lines by impact. High-signal, low-noise, deterministic.",
   "long_description": "DiffGate triages AI-generated code diffs so your attention lands where it matters: grades each changed line green/yellow/orange by impact, deterministically, with 0 false blocks. Runs as a CLI, VS Code extension, and this MCP server — the same engine, same rules, everywhere.",
   "author": {

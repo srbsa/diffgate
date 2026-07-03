@@ -7,6 +7,17 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.10] — 2026-07-03
+
+### Fixed
+
+- The `.mcpb` desktop-extension bundle (published via Smithery/Claude Desktop) crashed on startup: `dist/cli.js` statically imported `chokidar` (only used by the `watch` command) and `@babel/parser` (core JS/TS parsing) as externals, so they had to be resolved from `node_modules` at runtime — but the `.mcpb` bundle ships `dist/` only, so `mcp` threw `ERR_MODULE_NOT_FOUND` before any tool could run. `chokidar` is now a dynamic import scoped to `watch`; `@babel/parser` is pure JS with no native/asset loading and is now bundled directly into `dist/cli.js`. Verified against a real unpacked `.mcpb` and a fresh Docker build with `node_modules` deleted.
+- `manifest.json` (the `.mcpb` bundle's static metadata) had an empty `tools` list and no `homepage`/`icon`/`keywords` — likely why Smithery's capability scan of the bundle showed nothing. Populated all 7 tools plus display/homepage/icon/license/keyword metadata.
+
+### Added
+
+- MCP tool definitions (`src/mcp.ts`) now declare `outputSchema` and `annotations` (`readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint`) per the MCP spec, and `tools/call` responses now include `structuredContent` alongside the text content block — improves Smithery's Capability Quality score and gives MCP clients typed output.
+
 ## [0.7.9] — 2026-07-03
 
 ### Added
