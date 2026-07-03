@@ -49,10 +49,11 @@ await esbuild.build({
   logLevel: "info",
 });
 
-// Build 3: Bundle CLI into a single executable. Runtime deps (chokidar, @babel/parser,
-// web-tree-sitter + grammars) are marked external — they live in node_modules and npm installs
-// them as dependencies. web-tree-sitter loads its own .wasm and resolves grammar wasm paths from
-// node_modules at runtime, so it must not be inlined into the bundle.
+// Build 3: Bundle CLI into a single executable. `chokidar` is dynamically imported (watch-only) so
+// it stays a plain runtime dep, not bundled. web-tree-sitter + native grammars load their own .wasm
+// / .node assets from node_modules at runtime, so they must not be inlined either. @babel/parser is
+// pure JS with no native/asset loading — it IS bundled (it's needed by every JS/TS analysis, so the
+// `mcp` / npx entrypoints must not depend on node_modules being present, e.g. the mcpb bundle).
 await esbuild.build({
   entryPoints: ["src/cli.ts"],
   bundle: true,
@@ -60,7 +61,7 @@ await esbuild.build({
   format: "esm",
   target: "node18",
   outfile: "dist/cli.js",
-  external: ["fsevents", "chokidar", "@babel/parser", "web-tree-sitter", "tree-sitter-python", "tree-sitter-php", "tree-sitter-go", "tree-sitter-ruby", "tree-sitter-java", "tree-sitter-c-sharp", "@tree-sitter-grammars/tree-sitter-kotlin"],
+  external: ["fsevents", "chokidar", "web-tree-sitter", "tree-sitter-python", "tree-sitter-php", "tree-sitter-go", "tree-sitter-ruby", "tree-sitter-java", "tree-sitter-c-sharp", "@tree-sitter-grammars/tree-sitter-kotlin"],
   banner: { js: "#!/usr/bin/env node" },
   sourcemap: true,
   define,

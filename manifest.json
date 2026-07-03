@@ -1,0 +1,72 @@
+{
+  "manifest_version": "0.3",
+  "name": "diffgate",
+  "display_name": "DiffGate",
+  "version": "0.7.9",
+  "description": "Triage AI-generated diffs — grades changed lines by impact. High-signal, low-noise, deterministic.",
+  "long_description": "DiffGate triages AI-generated code diffs so your attention lands where it matters: grades each changed line green/yellow/orange by impact, deterministically, with 0 false blocks. Runs as a CLI, VS Code extension, and this MCP server — the same engine, same rules, everywhere.",
+  "author": {
+    "name": "srbsa"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/srbsa/diffgate"
+  },
+  "homepage": "https://github.com/srbsa/diffgate#readme",
+  "icon": "icon.png",
+  "license": "Apache-2.0",
+  "keywords": [
+    "code-review",
+    "code-review-triage",
+    "ai-code-review",
+    "coding-agent",
+    "mcp",
+    "claude-code",
+    "cursor",
+    "pre-commit-hook",
+    "security-gate",
+    "diff-analysis",
+    "static-analysis",
+    "secrets-detection",
+    "sql-injection",
+    "vscode"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/cli.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/cli.js", "mcp"]
+    }
+  },
+  "tools": [
+    {
+      "name": "diffgate_analyze",
+      "description": "Analyze a file for code review findings. Only flags risk on lines changed vs the git baseline (diff-aware). Pass content to analyze unsaved or generated code before it is written to disk."
+    },
+    {
+      "name": "diffgate_check_staged",
+      "description": "Check all staged (or working-tree) changes in a git repo for DiffGate findings. Returns overall tier, counts, per-file findings, and an agent autonomy verdict (pass/review/blocked with a rung per finding)."
+    },
+    {
+      "name": "diffgate_deep_review",
+      "description": "Run an agentic deep review on a single high-impact (orange) finding, using real repo tools (grep, read_file, find_references, git_blame) to investigate blast radius before rendering a verdict."
+    },
+    {
+      "name": "diffgate_explain",
+      "description": "Get a concise AI explanation for a DiffGate finding — a single LLM call, faster than diffgate_deep_review."
+    },
+    {
+      "name": "diffgate_capabilities",
+      "description": "Report which DiffGate layers are active (core / code graph / LLM), which tools are callable right now, and the agent autonomy budget."
+    },
+    {
+      "name": "diffgate_guidelines",
+      "description": "Review the diff against the repo's own coding guideline files (AGENTS.md, CLAUDE.md, .cursorrules, etc.), scoped per directory."
+    },
+    {
+      "name": "diffgate_feedback",
+      "description": "Record a reviewer's verdict on a finding so DiffGate learns — dismiss suppresses noise, confirm marks a real catch. Stored in .diffgate/learnings.json."
+    }
+  ]
+}

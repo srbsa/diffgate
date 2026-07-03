@@ -121,6 +121,7 @@ export function createWriter(stream: Writable): (obj: unknown) => void {
 export const TOOL_DEFS = [
   {
     name: "diffgate_analyze",
+    title: "Analyze a file",
     description:
       "Analyze a file for code review findings. Only flags risk on lines changed vs the git baseline (diff-aware). " +
       "Pass `content` to analyze unsaved or generated code before it is written to disk. " +
@@ -135,9 +136,20 @@ export const TOOL_DEFS = [
       },
       required: ["filePath"],
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        tier: { type: "string", enum: ["green", "yellow", "orange"], description: "Overall risk tier for the file." },
+        findings: { type: "array", items: { type: "object" }, description: "Per-line findings, each with ruleId, tier, line, and message." },
+        _diffgate: { type: "object", description: "Capability hint: which layers (core/graph/llm) produced this result." },
+      },
+      required: ["tier", "findings"],
+    },
+    annotations: { title: "Analyze a file", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: "diffgate_check_staged",
+    title: "Check staged or working diff",
     description:
       "Check all staged (or working-tree) changes in a git repo for DiffGate findings. " +
       "Returns overall tier, counts, and per-file findings across the whole diff, plus a `verdict` block " +
@@ -150,9 +162,21 @@ export const TOOL_DEFS = [
         mode: { type: "string", enum: ["staged", "working"], description: "Check staged-only or all working-tree changes. Default: working." },
       },
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        tier: { type: "string", enum: ["green", "yellow", "orange"], description: "Overall risk tier across the diff." },
+        files: { type: "array", items: { type: "object" }, description: "Per-file review results with findings." },
+        verdict: { type: "object", description: "Agent autonomy ladder: pass/review/blocked, with a rung per finding." },
+        _diffgate: { type: "object", description: "Capability hint: which layers (core/graph/llm) produced this result." },
+      },
+      required: ["tier", "files"],
+    },
+    annotations: { title: "Check staged or working diff", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: "diffgate_deep_review",
+    title: "Deep-review a finding",
     description:
       "Run an agentic deep review on a single high-impact (orange) finding. " +
       "The model uses real repo tools (grep, read_file, find_references, git_blame) to investigate blast radius before rendering a verdict.",
@@ -167,9 +191,20 @@ export const TOOL_DEFS = [
       },
       required: ["finding", "filePath", "cwd"],
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        verdict: { type: "string", description: "The model's final verdict on the finding." },
+        rationale: { type: "string", description: "Why the model reached that verdict." },
+        toolSteps: { type: "array", items: { type: "object" }, description: "The investigation trace (tool calls the model made)." },
+      },
+      required: ["verdict"],
+    },
+    annotations: { title: "Deep-review a finding", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   {
     name: "diffgate_explain",
+    title: "Explain a finding",
     description:
       "Get a concise AI explanation for a DiffGate finding. " +
       "Faster than diffgate_deep_review — a single LLM call with no tool loops.",
@@ -183,9 +218,16 @@ export const TOOL_DEFS = [
       },
       required: ["finding", "cwd"],
     },
+    outputSchema: {
+      type: "object",
+      properties: { explanation: { type: "string", description: "A concise plain-language explanation of the finding." } },
+      required: ["explanation"],
+    },
+    annotations: { title: "Explain a finding", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   {
     name: "diffgate_capabilities",
+    title: "Report active capabilities",
     description:
       "Report which DiffGate layers are active (core / code graph / LLM), which tools you can call right now " +
       "without an error, and the agent autonomy budget (fix limit, escalation, trust source). Call this once up " +
@@ -194,9 +236,19 @@ export const TOOL_DEFS = [
       type: "object",
       properties: { cwd: { type: "string", description: "Repo root. Defaults to process.cwd()." } },
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        layers: { type: "object", description: "Which of core/graph/llm are active." },
+        tools: { type: "array", items: { type: "string" }, description: "Tool names callable without error right now." },
+        agent: { type: "object", description: "Autonomy budget: fix limit, escalation, trust source." },
+      },
+    },
+    annotations: { title: "Report active capabilities", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: "diffgate_guidelines",
+    title: "Review against repo guidelines",
     description:
       "Review the diff against the repo's own coding guideline files (AGENTS.md, CLAUDE.md, .cursorrules, etc.), " +
       "scoped per directory (nearest file wins). " +
@@ -211,9 +263,19 @@ export const TOOL_DEFS = [
         mode: { type: "string", enum: ["staged", "working"], description: "Diff scope. Default: working." },
       },
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["host", "model"], description: "'host' = self-review (advisory only); 'model' = an external provider produced findings." },
+        groups: { type: "array", items: { type: "object" }, description: "Per-guideline-file groups of hunks (host mode) or findings (model mode)." },
+      },
+      required: ["mode"],
+    },
+    annotations: { title: "Review against repo guidelines", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "diffgate_feedback",
+    title: "Record a reviewer verdict",
     description:
       "Record a reviewer's verdict on a finding so DiffGate learns. verdict 'dismiss' suppresses that same flagged " +
       "code (ruleId + code) in future reviews (noise reduction); 'confirm' marks it as a real, valued catch. " +
@@ -230,6 +292,12 @@ export const TOOL_DEFS = [
       },
       required: ["ruleId", "code", "verdict"],
     },
+    outputSchema: {
+      type: "object",
+      properties: { recorded: { type: "object", description: "The stored learnings entry (ruleId, code, verdict, note, timestamp)." } },
+      required: ["recorded"],
+    },
+    annotations: { title: "Record a reviewer verdict", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
 ];
 
@@ -691,7 +759,8 @@ export async function dispatchMessage(msg: unknown, send: (obj: unknown) => void
       }
       try {
         const result = await handler(args || {});
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: false } });
+        const structured = result && typeof result === "object" ? { structuredContent: result } : {};
+        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], ...structured, isError: false } });
       } catch (e) {
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${(e as Error).message}` }], isError: true } });
       }

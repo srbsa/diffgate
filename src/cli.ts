@@ -2,7 +2,6 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { fileURLToPath } from "url";
-import chokidar from "chokidar";
 import { toSarif } from "./sarif.js";
 
 import {
@@ -522,7 +521,11 @@ async function cmdScan(pos: string[], flags: Record<string, string | true>): Pro
   if (failOn !== undefined) exitGate(allFindings, failOn, flags);
 }
 
-function cmdWatch(pos: string[], _flags: Record<string, string | true>): void {
+async function cmdWatch(pos: string[], _flags: Record<string, string | true>): Promise<void> {
+  // Dynamic import: chokidar is a heavy optional dep only `watch` needs. A static import would pull
+  // it into every cli.js invocation (including the mcpb/Smithery bundle, which ships dist/ without
+  // node_modules and crashes on unresolved static imports before any try/catch can run).
+  const { default: chokidar } = await import("chokidar");
   const cwd = path.resolve(pos[0] || ".");
   const { config, path: cfgPath } = loadConfig(cwd);
   const git = isGitRepo(cwd);
@@ -1188,7 +1191,7 @@ async function main(): Promise<void> {
     switch (cmd) {
       case "check": return await cmdCheck(pos, flags);
       case "scan": return await cmdScan(pos, flags);
-      case "watch": return cmdWatch(pos, flags);
+      case "watch": return await cmdWatch(pos, flags);
       case "report": return await cmdReport(pos, flags);
       case "bench": return cmdBench(pos, flags);
       case "marginal": return await cmdMarginal(pos, flags);
