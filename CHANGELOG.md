@@ -7,6 +7,16 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.8] — 2026-07-03
+
+### Fixed
+
+- `dependency-manifest` no longer fires on version-only bumps, scripts edits, or other metadata churn — it now checks which *lines* of the manifest changed and stays quiet unless a dependency-declaring line is in the diff (release commits were tripping it on every bump; a version bump changes zero packages, so the "review added/updated/removed packages" advisory was unactionable noise). Section-aware per manifest: package.json/composer.json (top-level dep keys — dependencies/devDependencies/peerDependencies/optionalDependencies/overrides/resolutions/pnpm, require/require-dev/replace/conflict/provide — via a string-aware brace scan so braces inside script strings can't corrupt tracking, Allman-style `"key":`-then-brace included), Cargo.toml/pyproject.toml (any `[…dependencies…]` section incl. target-specific and PEP 621 `dependencies = [...]` arrays, plus PEP 518 `[build-system] requires`; `requires-python` stays quiet), go.mod (require/replace/exclude/`tool` directives, inline + block), pom.xml (`<dependencies>`/`<dependencyManagement>`; the project's own `<version>` **and** `<parent>` stay quiet — multi-module reactor releases bump the parent version in every child pom), build.gradle (`dependencies {}` block + bare configuration lines like buildscript `classpath`), requirements.txt/Gemfile (comment/blank-only edits stay quiet). New/untracked manifests still fire whole-file as before; the finding now anchors to the first changed dependency line instead of the first changed line.
+
+### Added
+
+- `build.gradle.kts` is now recognized as a dependency manifest (the Kotlin DSL was missing from the manifest list entirely, so Gradle Kotlin projects never got the advisory).
+
 ## [0.7.7] — 2026-07-02
 
 ### Fixed

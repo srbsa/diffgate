@@ -3,11 +3,12 @@ import { walk } from "../parsers/javascript.js";
 import { hasAstSupport } from "../parsers/index.js";
 import { compileTsQuery } from "../parsers/treesitter.js";
 import { BUILTIN_RULES, deprecatedRules, customPatternRules, legacyOrangeRules, RULE_PACKS } from "./builtin.js";
+import { dependencyRelevantLines } from "./manifests.js";
 import type { Rule, FileRule, PatternRule, AstRule, TsAstRule, RuleContext, EmitFn, Finding, FindingEmitArg, AstNode, TsNode, TsTree, Config } from "../types.js";
 
 const DEPENDENCY_MANIFESTS = new Set([
   "package.json", "requirements.txt", "pyproject.toml", "go.mod",
-  "gemfile", "pom.xml", "build.gradle", "cargo.toml", "composer.json",
+  "gemfile", "pom.xml", "build.gradle", "build.gradle.kts", "cargo.toml", "composer.json",
 ]);
 
 const FILE_RULES: FileRule[] = [
@@ -31,7 +32,15 @@ const FILE_RULES: FileRule[] = [
     message: "A dependency manifest changed. Review added/updated/removed packages for license, bundle size, and supply-chain risk.",
     detect(ctx: RuleContext, emit: EmitFn) {
       const base = path.basename(ctx.filePath).toLowerCase();
-      if (DEPENDENCY_MANIFESTS.has(base)) emit({});
+      if (!DEPENDENCY_MANIFESTS.has(base)) return;
+      // Only fire when a *dependency* line changed — a version bump, scripts edit, or other
+      // metadata churn in the manifest is not a supply-chain event (release commits were
+      // tripping this on every bump). No diff info (new file) keeps the old fire-always path.
+      if (!ctx.changedLines) { emit({}); return; }
+      const relevant = dependencyRelevantLines(base, ctx.lines);
+      if (!relevant) { emit({}); return; }
+      const hit = [...ctx.changedLines].filter((n) => relevant[n - 1]).sort((a, b) => a - b)[0];
+      if (hit) emit({ line: hit });
     },
   },
 ];

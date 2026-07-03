@@ -2,7 +2,7 @@
   "name": "diffgate",
   "displayName": "DiffGate",
   "description": "Triage for AI-generated code review — grades each changed line green/yellow/orange by impact so you review what matters. High-signal, low-noise (0 false blocks), deterministic.",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "author": {
     "name": "srbsa",
     "url": "https://github.com/srbsa"

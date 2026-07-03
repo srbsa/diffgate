@@ -85,7 +85,7 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 | `raw-query` | 🟡 | `db.query()`, bare SQL keywords; escalates when reachable |
 | `network-call` | 🟡 | `fetch`, `axios`, `requests.*` |
 | `migration-file` | 🟡 | migration file names |
-| `dependency-manifest` | 🟡 | `package.json`, `requirements.txt`, etc. |
+| `dependency-manifest` | 🟡 | dependency-declaring lines in `package.json`, `pyproject.toml`, `go.mod`, `pom.xml`, `build.gradle(.kts)`, `Cargo.toml`, `composer.json`, `Gemfile`, `requirements.txt` — version bumps, scripts edits, and other metadata churn stay quiet |
 | `leftover-debugger` | 🟡 | `debugger` statement (JS/TS) |
 | `debug-logging` | 🟢 | `console.log`, `fmt.Print`, `System.out.println` |
 | `todo-marker` | 🟢 | `TODO`, `FIXME`, `HACK` |

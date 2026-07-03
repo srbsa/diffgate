@@ -105,6 +105,144 @@ test("FILE rules honor the diff gate (no lingering manifest finding)", () => {
   assert.ok(find(fresh, "dependency-manifest"), "manifest finding on a brand-new file");
 });
 
+test("dependency-manifest is section-aware: version-only bumps stay quiet", () => {
+  const pkg = [
+    "{",                                        // 1
+    '  "name": "x",',                           // 2
+    '  "version": "0.7.8",',                    // 3
+    '  "scripts": { "build": "echo {}" },',     // 4
+    '  "dependencies": {',                      // 5
+    '    "left-pad": "^1.0.0"',                 // 6
+    "  },",                                     // 7
+    '  "devDependencies": { "vitest": "^3" }',  // 8
+    "}",                                        // 9
+    "",
+  ].join("\n");
+  // version bump only: quiet (this is the release-commit noise case)
+  const bump = analyze({ filePath: "package.json", content: pkg, changedLines: new Set([3]), config: cfg });
+  assert.equal(find(bump, "dependency-manifest"), undefined, "version-only bump must not fire");
+  // scripts edit only: quiet (braces inside the script string must not break section tracking)
+  const scripts = analyze({ filePath: "package.json", content: pkg, changedLines: new Set([4]), config: cfg });
+  assert.equal(find(scripts, "dependency-manifest"), undefined, "scripts-only edit must not fire");
+  // dep line changed: fires, anchored to the dep line even when the version also changed
+  const dep = analyze({ filePath: "package.json", content: pkg, changedLines: new Set([3, 6]), config: cfg });
+  const f = find(dep, "dependency-manifest");
+  assert.ok(f, "dependency change must fire");
+  assert.equal(f.line, 6, "finding anchors to the dependency line, not the version bump");
+  // single-line dep section: fires
+  const oneLine = analyze({ filePath: "package.json", content: pkg, changedLines: new Set([8]), config: cfg });
+  assert.ok(find(oneLine, "dependency-manifest"), "single-line devDependencies change must fire");
+});
+
+test("dependency-manifest section-awareness covers non-JSON manifests", () => {
+  const cargo = [
+    "[package]",              // 1
+    'name = "x"',             // 2
+    'version = "1.2.3"',      // 3
+    "",                       // 4
+    "[dependencies]",         // 5
+    'serde = "1"',            // 6
+  ].join("\n");
+  const cargoBump = analyze({ filePath: "Cargo.toml", content: cargo, changedLines: new Set([3]), config: cfg });
+  assert.equal(find(cargoBump, "dependency-manifest"), undefined, "Cargo.toml version bump must not fire");
+  const cargoDep = analyze({ filePath: "Cargo.toml", content: cargo, changedLines: new Set([6]), config: cfg });
+  assert.ok(find(cargoDep, "dependency-manifest"), "Cargo.toml dep change must fire");
+
+  const pyproject = [
+    "[project]",                  // 1
+    'name = "x"',                 // 2
+    'version = "1.2.3"',          // 3
+    "dependencies = [",           // 4
+    '  "requests>=2",',           // 5
+    "]",                          // 6
+  ].join("\n");
+  const pyBump = analyze({ filePath: "pyproject.toml", content: pyproject, changedLines: new Set([3]), config: cfg });
+  assert.equal(find(pyBump, "dependency-manifest"), undefined, "pyproject version bump must not fire");
+  const pyDep = analyze({ filePath: "pyproject.toml", content: pyproject, changedLines: new Set([5]), config: cfg });
+  assert.ok(find(pyDep, "dependency-manifest"), "PEP 621 dependencies array change must fire");
+
+  const gomod = [
+    "module example.com/x",   // 1
+    "",                       // 2
+    "go 1.22",                // 3
+    "",                       // 4
+    "require (",              // 5
+    "\tgithub.com/a/b v1.0.0",// 6
+    ")",                      // 7
+  ].join("\n");
+  const goDirective = analyze({ filePath: "go.mod", content: gomod, changedLines: new Set([3]), config: cfg });
+  assert.equal(find(goDirective, "dependency-manifest"), undefined, "go directive bump must not fire");
+  const goDep = analyze({ filePath: "go.mod", content: gomod, changedLines: new Set([6]), config: cfg });
+  assert.ok(find(goDep, "dependency-manifest"), "go.mod require change must fire");
+
+  const pom = [
+    "<project>",                        // 1
+    "  <version>1.2.3</version>",       // 2
+    "  <dependencies>",                 // 3
+    "    <dependency>",                 // 4
+    "      <artifactId>x</artifactId>", // 5
+    "    </dependency>",                // 6
+    "  </dependencies>",                // 7
+    "</project>",                       // 8
+  ].join("\n");
+  const pomBump = analyze({ filePath: "pom.xml", content: pom, changedLines: new Set([2]), config: cfg });
+  assert.equal(find(pomBump, "dependency-manifest"), undefined, "pom project version bump must not fire");
+  const pomDep = analyze({ filePath: "pom.xml", content: pom, changedLines: new Set([5]), config: cfg });
+  assert.ok(find(pomDep, "dependency-manifest"), "pom dependency change must fire");
+
+  const gradle = [
+    "version = '1.2.3'",                      // 1
+    "dependencies {",                         // 2
+    "  implementation 'com.foo:bar:1.0'",     // 3
+    "}",                                      // 4
+  ].join("\n");
+  const gradleBump = analyze({ filePath: "build.gradle", content: gradle, changedLines: new Set([1]), config: cfg });
+  assert.equal(find(gradleBump, "dependency-manifest"), undefined, "gradle version bump must not fire");
+  const gradleDep = analyze({ filePath: "build.gradle", content: gradle, changedLines: new Set([3]), config: cfg });
+  assert.ok(find(gradleDep, "dependency-manifest"), "gradle dependency change must fire");
+
+  // requirements.txt: every non-comment line is a dep; comment-only edits stay quiet
+  const reqs = "# pinned\nrequests==2.31.0\n";
+  const reqComment = analyze({ filePath: "requirements.txt", content: reqs, changedLines: new Set([1]), config: cfg });
+  assert.equal(find(reqComment, "dependency-manifest"), undefined, "requirements comment edit must not fire");
+  const reqDep = analyze({ filePath: "requirements.txt", content: reqs, changedLines: new Set([2]), config: cfg });
+  assert.ok(find(reqDep, "dependency-manifest"), "requirements dep change must fire");
+});
+
+test("dependency-manifest bug-bash edges: Allman JSON, pom parent, gradle.kts, PEP 518, go tool", () => {
+  // bare `"dependencies":` with the brace on the next line must keep the section alive
+  const allman = '{\n"dependencies":\n{\n"a": "1"\n}\n}\n';
+  const allmanDep = analyze({ filePath: "package.json", content: allman, changedLines: new Set([4]), config: cfg });
+  assert.ok(find(allmanDep, "dependency-manifest"), "Allman-style dependencies object must fire");
+
+  // maven multi-module reactor release bumps <parent><version> in every child: must stay quiet
+  const pom = [
+    "<project>", "  <parent>", "    <version>1.2.3</version>", "  </parent>",
+    "  <dependencies>", "    <dependency><artifactId>x</artifactId></dependency>", "  </dependencies>", "</project>",
+  ].join("\n");
+  const parentBump = analyze({ filePath: "pom.xml", content: pom, changedLines: new Set([3]), config: cfg });
+  assert.equal(find(parentBump, "dependency-manifest"), undefined, "reactor parent-version bump must not fire");
+
+  // Kotlin DSL build file is a manifest too
+  const kts = 'version = "1"\ndependencies {\n  implementation("com.foo:bar:1.0")\n}\n';
+  const ktsBump = analyze({ filePath: "build.gradle.kts", content: kts, changedLines: new Set([1]), config: cfg });
+  assert.equal(find(ktsBump, "dependency-manifest"), undefined, "gradle.kts version bump must not fire");
+  const ktsDep = analyze({ filePath: "build.gradle.kts", content: kts, changedLines: new Set([3]), config: cfg });
+  assert.ok(find(ktsDep, "dependency-manifest"), "gradle.kts dependency change must fire");
+
+  // PEP 518 build-system requires = build-time packages; requires-python is a constraint, not a dep
+  const py = '[build-system]\nrequires = ["setuptools>=61"]\n\n[project]\nrequires-python = ">=3.9"\nversion = "1"\n';
+  const buildReq = analyze({ filePath: "pyproject.toml", content: py, changedLines: new Set([2]), config: cfg });
+  assert.ok(find(buildReq, "dependency-manifest"), "build-system requires change must fire");
+  const reqPy = analyze({ filePath: "pyproject.toml", content: py, changedLines: new Set([5]), config: cfg });
+  assert.equal(find(reqPy, "dependency-manifest"), undefined, "requires-python edit must not fire");
+
+  // go 1.24 tool directives add to go.sum
+  const gomod = "module x\n\ngo 1.24\n\ntool golang.org/x/tools/cmd/stringer\n";
+  const tool = analyze({ filePath: "go.mod", content: gomod, changedLines: new Set([5]), config: cfg });
+  assert.ok(find(tool, "dependency-manifest"), "go.mod tool directive change must fire");
+});
+
 test("language-agnostic rules work on Python", () => {
   const res = analyze({
     filePath: "tool.py",
