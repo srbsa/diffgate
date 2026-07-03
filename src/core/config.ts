@@ -116,8 +116,11 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   cfg.gate = { ...DEFAULT_CONFIG.gate, ...(raw.gate || {}) };
   cfg.gate.agent = { ...DEFAULT_CONFIG.gate.agent, ...((raw.gate || {}).agent || {}) };
   cfg.rules = { ...(raw.rules || {}) };
+  for (const [id, ov] of Object.entries(cfg.rules)) {
+    if (ov && typeof ov === "object") cfg.rules[id] = sanitizePathScope(ov);
+  }
   cfg.deprecated = Array.isArray(raw.deprecated) ? raw.deprecated : DEFAULT_CONFIG.deprecated;
-  cfg.customPatterns = Array.isArray(raw.customPatterns) ? raw.customPatterns : [];
+  cfg.customPatterns = Array.isArray(raw.customPatterns) ? raw.customPatterns.map(sanitizePathScope) : [];
   cfg.ignore = Array.isArray(raw.ignore) ? raw.ignore : DEFAULT_CONFIG.ignore;
   cfg.orangePatterns = raw.orangePatterns;
   cfg.testCommand = (raw.testCommand as string | null | undefined) ?? DEFAULT_CONFIG.testCommand;
@@ -261,6 +264,34 @@ function globToRegExp(glob: string): RegExp {
   re = re.replace(/ SLASH /g, "(?:.*/)?");
   re = re.replace(/ DSTAR /g, ".*");
   return new RegExp("^" + re + "$");
+}
+
+/** Drop malformed per-rule path scoping: `include`/`exclude` must be string arrays; a non-array
+ *  value is ignored (rule applies everywhere) rather than failing the whole config load. */
+function sanitizePathScope<T extends { include?: unknown; exclude?: unknown }>(obj: T): T {
+  const out = { ...obj };
+  for (const k of ["include", "exclude"] as const) {
+    const v = out[k];
+    if (v === undefined) continue;
+    if (!Array.isArray(v)) delete out[k];
+    else (out as Record<string, unknown>)[k] = v.filter((g) => typeof g === "string");
+  }
+  return out;
+}
+
+/** Per-rule path scoping (CustomPattern / `rules`-override `include`/`exclude`). Globs use the
+ *  `ignore` syntax against the repo-relative path; a relative glob also floats to a segment
+ *  boundary (`**\/` implied) so the absolute paths some surfaces pass into `analyze` match the
+ *  same way. `exclude` wins over `include`; an empty or missing `include` means all files. */
+export function matchesPathScope(filePath: string, scope: { include?: string[]; exclude?: string[] }): boolean {
+  const norm = filePath.split(path.sep).join("/");
+  const hit = (glob: string): boolean => {
+    if (globToRegExp(glob).test(norm)) return true;
+    return !glob.startsWith("/") && !glob.startsWith("**") && globToRegExp("**/" + glob).test(norm);
+  };
+  if (Array.isArray(scope.exclude) && scope.exclude.some(hit)) return false;
+  if (Array.isArray(scope.include) && scope.include.length > 0 && !scope.include.some(hit)) return false;
+  return true;
 }
 
 export function isIgnored(filePath: string, config: Config, cwd: string): boolean {

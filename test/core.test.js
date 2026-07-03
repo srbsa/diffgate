@@ -66,6 +66,45 @@ test("flags public API surface changes", () => {
   assert.ok(find(res, "public-api-change"));
 });
 
+test("tooling config files are not public API surface", () => {
+  for (const filePath of [".eslintrc.js", "config/.eslintrc.cjs", "jest.config.js", "babel.config.cjs", "packages/app/vite.config.ts", ".prettierrc.js"]) {
+    const res = analyze({
+      filePath,
+      content: `module.exports = { root: true };\n`,
+      config: cfg,
+    });
+    assert.equal(find(res, "public-api-change"), undefined, `${filePath} should not flag public-api-change`);
+  }
+  // still fires on real modules using CJS exports
+  const res = analyze({
+    filePath: "lib/util.js",
+    content: `module.exports = { getThing };\n`,
+    config: cfg,
+  });
+  assert.ok(find(res, "public-api-change"), "CJS export in a regular module should still flag");
+});
+
+test("docs files run only scanRaw rules — prose does not trip code-shaped patterns", () => {
+  const res = analyze({
+    filePath: "CHANGELOG.md",
+    content: `## 1.2.0\n\n- Upgraded oauth2-provider to v3\n- DROP TABLE syntax documented for cleanup scripts\n- Uses fetch( under the hood\n`,
+    config: cfg,
+  });
+  assert.equal(find(res, "auth-crypto"), undefined, "prose 'oauth2-provider' should not trip auth-crypto");
+  assert.equal(find(res, "db-schema-destructive"), undefined);
+  assert.equal(find(res, "network-call"), undefined);
+});
+
+test("docs files still catch leaked secrets and TODO markers (scanRaw)", () => {
+  const res = analyze({
+    filePath: "docs/setup.md",
+    content: `Set your key: ghp_${"a".repeat(36)}\n\nTODO: rotate this\n`,
+    config: cfg,
+  });
+  assert.ok(find(res, "hardcoded-secret"), "a secret pasted in docs is still a leak");
+  assert.ok(find(res, "todo-marker"));
+});
+
 test("detects exported signature drift vs previous content", () => {
   const res = analyze({
     filePath: "math.js",
@@ -613,4 +652,71 @@ test("capabilityHint is a compact 3-field meta", () => {
   assert.deepEqual(Object.keys(hint).sort(), ["agentMode", "graph", "llm"]);
   assert.equal(hint.llm, false);
   assert.equal(hint.agentMode, "advisory");
+});
+
+// --- Per-rule path scoping (include/exclude) ---
+
+test("custom pattern with exclude skips that file but fires elsewhere", () => {
+  const config = {
+    ...cfg,
+    customPatterns: [{
+      id: "no-direct-process-env",
+      pattern: "process\\.env\\.",
+      exclude: ["src/core/config.ts"],
+    }],
+  };
+  const content = `const x = process.env.HOME;\n`;
+  const excluded = analyze({ filePath: "src/core/config.ts", content, config });
+  assert.ok(!find(excluded, "no-direct-process-env"), "excluded path must not fire");
+  const elsewhere = analyze({ filePath: "src/core/other.ts", content, config });
+  assert.ok(find(elsewhere, "no-direct-process-env"), "non-excluded path fires");
+  // Surfaces pass absolute paths — the same repo-relative glob must still exclude.
+  const abs = analyze({ filePath: "/repo/src/core/config.ts", content, config });
+  assert.ok(!find(abs, "no-direct-process-env"), "absolute path resolves to the same scope");
+});
+
+test("custom pattern include restricts where it runs; empty include = all files", () => {
+  const mk = (include) => ({
+    ...cfg,
+    customPatterns: [{ id: "srv-only", pattern: "listen\\(", include }],
+  });
+  const content = `app.listen(3000);\n`;
+  assert.ok(find(analyze({ filePath: "server/app.js", content, config: mk(["server/**"]) }), "srv-only"));
+  assert.ok(!find(analyze({ filePath: "client/app.js", content, config: mk(["server/**"]) }), "srv-only"));
+  assert.ok(find(analyze({ filePath: "client/app.js", content, config: mk([]) }), "srv-only"), "empty include = all files");
+});
+
+test("builtin rule override with include/exclude path-scopes the rule", () => {
+  const content = `// TODO: later\n`;
+  const inc = { ...cfg, rules: { "todo-marker": { include: ["src/**"] } } };
+  assert.ok(find(analyze({ filePath: "src/a.js", content, config: inc }), "todo-marker"));
+  assert.ok(!find(analyze({ filePath: "tools/a.js", content, config: inc }), "todo-marker"));
+  const exc = { ...cfg, rules: { "todo-marker": { exclude: ["tools/**"] } } };
+  assert.ok(find(analyze({ filePath: "src/a.js", content, config: exc }), "todo-marker"));
+  assert.ok(!find(analyze({ filePath: "tools/a.js", content, config: exc }), "todo-marker"));
+});
+
+test("exclude wins over include when both match", () => {
+  const config = {
+    ...cfg,
+    rules: { "todo-marker": { include: ["src/**"], exclude: ["src/generated/**"] } },
+  };
+  const content = `// TODO: later\n`;
+  assert.ok(find(analyze({ filePath: "src/a.js", content, config }), "todo-marker"));
+  assert.ok(!find(analyze({ filePath: "src/generated/a.js", content, config }), "todo-marker"));
+});
+
+test("loadConfig tolerates malformed include/exclude values", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grg-scope-"));
+  fs.writeFileSync(path.join(dir, ".diffgate.json"), JSON.stringify({
+    customPatterns: [{ id: "cp", pattern: "X", include: "not-an-array", exclude: { nope: 1 } }],
+    rules: { "todo-marker": { exclude: "also-not-an-array" } },
+  }));
+  const { config } = loadConfig(dir);
+  assert.equal(config.customPatterns[0].include, undefined, "non-array include dropped");
+  assert.equal(config.customPatterns[0].exclude, undefined, "non-array exclude dropped");
+  assert.equal(config.rules["todo-marker"].exclude, undefined, "non-array override exclude dropped");
+  // And the rule still applies everywhere (malformed scope must not disable it).
+  const res = analyze({ filePath: "a.js", content: `const y = X;\n`, config });
+  assert.ok(find(res, "cp"));
 });

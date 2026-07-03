@@ -126,7 +126,7 @@ Run `diffgate --help` for the full list (`report`, `bench`, `stats`, `graph`, `m
 
 - **Diff-aware:** `git diff` (CLI) or an in-memory LCS diff (editor, accurate on unsaved buffers) finds changed lines; findings only report on those lines.
 - **Real AST where it counts:** `@babel/parser` (JS/TS) and tree-sitter (Python, PHP, Go, Ruby, Java, C#, Kotlin — via WASM, no native build) power precise rules: deprecated calls aren't matched inside comments or strings, exported-signature changes are detected structurally, and SQL injection is **sink-targeted, parameter-aware, and sanitizer-aware** — `cur.execute(f"… {uid}")` / `$pdo->query("… $id")` block, while `cur.execute("… %s", (uid,))`, `$pdo->prepare("… ?")`, a single-quoted `'… $id'`, and a `SELECT` in a log line don't.
-- **A deterministic floor everywhere else:** comment-aware pattern rules for secrets, destructive/schema changes, auth/crypto, dynamic execution / shell-out, raw queries, and network calls across Go, Java, Ruby, and any text. Commented-out code (`# os.system(x)`) isn't flagged; a secret committed *inside* a comment still is.
+- **A deterministic floor everywhere else:** comment-aware pattern rules for secrets, destructive/schema changes, auth/crypto, dynamic execution / shell-out, raw queries, and network calls across Go, Java, Ruby, and any text. Commented-out code (`# os.system(x)`) isn't flagged; a secret committed *inside* a comment still is. Docs/prose files (`.md`, `.rst`, …) are held to the same standard: the word "oauth2-provider" in a changelog isn't auth code, but a key pasted in a README is still a leak.
 - **Earned blocking:** broad cross-language injection advisories for the non-AST languages (Ruby `#{}`, Go/Ruby shell-out) escalate to blocking **only when the optional code graph proves reachability from an untrusted entry point** — community CodeGraph, no Pro taint engine required. (JS/TS, Python, and PHP block on local AST evidence and don't need this.)
 - **The gate:** on a high-impact change, DiffGate runs your `testCommand` and shows the actual exit code and output.
 - **Learnings:** `diffgate feedback` records dismiss/confirm verdicts; dismissed findings (same rule + same code) are suppressed everywhere. Stored in `.diffgate/learnings.json`; commit it to share across the team.
@@ -180,7 +180,7 @@ Sink classes per Deep-AST language (full detail — every sanitizer and safe-for
 }
 ```
 
-Full schema, the built-in rule table, LLM providers, and per-rule tuning: **[docs/CONFIG.md](docs/CONFIG.md)**.
+Any rule — built-in or custom — can be path-scoped with `include`/`exclude` globs, the escape hatch for the one file where a forbidden idiom is legitimate (e.g. `process.env` inside the config loader itself). Full schema, the built-in rule table, LLM providers, and per-rule tuning: **[docs/CONFIG.md](docs/CONFIG.md)**.
 
 ---
 

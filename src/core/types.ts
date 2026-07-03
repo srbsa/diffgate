@@ -281,6 +281,11 @@ export interface CustomPattern {
   title?: string;
   languages?: string[];
   message?: string;
+  /** Only run on files whose repo-relative path matches one of these globs (same syntax as
+   *  `ignore`). Empty or missing = all files. */
+  include?: string[];
+  /** Never run on files matching these globs. Wins over `include`. */
+  exclude?: string[];
 }
 
 export interface GuidelinesConfig {
@@ -380,7 +385,7 @@ export interface Config {
   ai: AiConfig;
   testCommand?: string | null;
   ignore?: string[];
-  rules?: Record<string, false | { enabled?: boolean; tier?: Tier; blocking?: boolean }>;
+  rules?: Record<string, false | { enabled?: boolean; tier?: Tier; blocking?: boolean; include?: string[]; exclude?: string[] }>;
   customPatterns?: CustomPattern[];
   deprecated?: DeprecatedEntry[];
   orangePatterns?: string[];
@@ -492,6 +497,10 @@ interface RuleBase {
    * still a real finding — `hardcoded-secret` (a committed secret is leaked even in a comment) and
    * `todo-marker` (markers live in comments by definition). Default false: pattern rules see
    * comment-masked text so commented-out code (`// eval(x)`, `# os.system(...)`) stops being noise.
+   *
+   * Doubles as the docs opt-in: prose files (.md, .txt, .rst, …) are all-comment, so the engine
+   * runs ONLY `scanRaw` rules there — "real even in a comment" and "real even in prose" are the
+   * same property (see DOCS_FILE in rules/index.ts).
    */
   scanRaw?: boolean;
   /**
@@ -509,6 +518,14 @@ interface RuleBase {
    * broad regex here must not double-fire on JS/TS).
    */
   excludeLanguages?: string[];
+  /**
+   * Per-rule path scoping (set from a CustomPattern or a `rules` override, never on built-in rule
+   * definitions). Globs use the `ignore` syntax and match the repo-relative path; `exclude` wins
+   * over `include`, and an empty/missing `include` means all files. Enforced in `runRules` via
+   * `matchesPathScope` so every surface (CLI diff, MCP, editor live path) behaves identically.
+   */
+  include?: string[];
+  exclude?: string[];
 }
 
 export interface PatternRule extends RuleBase {

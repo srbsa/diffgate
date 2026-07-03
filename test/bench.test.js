@@ -16,8 +16,11 @@ test("noise benchmark", async (t) => {
     assert.equal(result.falseBlocksPerCleanCase, 0, `the gate must never falsely block a safe change; got ${result.falseBlocksPerCleanCase}/case`);
   });
 
-  await t.test("high recall on the positive cases", () => {
-    assert.ok(result.overall.recall >= 0.8, `recall too low: ${result.overall.recall}`);
+  await t.test("full recall on the positive cases", () => {
+    // The corpus is curated: every positive is a case the engine claims to catch, so any miss is
+    // a regression. A 0.8 floor let a real one slide (the bench's txt fallback met the docs
+    // carve-out and silently dropped the PHP case).
+    assert.equal(result.overall.recall, 1, `missed positive case(s): recall ${result.overall.recall}`);
   });
 
   await t.test("metrics are well-formed", () => {

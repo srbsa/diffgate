@@ -30,12 +30,14 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 
   "customPatterns": [                        // your own pattern rules
     { "id": "no-process-env", "tier": "yellow", "pattern": "process\\.env\\.",
-      "message": "Use the typed config module, not process.env." }
+      "message": "Use the typed config module, not process.env.",
+      "exclude": ["src/config/loader.ts"] }  //  - optional path scoping (see below)
   ],
 
   "rules": {                                 // tune built-ins
     "todo-marker": false,                    //  - disable a rule
-    "network-call": { "tier": "green" }      //  - or change its tier
+    "network-call": { "tier": "green" },     //  - or change its tier
+    "public-api-change": { "exclude": ["tools/**"] } //  - or path-scope it
   },
 
   "graph": {                                 // optional cross-file blast radius (see docs/CODE-GRAPH.md)
@@ -91,6 +93,30 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 | `todo-marker` | 🟢 | `TODO`, `FIXME`, `HACK` |
 
 Disable or re-tier any rule via the `rules` key.
+
+### Per-rule path scoping (`include` / `exclude`)
+
+Both `customPatterns` entries and `rules` overrides accept optional `include` and `exclude` glob
+lists (same syntax as `ignore`, matched against the repo-relative file path). A rule with `include`
+runs only on matching files; `exclude` always wins over `include`; an empty or missing `include`
+means all files. This is the escape hatch for the one legitimate location of a forbidden idiom —
+e.g. a `no-process-env` custom pattern that must not fire on the config loader itself:
+
+```jsonc
+{
+  "customPatterns": [
+    { "id": "no-process-env", "pattern": "process\\.env\\.",
+      "exclude": ["src/config/loader.ts"] }
+  ],
+  "rules": {
+    "public-api-change": { "exclude": ["tools/**"] },   // silence a builtin in a directory
+    "todo-marker": { "include": ["src/**"] }            // or run it only where it matters
+  }
+}
+```
+
+Scoping applies identically on every surface (CLI diff, MCP, editor live analysis). Malformed
+values (a non-array `include`/`exclude`) are ignored rather than failing the config load.
 
 ### Native precision (no code graph needed)
 

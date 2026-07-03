@@ -7,6 +7,18 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.9] — 2026-07-03
+
+### Added
+
+- Per-rule path scoping: `customPatterns` entries and `rules` overrides accept optional `include`/`exclude` glob lists (same syntax as `ignore`, matched against the repo-relative path). `exclude` wins over `include`; an empty or missing `include` means all files; malformed (non-array) values are ignored at load. Motivated by a Backstage-monorepo evaluation where a custom `no-direct-process-env` pattern fired on the config loader itself — the one file where reading `process.env` is legitimate — and the only escapes were disabling the rule or dismissing findings one at a time. Enforced in the rule runner, so CLI diff, MCP, and the editor live path agree on where a rule runs.
+
+### Fixed
+
+- Docs/prose files (`.md`, `.mdx`, `.markdown`, `.txt`, `.rst`, `.adoc`) no longer run code-shaped pattern rules — a Backstage-monorepo evaluation showed `auth-crypto` flagging the word "oauth2-provider" in changelog prose (`\b` treats the hyphen as a word boundary), and every `languages: ["*"]` pattern rule (`db-schema-*`, `raw-query`, `network-call`, `sql-injection-candidate`, `deprecated-api`, …) had the same exposure. Prose is all-comment, so docs files now run only rules that already opt into raw comment scanning (`scanRaw`): `hardcoded-secret` (a key pasted in a README still leaks) and `todo-marker`. Machine-read `.txt` files (`requirements*.txt`, `constraints*.txt`, `CMakeLists.txt`) keep full coverage. Note: config-defined `customPatterns`/`orangePatterns` also stop matching docs files.
+- `public-api-change` no longer flags `module.exports = …` in tooling config files (`.eslintrc.js`/`.cjs`, `*.config.js`/`cjs`/`mjs`/`ts`, rc-style `.prettierrc.js`, `karma.conf.js`, gulpfile/gruntfile) — a config file's export is configuration, not public API surface with importers to break.
+- Bench harness: the PHP corpus case ran as `bench.txt` (`php` was missing from the extension map), and the new docs carve-out correctly treats `.txt` as prose — so the case silently became a miss. Restored the real `.php` extension (corpus back to 22/0/0) and tightened the bench recall assertion to exact (`= 1.0`, was `>= 0.8`) so a single missed positive now fails the suite.
+
 ## [0.7.8] — 2026-07-03
 
 ### Fixed

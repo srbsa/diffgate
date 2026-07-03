@@ -1,10 +1,20 @@
 import path from "path";
+import { matchesPathScope } from "../config.js";
 import { walk } from "../parsers/javascript.js";
 import { hasAstSupport } from "../parsers/index.js";
 import { compileTsQuery } from "../parsers/treesitter.js";
 import { BUILTIN_RULES, deprecatedRules, customPatternRules, legacyOrangeRules, RULE_PACKS } from "./builtin.js";
 import { dependencyRelevantLines } from "./manifests.js";
 import type { Rule, FileRule, PatternRule, AstRule, TsAstRule, RuleContext, EmitFn, Finding, FindingEmitArg, AstNode, TsNode, TsTree, Config } from "../types.js";
+
+// Docs/prose files are effectively all-comment: code-shaped rules misfire on prose (the word
+// "oauth2-provider" in a changelog tripped auth-crypto — hyphen is a \b boundary). On these files
+// only rules that opt into raw comment scanning (`scanRaw`) run — exactly the rules whose hits are
+// still real in prose (a secret pasted in a README leaks, a TODO in docs is a marker).
+const DOCS_FILE = /\.(?:md|mdx|markdown|txt|rst|adoc)$/i;
+// .txt files that are machine-read, not prose — they must keep full rule coverage
+// (requirements.txt drives dependency-manifest; CMakeLists.txt is code).
+const NON_DOC_TXT = /^(?:requirements[\w.-]*|constraints[\w.-]*|cmakelists)\.txt$/i;
 
 const DEPENDENCY_MANIFESTS = new Set([
   "package.json", "requirements.txt", "pyproject.toml", "go.mod",
@@ -136,10 +146,16 @@ export function getRules(config: Partial<Config>, language: string): Rule[] {
 
     let effective = rule;
     if (ov && typeof ov === "object") {
-      const ovObj = ov as { enabled?: boolean; tier?: string; blocking?: boolean };
+      const ovObj = ov as { enabled?: boolean; tier?: string; blocking?: boolean; include?: string[]; exclude?: string[] };
       if (ovObj.enabled === false) continue;
-      if (ovObj.tier || ovObj.blocking !== undefined) {
-        effective = { ...rule, tier: (ovObj.tier as Rule["tier"]) || rule.tier, blocking: ovObj.blocking ?? rule.blocking };
+      if (ovObj.tier || ovObj.blocking !== undefined || ovObj.include || ovObj.exclude) {
+        effective = {
+          ...rule,
+          tier: (ovObj.tier as Rule["tier"]) || rule.tier,
+          blocking: ovObj.blocking ?? rule.blocking,
+          include: Array.isArray(ovObj.include) ? ovObj.include : rule.include,
+          exclude: Array.isArray(ovObj.exclude) ? ovObj.exclude : rule.exclude,
+        };
       }
     }
     out.push(effective);
@@ -321,7 +337,12 @@ export function runRules({ ast, ctx, config }: { ast: AstNode | null; ctx: RuleC
   const findings: Finding[] = [];
   const tsTree = ctx.tsTree ?? null;
   const rules = getRules(config, ctx.language);
+  const isDocs = DOCS_FILE.test(ctx.filePath) && !NON_DOC_TXT.test(path.basename(ctx.filePath));
   for (const rule of rules) {
+    if (isDocs && !rule.scanRaw) continue;
+    // Per-rule path scoping (CustomPattern / rules-override include/exclude). Enforced here, the
+    // single funnel every surface analyzes through, so CLI/MCP/editor agree on where a rule runs.
+    if ((rule.include || rule.exclude) && !matchesPathScope(ctx.filePath, rule)) continue;
     // A loaded tree-sitter tree owns precision for this language: skip the broad cross-language
     // regex candidates (`skipIfAst`) so the precise `tsast` rule isn't doubled by a noisy regex.
     // `skipIfAstLangs` is the per-language form — skip only when the tree is for a language that has a

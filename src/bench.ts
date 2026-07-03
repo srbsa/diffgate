@@ -39,7 +39,9 @@ export interface BenchResult {
   advisoriesPerCleanCase: number;
 }
 
-const ext: Record<string, string> = { javascript: "js", typescript: "ts", python: "py", go: "go", java: "java", ruby: "rb", sql: "sql" };
+// Every corpus language needs a real extension: the "txt" fallback now lands in the docs/prose
+// carve-out (only scanRaw rules run there), which would silently turn a positive case into a miss.
+const ext: Record<string, string> = { javascript: "js", typescript: "ts", python: "py", go: "go", java: "java", ruby: "rb", php: "php", sql: "sql" };
 
 export const CORPUS: BenchCase[] = [
   // --- positives: the rule SHOULD fire ---

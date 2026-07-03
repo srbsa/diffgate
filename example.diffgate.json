@@ -58,18 +58,21 @@
     }
   ],
 
+  "//customPatterns": "Per-rule path scoping: optional include/exclude glob lists (same syntax as ignore, matched against the repo-relative path). include limits where the rule runs; exclude wins over include; empty/missing include = all files. Also accepted on rules overrides below.",
   "customPatterns": [
     {
       "id": "no-direct-process-env",
       "tier": "yellow",
       "pattern": "process\\.env\\.",
-      "message": "Read config through the typed config module, not process.env directly."
+      "message": "Read config through the typed config module, not process.env directly.",
+      "exclude": ["src/config/loader.ts"]
     }
   ],
 
   "rules": {
     "todo-marker": false,
-    "network-call": { "tier": "green" }
+    "network-call": { "tier": "green" },
+    "public-api-change": { "exclude": ["tools/**"] }
   },
 
   "//graph": "Optional cross-file blast radius via a code graph (github.com/codegraph-ai/CodeGraph). enabled 'auto' = use it when an index exists, silent otherwise. A public-surface change with callers stays orange and names the reviewers; one with zero callers de-escalates to yellow. Pin a rule's tier (e.g. \"signature-drift\": { \"tier\": \"orange\" }) to opt out of de-escalation.",

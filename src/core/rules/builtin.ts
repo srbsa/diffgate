@@ -347,6 +347,12 @@ function recursiveMergeShape(fnNode: AstNode, fnName: string): { iterates: boole
   return { iterates, recurses, computedWrite };
 }
 
+// Tooling configuration by basename: rc-style (.eslintrc.js/.cjs, .prettierrc.js, .mocharc.cjs),
+// *.config.* (jest.config.js, babel.config.js, vite.config.ts, next.config.mjs), and the odd ones
+// out (karma.conf.js, gulpfile/gruntfile).
+const TOOLING_CONFIG_FILE =
+  /(?:^|[\/\\])(?:\.[\w-]+rc\.(?:js|cjs|mjs)|[\w.-]+\.config\.(?:js|cjs|mjs|ts|cts|mts)|karma\.conf\.js|(?:gulpfile|gruntfile)\.(?:js|cjs|mjs))$/i;
+
 export const BUILTIN_RULES: Rule[] = [
   // ---------------------------------------------------------------- secrets
   {
@@ -558,7 +564,10 @@ export const BUILTIN_RULES: Rule[] = [
     title: "Public API surface change",
     languages: JS,
     message: "This changes an exported symbol. Importers across the codebase (and possibly other repos) depend on it — check call sites.",
-    visit(node: AstNode, _parent: AstNode | null, _ctx: RuleContext, emit: EmitFn) {
+    visit(node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) {
+      // Tooling config files export configuration, not API: their `module.exports = {…}` /
+      // `export default {…}` has no importers to break (.eslintrc.js was flagged as API surface).
+      if (TOOLING_CONFIG_FILE.test(ctx.filePath)) return;
       if (
         node.type === "ExportNamedDeclaration" ||
         node.type === "ExportDefaultDeclaration" ||
@@ -995,6 +1004,9 @@ export function customPatternRules(config: Partial<Config>): Rule[] {
         languages: c.languages || ["*"],
         message: c.message || "Matched a project-defined DiffGate pattern.",
         patterns,
+        // Path scoping — loadConfig sanitizes, but callers can pass raw config, so guard again.
+        include: Array.isArray(c.include) ? c.include : undefined,
+        exclude: Array.isArray(c.exclude) ? c.exclude : undefined,
       } as Rule;
     })
     .filter((r): r is Rule => r !== null);
