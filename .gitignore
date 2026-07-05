@@ -6,6 +6,7 @@ extension/node_modules/
 /dist/
 extension/dist/
 *.vsix
+*.mcpb
 
 # env / secrets
 .env
@@ -28,9 +29,11 @@ Thumbs.db
 # marginal experiment output (large generated LLM outputs; reproducible via diffgate marginal)
 /out/
 
-# internal PR base-rate scan reports (research/ is not shipped)
-research/
-research/out/
+# PR base-rate scan: harness + findings stay private (they enumerate specific
+# third-party PRs); only the review-state classification script is published,
+# for reproducibility of docs/posts/the-pr-was-reviewed-the-risky-line-wasnt.md
+research/*
+!research/review-state.mjs
 .claude/settings.json
 .claude/settings.local.json
 .claude/output-styles/compressor-slim.md

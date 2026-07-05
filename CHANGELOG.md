@@ -7,7 +7,19 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.7.10] — 2026-07-03
+## [0.7.11] — 2026-07-05
+
+### Changed
+
+- **Positioning reframed around the measurement, not feature adjectives.** README hero now leads with the finding — 0% textbook OWASP bugs written from scratch, 13% of *edits* reintroduce a footgun (unguarded merge, bare `cors()`, unchecked path) — instead of "high-signal, low-noise, deterministic," which had converged into generic AI-code-review-tool wallpaper. "Why triage, not a scanner" → "Why a tripwire, not another review bot," with a shift-left framing (runs before any review bot sees the PR). Demo GIF added at the top of the README (hosted via `raw.githubusercontent.com` so it renders on npm too, not just GitHub — relative image paths aren't reliably rewritten by npm's README renderer). Synced one-liners across every published surface: `package.json`, `manifest.json` (`.mcpb`/Smithery), `server.json` (MCP registry), `action.yml` (GitHub Actions Marketplace), `extension/package.json` + `extension/README.md` (VS Code Marketplace/Open VSX), `extension.manifest.json`, `.pre-commit-hooks.yaml`, `MCP.md`, `skills/diffgate/SKILL.md`. `docs/MEASUREMENT.md` and `docs/TEAM.md` cross-link the new companion study below.
+- Keywords: added `guardrails` + `ai-generated-code` to `package.json`, `guardrails` to the VS Code extension manifest.
+
+### Added
+
+- **New post: [docs/posts/the-pr-was-reviewed-the-risky-line-wasnt.md](docs/posts/the-pr-was-reviewed-the-risky-line-wasnt.md)** — a field study of 350 merged AI-assisted PRs across public repos: of 109 with flagged AI-attributed changes, 73 got no review, 65 no discussion at all, 41 were reviewed by a bot or the author only, and just 3 drew comment from another human. Counts are reproducible via the newly-published `research/review-state.mjs` (input contract documented in the file header); the discovery scanner and PR dataset that produced the 109-PR candidate list stay unpublished, since re-running the scan surfaces specific third-party PRs by name. Cross-linked with the existing `diffgate marginal` measurement (lab: what agents write; this post: field: what humans catch).
+- `glama.json` — ownership-claim file for the Glama MCP directory listing.
+
+
 
 ### Fixed
 

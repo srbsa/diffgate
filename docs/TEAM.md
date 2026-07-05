@@ -1,6 +1,6 @@
 # Rolling DiffGate out to a team
 
-DiffGate earns trust by being quiet and deterministic, then spreads by living where review actually happens: the pull request. Because the deterministic core runs **offline, in your CI, with no data egress**, it's adoptable by teams that can't send source to a hosted reviewer at all.
+DiffGate earns trust by being quiet and deterministic, then spreads by living where review actually happens: the pull request. The case for making it a required check is measured, not vibes: in [our scan of 350 merged AI-assisted PRs](posts/the-pr-was-reviewed-the-risky-line-wasnt.md), only 3 of the 109 with flagged AI-attributed changes drew public discussion from any human besides the author. Because the deterministic core runs **offline, in your CI, with no data egress**, it's adoptable by teams that can't send source to a hosted reviewer at all.
 
 ---
 

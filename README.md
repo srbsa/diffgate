@@ -7,9 +7,13 @@
 [![License](https://img.shields.io/github/license/srbsa/diffgate)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/srbsa/diffgate?style=social)](https://github.com/srbsa/diffgate)
 
-**Triage your AI-written diffs — see what to review first.** DiffGate grades every changed line by real-world impact — 🟢 merge, 🟡 glance, 🟠 verify — so your attention lands on the few changes that can hurt you and skims the rest. **High signal, low noise** (100% precision, 0 false blocks), deterministic, and fast enough for the inner loop — the *same verdict from your agent's first keystroke to the merge button.* If that sounds useful, **[star the repo ⭐](https://github.com/srbsa/diffgate)** — it's how others find it.
+**Coding agents don't write textbook vulnerabilities anymore — they delete your guardrails while editing.**
 
-Coding agents ship diffs faster than anyone can review them, and the model that wrote the code has the same blind spots reviewing it. DiffGate is a separate, **deterministic** pass that runs on **only the lines that changed** (vs the committed baseline) and sorts each one into a risk tier — in milliseconds — so you skim the safe majority and spend attention where impact actually is. High-impact changes don't just get flagged; they get **gated** — DiffGate runs your tests only when a change warrants it, and escalates to a block only when it's earned. Not a model grading its own homework. Not a whole-repo scanner burying you in findings. The same engine and the same verdict in your agent, your editor, your terminal, and your PR — solo today, the whole team when you scale it.
+We measured it across local and frontier models: **0%** classic OWASP bugs (SQL injection, XSS, hardcoded secrets) in code written from scratch. But the same frontier model that wrote flawless greenfield code reintroduced security footguns in **13% of edits** — an unguarded recursive merge (prototype pollution), a bare `cors()` (any origin), a path built from request data with no containment check. And editing existing code is most of what an agent does. [The measurement →](docs/MEASUREMENT.md)
+
+DiffGate is the deterministic tripwire for exactly that residue — a review pass that runs **before any review bot sees a PR**, at the keystroke and the commit, where fixing is cheapest. It grades **only the lines that changed** (🟢 merge · 🟡 glance · 🟠 verify) in milliseconds, runs your tests only when a change earns it, and blocks only when it's earned: **0 false blocks** on a public, versioned corpus ([BENCHMARK.md](BENCHMARK.md)). Not a model grading its own homework — the same verdict inside your coding agent (MCP), your editor, your pre-commit hook, and your CI.
+
+![DiffGate demo: diffgate check on a real repo, mostly green with one orange finding and its reason](https://raw.githubusercontent.com/srbsa/diffgate/main/assets/diffgate.gif)
 
 | Tier | Meaning | What you do | Examples |
 |------|---------|-------------|----------|
@@ -19,9 +23,9 @@ Coding agents ship diffs faster than anyone can review them, and the model that 
 
 ---
 
-## Why triage, not a scanner
+## Why a tripwire, not another review bot
 
-A linter flags everything; DiffGate **decides what deserves your attention, your tests, or a block** — high signal, low noise, and stays quiet otherwise. That's the whole product:
+Review bots comment after the PR exists; linters and scanners flag everything they see. Neither guarantees the risky line gets discussed: [we scanned 350 merged AI-assisted PRs](docs/posts/the-pr-was-reviewed-the-risky-line-wasnt.md) — of the 109 with flagged AI-attributed changes, only 3 drew public discussion from any human besides the author. DiffGate sits earlier — with the agent and the human writing the code — and **decides what deserves your attention, your tests, or a block**, staying quiet otherwise. That's the whole product:
 
 - **Diff-scoped.** Findings report only on the lines that changed, against the committed baseline — no whole-file noise, no re-litigating code you didn't touch.
 - **Tiered triage, not a flat list.** Three tiers route attention: green merges, yellow is a glance, orange is gated.
@@ -31,9 +35,9 @@ A linter flags everything; DiffGate **decides what deserves your attention, your
 - **Fast.** A review runs in milliseconds on the changed lines — quick enough to sit in the agent and editor inner loop, not only in CI.
 - **Provably low-noise.** `diffgate bench` runs a versioned corpus offline: **100% precision / 0 false blocks** on clean changes. Reproduce it yourself — that's the point of shipping the corpus. See [BENCHMARK.md](BENCHMARK.md).
 
-### Tuned to what agents actually ship
+### The measurement is reproducible
 
-Modern agents already avoid the textbook bugs (SQL injection, XSS, secrets) unprompted. What they still ship are **second-order footguns** — an unguarded recursive merge (prototype pollution), a bare `cors()` (any-origin by default), a path built from request data with no containment check — and they drop these guards **most when editing existing code**, which is most of what an agent does. We measured it: across local-to-frontier models, textbook OWASP issues showed up **0%** of the time, but a frontier model that wrote **zero** issues from scratch reintroduced the footguns **when editing a file** (0% → 13%). DiffGate is tuned to exactly that residue. See [the measurement](docs/MEASUREMENT.md).
+The 0% / 13% numbers aren't a marketing line — they come from a scripted experiment (four models from local to frontier, greenfield vs. edit mode, Wilson confidence intervals) that you can rerun with `diffgate marginal`. Methodology, per-model tables, and caveats: [docs/MEASUREMENT.md](docs/MEASUREMENT.md). DiffGate's security rules are tuned to that measured residue, not to maximizing rule count.
 
 ---
 
@@ -186,6 +190,7 @@ Any rule — built-in or custom — can be path-scoped with `include`/`exclude` 
 
 ## More
 
+- **[The PR was reviewed. The risky line wasn't.](docs/posts/the-pr-was-reviewed-the-risky-line-wasnt.md)** — our PR-trail study: 350 merged AI-assisted PRs, 109 with flagged AI-attributed changes, 3 with public human discussion beyond the author.
 - **[docs/SCOPE.md](docs/SCOPE.md):** per-language coverage tiers (deep AST vs. pattern vs. text-only) and what the code graph does and doesn't do.
 - **[docs/CONFIG.md](docs/CONFIG.md):** full `.diffgate.json` schema, all built-in rules, LLM providers, native precision & test-scope behavior.
 - **[docs/TEAM.md](docs/TEAM.md):** rolling DiffGate out to a team (GitHub Action / PR gate, shared learnings, org-wide policy packs, SOC 2 evidence, metrics for leaders).

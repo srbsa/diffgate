@@ -4,6 +4,8 @@ The honest question behind DiffGate's agent value isn't *absolute* detection (th
 
 `diffgate marginal` ([src/marginal.ts](../src/marginal.ts)) measures it directly. Hand a model a realistic task with **no security hint**, run the gate over its output. A "defect catch" means the gate would have fired on objectively unsafe code the model wrote unprompted.
 
+Companion field study: **[The PR was reviewed. The risky line wasn't.](posts/the-pr-was-reviewed-the-risky-line-wasnt.md)** — the public-PR-trail side of the same argument: of 109 merged PRs with flagged AI-attributed changes, only 3 drew discussion from any human besides the author.
+
 ---
 
 ## The headline

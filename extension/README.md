@@ -1,6 +1,6 @@
 # DiffGate Review (VS Code Extension)
 
-Diff-aware, three-tiered code review **inline in your editor**. DiffGate looks at the lines you actually changed (vs the committed baseline) and tells you which edits are safe, which need a second look, and which are high-impact enough to gate — before you ever open a pull request.
+**Catches the guardrails your coding agent deletes while editing — inline, on the lines you actually changed.** We measured frontier models: 0% textbook OWASP bugs written from scratch, but security footguns reintroduced in 13% of *edits* ([the measurement](https://github.com/srbsa/diffgate/blob/main/docs/MEASUREMENT.md)). DiffGate is the deterministic tripwire for that residue: it reviews only your changed lines (vs the committed baseline) and tells you which edits are safe, which need a second look, and which are high-impact enough to gate — before you ever open a pull request, before any review bot.
 
 ## Tiers
 

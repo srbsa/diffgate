@@ -1,6 +1,6 @@
 # DiffGate MCP Server
 
-Expose the DiffGate triage engine to any coding agent that supports MCP (Claude Code, Cursor, Continue, etc.) — high-signal, low-noise risk findings on only the changed lines, zero LLM tokens.
+Give any MCP coding agent (Claude Code, Cursor, Continue, etc.) a deterministic self-check: DiffGate findings on only the changed lines, zero LLM tokens — so the agent catches the guardrail it just deleted before handing you the diff.
 
 ## Quick start
 

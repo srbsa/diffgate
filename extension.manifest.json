@@ -3,7 +3,7 @@
   "name": "diffgate",
   "display_name": "DiffGate",
   "version": "0.4.2",
-  "description": "Diff-aware, three-tiered code review gate. Reviews only changed lines, gates high-impact changes (secrets, schema drops, injection sinks, public-API drift) while letting safe edits fly through.",
+  "description": "Deterministic gate for AI-edited diffs. Reviews only the changed lines, catches deleted guardrails and high-impact changes (secrets, schema drops, injection sinks, public-API drift) while safe edits fly through.",
   "author": {
     "name": "DiffGate",
     "url": "https://github.com/srbsa/diffgate"

@@ -1,5 +1,5 @@
-name: DiffGate Review Triage
-description: Triage AI-generated diffs — grades changed lines by impact. High-signal, low-noise, deterministic.
+name: DiffGate Review Gate
+description: Deterministic gate for AI-edited diffs — catches deleted guardrails, grades changed lines by impact, 0 false blocks.
 author: srbsa
 branding:
   icon: shield

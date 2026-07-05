@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "diffgate",
   "display_name": "DiffGate",
-  "version": "0.7.10",
-  "description": "Triage AI-generated diffs — grades changed lines by impact. High-signal, low-noise, deterministic.",
-  "long_description": "DiffGate triages AI-generated code diffs so your attention lands where it matters: grades each changed line green/yellow/orange by impact, deterministically, with 0 false blocks. Runs as a CLI, VS Code extension, and this MCP server — the same engine, same rules, everywhere.",
+  "version": "0.7.11",
+  "description": "Deterministic gate for AI-edited diffs — catches deleted guardrails before any review bot.",
+  "long_description": "Coding agents don't write textbook vulnerabilities — they delete guardrails while editing (measured: 0% OWASP bugs greenfield, 13% footguns reintroduced on edits). DiffGate is the deterministic tripwire for that residue: it grades each changed line green/yellow/orange by impact in milliseconds, with 0 false blocks. Runs as a CLI, VS Code extension, and this MCP server — the same engine, same rules, everywhere.",
   "author": {
     "name": "srbsa"
   },

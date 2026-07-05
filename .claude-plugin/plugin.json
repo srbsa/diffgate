@@ -1,8 +1,8 @@
 {
   "name": "diffgate",
   "displayName": "DiffGate",
-  "description": "Triage for AI-generated code review — grades each changed line green/yellow/orange by impact so you review what matters. High-signal, low-noise (0 false blocks), deterministic.",
-  "version": "0.7.9",
+  "description": "Catches the guardrails your coding agent deletes while editing — deterministic review gate on just the changed lines, before any review bot. Grades each line green/yellow/orange by impact; 0 false blocks.",
+  "version": "0.7.11",
   "author": {
     "name": "srbsa",
     "url": "https://github.com/srbsa"
