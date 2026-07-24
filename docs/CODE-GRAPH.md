@@ -67,7 +67,7 @@ The blocking SQL-injection rule is AST-deep on JS/TS (`@babel`) and Python + PHP
 
 For each such finding, DiffGate walks the call graph from the sink back toward **untrusted entry points**:
 
-1. Detect the set of HTTP/event handlers the framework exposes (e.g. a Flask `@app.route`, a Sinatra `get '/x' do…end`, a Ktor/Laravel/minimal-API route closure — tagged `http_handler`). Fetched **once per review** and cached. (`find_entry_points` under `provider: "codegraph"`.)
+1. Detect the set of HTTP/event handlers the framework exposes (e.g. a Flask `@app.route`, a Sinatra `get '/x' do…end`, a Ktor/Laravel/minimal-API route closure, an Express/Fastify `app.get("/x", handler)`, a Next.js `export async function GET`, an `exports.handler` lambda, an `addEventListener` — tagged `http_handler` / `event_handler`). Fetched **once per review** and cached. (`find_entry_points` under `provider: "codegraph"`.)
 2. Walk the sink's transitive callers, bounded by `reachabilityMaxDepth`. (`get_callers` / `traverse_graph` under `provider: "codegraph"`.) DSL-style routes with no separate named function (Sinatra/Ktor/Laravel/minimal-API closures, an inline Go handler) are matched by the handler body's own line span, not by name — a sink inside that span, or reached through a helper called from inside it, counts as reachable even though nothing calls a function literally named after the route.
 3. If an untrusted entry point is in that ancestor set, the sink is **reachable**.
 
@@ -75,7 +75,9 @@ For each such finding, DiffGate walks the call graph from the sink back toward *
 |---------|--------------------|-------------|
 | **Reachable** from a handler | Escalates 🟡/advisory → blocking 🟠, names the entry point (`GET /user → …`) | `reachable` |
 | **Unreachable** (handlers known, no path) | Left as-is by default; down-tiers **only** with `graph.reachabilityDeescalate: true` | `unreachable` |
-| **Unknown** (no index / no handlers / query failed) | Untouched — never a false "unreachable" | `unconfirmed` |
+| **Unknown** (no index / no handlers / language the graph can't parse / walk hit its budget / query failed) | Untouched — never a false "unreachable" | `unconfirmed` |
+
+**Cost posture (builtin).** The graph is built **lazily** — only when a finding actually needs it (an impact-eligible public-surface change, or an injection-class finding). A diff with neither never pays for a parse. The walk is bounded (3000 parsed files / 8s wall); if it truncates, every negative verdict downgrades to *unknown* rather than a false "no callers"/"unreachable".
 
 **Fail-safe posture.** Any uncertainty returns "unknown", never "unreachable" — an incomplete index must never hide a real vulnerability. Default is escalate-can-block, **never auto-clear**. Untrusted roots are `http_handler` + `event_handler` by default (configurable via `graph.untrustedEntryKinds`); `cli_command` / `test` / `main` are not untrusted.
 

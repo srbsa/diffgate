@@ -7,6 +7,25 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Built-in in-process code graph is now the default `graph.provider`** ([src/core/graph/builtin.ts](src/core/graph/builtin.ts), [callgraph.ts](src/core/graph/callgraph.ts), [entry-points.ts](src/core/graph/entry-points.ts)). Cross-file blast radius and reachability escalation work with zero setup — no external binary, no index step. CodeGraph stays available as an opt-in upgrade (`graph.provider: "codegraph"`) for proper symbol resolution, cross-repo consumers, and Pro taint analysis.
+- **JS/TS entry-point detection** — Express/Fastify/Koa route registration (`app.get("/x", handler)`, `router.use(...)`), Next.js segment handlers (`export async function GET`), `export default function handler` in route-shaped paths, `exports.handler` serverless entry points, and `addEventListener`/`.on(...)` event handlers. Inline arrow handlers are matched by the closure's own line span, so a sink inside `app.get("/u/:id", async (req, res) => …)` is reachable with no named function to match on. Previously the JS/TS detector was a stub returning nothing — on the flagship language every reachability query answered "no entry points in this repo".
+
+### Changed
+
+- **The graph is built lazily.** `attachImpact` now returns early when no finding can consume impact data, instead of calling `pr_context` first. That call was the one unconditional graph build per run: a diff with no public-surface change paid a full-repo parse for nothing (~2s on this repo, worse on a monorepo). The built-in provider no longer implements `prContext` at all — a whole-repo `bySymbol` dump carried nothing the per-symbol path doesn't, and its bare-name matching could answer for a symbol in a language the graph never parsed.
+- **The repo walk is bounded** (3000 parsed files / 8s wall, overridable by an embedding host) so the gate stays interactive on very large repos.
+
+### Fixed
+
+- **No negative verdict from an incomplete graph.** `impact()` returns unknown instead of `callerCount: 0`, and `reachability()` returns unknown instead of `reachable: false`, when (a) the file's language isn't one the graph parses, or (b) the walk hit its budget and truncated. A truncated or blind walk must never look like proof that nothing calls a symbol or that no handler reaches a sink — that's the input to `reachabilityDeescalate`.
+- The provider graph cache no longer grows one entry per `cwd` for the life of an MCP server; aged-out entries are dropped on rebuild.
+
+---
+
 ## [0.7.11] — 2026-07-05
 
 ### Changed
