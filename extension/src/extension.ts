@@ -10,6 +10,7 @@ import {
   loadConfig,
   loadDotenv,
   isIgnored,
+  isGitIgnoredPath,
   getPreviousContent,
   computeChangedLines,
   isGitRepo,
@@ -273,7 +274,9 @@ function analyzeDocument(document: vscode.TextDocument, opts: { runGate?: boolea
 
   const folder = folderForUri(document.uri);
   const config = getConfigFor(folder);
-  if (isIgnored(document.uri.fsPath, config, folder)) {
+  // Git-ignored files (a local .env, scratch scripts) never reach a commit — a secret there is
+  // configuration in the right place, so live diagnostics stay quiet (same as the diff surfaces).
+  if (isIgnored(document.uri.fsPath, config, folder) || isGitIgnoredPath(folder, document.uri.fsPath)) {
     diagnostics.delete(document.uri);
     findingsByUri.delete(document.uri.toString());
     updateTreeData();

@@ -5,6 +5,7 @@ import {
   analyze,
   loadConfig,
   isGitRepo,
+  isGitIgnoredPath,
   getPreviousContent,
   computeChangedLines,
   getChangedLinesForFile,
@@ -536,6 +537,17 @@ export async function handleAnalyze(
   await initTreeSitter(); // ensure non-JS AST grammars (Python) are loaded before analysis
   const absPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const { config } = loadConfig(cwd);
+
+  // A git-ignored file (a local .env, scratch scripts) is out of scope: the gate never sees it,
+  // and a secret there is local configuration, not a leak. Say so instead of returning findings.
+  if (isGitIgnoredPath(cwd, absPath)) {
+    const empty = analyze({ filePath: absPath, content: "", config });
+    return {
+      ...empty,
+      note: `Skipped: ${filePath} is git-ignored (untracked local file). DiffGate reviews what can reach a commit; this file cannot.`,
+      _diffgate: capabilityHint(config),
+    };
+  }
 
   let actualContent = content;
   if (actualContent == null) {

@@ -90,6 +90,10 @@ export interface ImpactInfo {
   /** Count of impacted sites the graph marks as breaking (analyze_impact `breaking_changes`),
    *  distinct from total callers — populated on a rename/delete-style change. */
   breakingCount?: number | null;
+  /** True when the graph matched callers by bare name only and more than one definition in the
+   *  codebase shares that name — the caller count may be conflated across unrelated symbols, so
+   *  it must not drive tier escalation/de-escalation (enrich-only). */
+  ambiguous?: boolean;
 }
 
 /** A symbol whose documentation/spec drifted from the code, surfaced by pr_context. */

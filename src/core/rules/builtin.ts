@@ -380,7 +380,9 @@ export const BUILTIN_RULES: Rule[] = [
       /\bhf_[A-Za-z0-9]{30,}\b/, // Hugging Face
       /\bglpat-[A-Za-z0-9_-]{20,}\b/, // GitLab personal access token
       /\bnpm_[A-Za-z0-9]{36}\b/, // npm granular/automation token
-      /(?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["'][^"'\s]{8,}["']/i,
+      // Leading identifier chars are included so the validator sees the full key name
+      // (needed to skip env-var label maps like `"FULLENRICH_API_KEY": "FullEnrich"`).
+      /[A-Za-z0-9_.-]*(?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["'][^"'\s]{8,}["']/i,
     ],
     // Drop env/placeholder/low-entropy matches; keep known provider key formats (high confidence).
     validate: classifySecret,

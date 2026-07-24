@@ -5,6 +5,7 @@ export {
   getChangedLinesForFile,
   getPreviousContent,
   isGitRepo,
+  isGitIgnoredPath,
   repoRoot,
   headSha,
   blameLine,
@@ -39,7 +40,7 @@ export { loadLearnings, loadMergedLearnings, mergeLearningStores, readStoreFile,
 export { TOOLS as agentTools } from "./agent/tools.js";
 export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier } from "./tiers.js";
 export {
-  getGraph, resolveGraphConfig, graphStatus, makeCodeGraphProvider, codeGraphAvailable,
+  getGraph, resolveGraphConfig, graphStatus, makeCodeGraphProvider, makeBuiltinProvider, codeGraphAvailable,
   commandAvailable, graphDbDir, graphIndexPath, normalizeImpact, normalizePrContext, normalizeEditContext,
   normalizeSecurity, normalizeTests, normalizeEntryPoints, normalizeAncestors, DEFAULT_GRAPH_CONFIG,
 } from "./graph/index.js";

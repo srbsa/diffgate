@@ -54,7 +54,7 @@ export const DEFAULT_CONFIG: Config = {
   testScope: true,
   guidelines: { enabled: true, autoDetect: true, files: [], maxDepth: 3, maxBytesPerFile: 8000, tier: "yellow", blocking: false, evaluator: "auto" },
   graph: {
-    enabled: "auto", provider: "codegraph", command: "codegraph-server", mode: "cli",
+    enabled: "auto", provider: "builtin", command: "codegraph-server", mode: "cli",
     maxCallers: 20, escalateThreshold: 1, timeoutMs: 4000,
     prContext: true, relatedTests: true, editContext: true, security: "auto", securityDeescalate: false,
   },
@@ -138,7 +138,7 @@ const TRUST_SOURCES = ["deterministic", "any"];
 const GATE_MODES = ["staged", "working"];
 const EVALUATORS = ["auto", "model", "host"];
 const GRAPH_MODES = ["cli", "off"];
-const GRAPH_PROVIDERS = ["codegraph"];
+const GRAPH_PROVIDERS = ["builtin", "codegraph"];
 
 /** Enforce the enum-valued config fields so a typo fails loudly at load instead of silently
  *  falling back to a default behavior (e.g. agent.mode:"gated2" → silent advisory). */

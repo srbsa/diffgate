@@ -12,6 +12,7 @@ import {
   getChangedLinesForFile,
   getPreviousContent,
   isGitRepo,
+  isGitIgnoredPath,
   repoRoot,
   headSha,
   runGate,
@@ -42,6 +43,7 @@ import {
   graphStatus,
   resolveGraphConfig,
   makeCodeGraphProvider,
+  makeBuiltinProvider,
   IMPACT_RULES,
   shouldShowGraphTip,
   recordGraphTipShown,
@@ -458,6 +460,9 @@ function* walkFiles(dir: string, config: Config, root: string): Generator<string
         continue;
       }
       if (isProbablyBinary(fp)) continue;
+      // Git-ignored files (a local .env, scratch scripts) are out of scope: the diff/commit
+      // surfaces never see them, so an ambient walk shouldn't flag them either.
+      if (isGitIgnoredPath(root, fp)) continue;
       yield fp;
     }
   }
@@ -547,6 +552,7 @@ async function cmdWatch(pos: string[], _flags: Record<string, string | true>): P
 
   watcher.on("change", async (fp: string) => {
     if (isIgnored(fp, config, cwd)) return;
+    if (git && isGitIgnoredPath(cwd, fp)) return;
     let content: string;
     try {
       content = fs.readFileSync(fp, "utf-8");
@@ -955,12 +961,18 @@ function cmdGraph(pos: string[], flags: Record<string, string | true>): void {
   const g = resolveGraphConfig(config);
   const status = graphStatus(config);
 
+  const isBuiltin = g.provider === "builtin";
+
   if (sub === "status") {
     if (flags["json"]) { console.log(JSON.stringify(status, null, 2)); return; }
     const dot = (ok: boolean) => (ok ? c.green("●") : c.gray("○"));
     console.log(`${c.bold("🛡  DiffGate")} ${c.dim("— code graph")}\n`);
     console.log(`  ${dot(status.enabled)} enabled       ${c.dim(status.enabled ? "yes" : "no (graph.enabled=false / mode=off)")}`);
-    console.log(`  ${dot(status.commandFound)} ${("`" + status.command + "`").padEnd(20)} ${c.dim(status.commandFound ? "found on PATH" : "not on PATH")}`);
+    if (isBuiltin) {
+      console.log(`  ${dot(true)} provider      ${c.dim("built-in (in-process, no external binary)")}`);
+    } else {
+      console.log(`  ${dot(status.commandFound)} ${("`" + status.command + "`").padEnd(20)} ${c.dim(status.commandFound ? "found on PATH" : "not on PATH")}`);
+    }
     console.log(`  ${dot(status.indexed)} indexed       ${c.dim(status.indexed ? status.dbPath : "no index")}`);
     console.log(`  ${dot(status.reachability)} reachability  ${c.dim(status.reachability ? "escalate non-JS injection when reachable from an entry point" : "off")}`);
     console.log(`\n  ${status.indexed ? c.green("✔ " + status.reason) : c.yellow(status.reason)}`);
@@ -970,6 +982,18 @@ function cmdGraph(pos: string[], flags: Record<string, string | true>): void {
   if (sub === "index") {
     if (g.enabled === false || g.mode === "off") {
       fail("Graphing is disabled in .diffgate.json (graph.enabled=false / mode=off).");
+    }
+    if (isBuiltin) {
+      console.log(c.dim("Built-in graph needs no separate index — it's rebuilt in-process from source on each run (briefly cached for a resident host like the MCP server)."));
+      const provider = makeBuiltinProvider(cwd, g, config);
+      const ok = typeof provider.reindex === "function" ? provider.reindex() : false;
+      if (ok) {
+        console.log(c.green(`✔ Rebuilt now for ${path.basename(cwd)}.`));
+      } else {
+        console.log(c.yellow("⚠ Rebuild returned no confirmation."));
+        process.exit(1);
+      }
+      return;
     }
     if (!status.commandFound) {
       console.log(c.yellow(`✖ ${g.command} not found on PATH.`));
@@ -1005,7 +1029,7 @@ const INIT_TEMPLATE = {
   customPatterns: [{ id: "no-direct-process-env", tier: "yellow", pattern: "process\\.env\\.", message: "Read config through the typed config module, not process.env directly." }],
   rules: {},
   guidelines: { enabled: true, autoDetect: true, maxDepth: 3, tier: "yellow", blocking: false, evaluator: "auto" },
-  graph: { enabled: "auto", provider: "codegraph", command: "codegraph-server", mode: "cli", escalateThreshold: 1 },
+  graph: { enabled: "auto", provider: "builtin", command: "codegraph-server", mode: "cli", escalateThreshold: 1 },
   ignore: ["**/node_modules/**", "**/dist/**", "**/build/**"],
 };
 

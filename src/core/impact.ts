@@ -44,6 +44,7 @@ function blastSummary(impact: ImpactInfo): string {
     parts.push(`⚠ ${plural(impact.crossProject.length, "consumer")} in other repo${impact.crossProject.length === 1 ? "" : "s"}${names ? `: ${names}` : ""}`);
   }
   if (typeof impact.breakingCount === "number" && impact.breakingCount > 0) parts.push(`${plural(impact.breakingCount, "breaking site")}`);
+  if (impact.ambiguous) parts.push("⚠ name matched by bare identifier across multiple definitions — count may include unrelated call sites");
   if (impact.reviewers.length) parts.push(`route: ${impact.reviewers.slice(0, 3).map((r) => "@" + r).join(", ")}`);
   if (typeof impact.complexity === "number" && impact.complexity >= HIGH_COMPLEXITY) {
     parts.push(`complexity ${impact.complexity}`);
@@ -70,8 +71,10 @@ function withImpact(
   const next: Finding = { ...finding, impact };
   const crossRepo = (impact.crossProject?.length ?? 0) > 0;
 
-  if (!TIERABLE.has(finding.ruleId) || opts.pinned) {
-    // Non-tierable (e.g. deprecated-api) or user-pinned: enrich text only.
+  if (!TIERABLE.has(finding.ruleId) || opts.pinned || impact.ambiguous) {
+    // Non-tierable (e.g. deprecated-api), user-pinned, or a bare-name match ambiguous across
+    // multiple definitions (can't attribute callers to the right one without type info): enrich
+    // text only — never let an unreliable count move the tier (protects the 0-false-block bar).
     if (impact.callerCount > 0 || impact.testGaps.length || crossRepo) {
       next.message = `${finding.message}\n\n${blastSummary(impact)}`;
     }

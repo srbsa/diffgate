@@ -80,12 +80,24 @@ test("hardcoded-secret: drops env-var references, not committed secrets", () => 
   assert.equal(find(res, "hardcoded-secret"), undefined, "env interpolation is config, not a secret");
 });
 
+test("hardcoded-secret: env-var-name → display-label maps are not secrets", () => {
+  // Real-world false block (2026-07-08): sidebar labels keyed by env-var name.
+  const content =
+    'KEY_LABELS = {"FULLENRICH_API_KEY": "FullEnrich", "OPENAI_API_KEY": "OpenAI", "TAVILY_API_KEY": "Tavily"}\n';
+  const res = analyze({ filePath: "app.py", content, config: cfg });
+  assert.equal(find(res, "hardcoded-secret"), undefined, "label values mirroring their key name are not credentials");
+});
+
 test("classifySecret: unit behavior", () => {
   assert.equal(classifySecret('apiKey = "changeme"').skip, true);
   assert.equal(classifySecret('apiKey = "your-key-here"').skip, true);
   assert.equal(classifySecret('token = "${process.env.X}"').skip, true);
   assert.ok(!classifySecret('apiKey = "supersecretvalue123"').skip);
   assert.match(classifySecret("AKIAIOSFODNN7EXAMPLE").note || "", /provider key format/i);
+  // env-var-name → label maps are configuration, not credentials
+  assert.equal(classifySecret('FULLENRICH_API_KEY": "FullEnrich"').skip, true);
+  assert.equal(classifySecret('token = "GITHUB_ACCESS_TOKEN"').skip, true);
+  assert.ok(!classifySecret('client_secret = "9f8a7b6c5d4e3f2a1b0c"').skip, "real-looking value still fires");
 });
 
 test("shannonEntropy: random strings score higher than repetitive ones", () => {

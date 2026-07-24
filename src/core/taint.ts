@@ -134,6 +134,14 @@ export function classifySecret(matchText: string): SecretVerdict {
   // Reference to an env var / interpolation is configuration, not a committed secret.
   if (/\$\{|process\.env|import\.meta\.env|os\.environ|getenv/i.test(matchText)) return { skip: true };
 
+  // Env-var-name → label maps (`"FULLENRICH_API_KEY": "FullEnrich"`): the value mirrors its own
+  // key name, or is itself an ALL_CAPS variable name — neither can be a live credential.
+  const kv = matchText.match(/^([\w.-]+)["']?\s*[:=]\s*["']([^"'\n]+)["']/);
+  if (kv) {
+    if (kv[1].toUpperCase().includes(kv[2].toUpperCase())) return { skip: true };
+    if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(kv[2])) return { skip: true };
+  }
+
   const m = matchText.match(/["']([^"'\n]{6,})["']/);
   const value = (m ? m[1] : matchText).trim();
   if (PLACEHOLDER_RE.test(value)) return { skip: true };
