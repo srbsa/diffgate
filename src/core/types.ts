@@ -400,6 +400,10 @@ export interface Config {
   /** Down-tier non-exempt orange findings in test/fixture files (orange → yellow, non-blocking).
    *  Secrets, destructive schema, and graph-owned public-surface rules stay at full tier. Default true. */
   testScope?: boolean;
+  /** Per-language complexity thresholds. Merges with built-in defaults.
+   *  Keys: language names (python, go, java, etc.), or "_default" for fallback.
+   *  Values: partial ComplexityThresholds (any subset of maxCognitiveComplexity, maxNestingDepth, etc.). */
+  languageOverrides?: Record<string, Record<string, number | undefined> | undefined>;
 }
 
 // Minimal Babel-compatible AST node type

@@ -127,6 +127,7 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   cfg.guidelines = { ...DEFAULT_CONFIG.guidelines, ...(raw.guidelines || {}) };
   cfg.graph = { ...DEFAULT_CONFIG.graph, ...(raw.graph || {}) };
   if (raw.learnings) cfg.learnings = raw.learnings as Config["learnings"];
+  if (raw.languageOverrides) cfg.languageOverrides = raw.languageOverrides as Config["languageOverrides"];
   delete cfg.extends;
   validate(cfg);
   return cfg;
@@ -175,6 +176,17 @@ function validate(cfg: Config): void {
   }
   if (cfg.testScope !== undefined && typeof cfg.testScope !== "boolean") {
     throw new Error(`config: testScope must be true or false, got ${JSON.stringify(cfg.testScope)}`);
+  }
+  if (cfg.languageOverrides) {
+    for (const [lang, overrides] of Object.entries(cfg.languageOverrides)) {
+      if (overrides && typeof overrides === "object") {
+        for (const [key, val] of Object.entries(overrides)) {
+          if (val !== undefined && (typeof val !== "number" || val <= 0)) {
+            throw new Error(`config: languageOverrides.${lang}.${key} must be a positive number, got ${JSON.stringify(val)}`);
+          }
+        }
+      }
+    }
   }
 }
 
