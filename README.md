@@ -195,6 +195,7 @@ Any rule — built-in or custom — can be path-scoped with `include`/`exclude` 
 - **[docs/CONFIG.md](docs/CONFIG.md):** full `.diffgate.json` schema, all built-in rules, LLM providers, native precision & test-scope behavior.
 - **[docs/TEAM.md](docs/TEAM.md):** rolling DiffGate out to a team (GitHub Action / PR gate, shared learnings, org-wide policy packs, SOC 2 evidence, metrics for leaders).
 - **[docs/CODE-GRAPH.md](docs/CODE-GRAPH.md):** optional cross-file blast radius (caller counts, suggested reviewers, test gaps, reachability, taint analysis).
+- **[docs/STRUCTURAL-RULES.md](docs/STRUCTURAL-RULES.md):** the `structural` pack — over-engineering rather than vulnerabilities (needless abstractions, pass-through wrappers, complexity spikes), all non-blocking, with per-language thresholds.
 - **[docs/MEASUREMENT.md](docs/MEASUREMENT.md):** what agents actually ship unprompted and how to reproduce it (`diffgate marginal`).
 - **[MCP.md](MCP.md):** MCP tools, prompts, resources, and AI configuration.
 

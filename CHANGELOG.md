@@ -11,6 +11,13 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Structural rules — a `structural` pack targeting over-engineering, not vulnerabilities** ([src/core/rules/structural.ts](src/core/rules/structural.ts), [complexity.ts](src/core/complexity.ts), [language-thresholds.ts](src/core/language-thresholds.ts)). Twelve rules over a shared AST metric engine (cognitive complexity per SonarSource, nesting depth, function length, parameter count), computed on the tree the security rules already parsed. Everything is 🟡 yellow and non-blocking — a mis-tuned threshold can produce a review note, never a blocked gate.
+  - *Universal metrics*: `cognitive-complexity-spike`, `deep-nesting`, `long-function`, `too-many-parameters`.
+  - *Language anti-patterns*: `py-unnecessary-class`, `py-unnecessary-abc`, `go-premature-interface`, `java-single-impl-interface`, `ts-over-generic`. Each is written narrowly so the idiomatic lookalike stays quiet — `@dataclass`, `@property`, any base class, or a second implementor all suppress the Python rules.
+  - *Indirection*: `pass-through-wrapper` (single-statement body forwarding its parameters unchanged), `diff-churn-ratio` (added lines vs net AST statements).
+  - *Graph-backed*: `single-caller-abstraction`. The detector alone cannot tell a speculative abstraction from a load-bearing one, so it is **opt-in** (`enabledByDefault: false`) and [structural-impact.ts](src/core/structural-impact.ts) drops every finding it cannot positively confirm — no graph, no language coverage, a truncated walk, or a provider error all mean drop. Only `callerCount <= 1` survives.
+- **`languageOverrides` config section** — per-language complexity thresholds, merged built-in defaults ← language defaults ← `languageOverrides._default` ← `languageOverrides.<lang>`. Defaults follow SonarSource / Clippy / golangci-lint conventions (Python 10/3/25/4, Go 10/3/35/4, Java 15/4/50/5, …).
+- **Rule packs can be enabled, not just disabled.** `rules: { "structural": true }` opts a default-off family in wholesale, instead of one override line per rule.
 - **Built-in in-process code graph is now the default `graph.provider`** ([src/core/graph/builtin.ts](src/core/graph/builtin.ts), [callgraph.ts](src/core/graph/callgraph.ts), [entry-points.ts](src/core/graph/entry-points.ts)). Cross-file blast radius and reachability escalation work with zero setup — no external binary, no index step. CodeGraph stays available as an opt-in upgrade (`graph.provider: "codegraph"`) for proper symbol resolution, cross-repo consumers, and Pro taint analysis.
 - **JS/TS entry-point detection** — Express/Fastify/Koa route registration (`app.get("/x", handler)`, `router.use(...)`), Next.js segment handlers (`export async function GET`), `export default function handler` in route-shaped paths, `exports.handler` serverless entry points, and `addEventListener`/`.on(...)` event handlers. Inline arrow handlers are matched by the closure's own line span, so a sink inside `app.get("/u/:id", async (req, res) => …)` is reachable with no named function to match on. Previously the JS/TS detector was a stub returning nothing — on the flagship language every reachability query answered "no entry points in this repo".
 
@@ -21,6 +28,9 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Rule-pack disabling was silently ignored for any pack outside a hardcoded list.** `getRules` matched `rules: { "<pack>": false }` against the literal names `web-security`, `compatibility`, and `hygiene`, so a newly added pack could not be turned off. Pack handling is now driven by `RULE_PACKS` itself.
+- **A per-rule `tier` override could not re-tier a structural finding.** `makeFinding` prefers the emit-site tier over the rule's, and the structural rules were passing `tier`/`blocking` on every emit — overriding the user's own config. Emit-level tier is now reserved for genuine per-finding adjustment.
+- **Tree-sitter line numbers were off by one in the complexity engine**, and the `if (!startLine)` guard discarded any function starting on the file's first row.
 - **No negative verdict from an incomplete graph.** `impact()` returns unknown instead of `callerCount: 0`, and `reachability()` returns unknown instead of `reachable: false`, when (a) the file's language isn't one the graph parses, or (b) the walk hit its budget and truncated. A truncated or blind walk must never look like proof that nothing calls a symbol or that no handler reaches a sink — that's the input to `reachabilityDeescalate`.
 - The provider graph cache no longer grows one entry per `cwd` for the life of an MCP server; aged-out entries are dropped on rebuild.
 
