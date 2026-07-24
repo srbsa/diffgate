@@ -94,6 +94,20 @@ function forwardsParamsUnchanged(fn: TsNode, call: TsNode, profile: ComplexityPr
   return args.every((a, i) => a.type === "identifier" && a.text === paramNames[i]);
 }
 
+/** Babel counterpart of {@link forwardsParamsUnchanged}. */
+function babelForwardsParamsUnchanged(fn: AstNode, call: AstNode): boolean {
+  const params = ((fn as { params?: AstNode[] }).params ?? []);
+  // Defaults, rest, and destructuring mean we cannot prove a clean forward.
+  if (!params.every((p) => p.type === "Identifier")) return false;
+  const args = ((call as { arguments?: AstNode[] }).arguments ?? []);
+  if (args.length !== params.length) return false;
+  return args.every(
+    (a, i) =>
+      a.type === "Identifier" &&
+      (a as { name?: string }).name === (params[i] as { name?: string }).name
+  );
+}
+
 // ===== Universal Complexity Rules (both TsAst and Ast variants) =====
 
 /**  cognitive-complexity-spike: Flag functions exceeding language-specific cognitive complexity threshold. */
@@ -544,13 +558,17 @@ export const PassThroughWrapperAst: AstRule = {
       return; // Not a simple delegation pattern
     }
 
-    // Only flag if the return is actually a function call (CallExpression)
-    if (returnExpr?.type === "CallExpression") {
-      emit({
-        loc: node.loc,
-        message: `⚡ Function is a pass-through wrapper. Inline the call site.`,
-      });
-    }
+    // Only a *pass-through* when the call forwards the parameters untouched — same arity, same
+    // identifiers, same order. Without this the rule fires on every `x => transform(x, 2)` and
+    // every `() => doThing()` callback, which is most of a normal codebase.
+    if (returnExpr?.type !== "CallExpression") return;
+    if (!babelForwardsParamsUnchanged(node, returnExpr)) return;
+
+    emit({
+      loc: node.loc,
+      symbol: (node as { id?: { name?: string } }).id?.name ?? null,
+      message: `⚡ Function only delegates to another call without transforming its arguments. Inline the call site unless the indirection is load-bearing.`,
+    });
   },
 };
 

@@ -59,8 +59,9 @@ test("nestingDepth: linear function", () => {
   const fn = ast.program?.body[0];
   const depth = nestingDepth(fn, profile, "babel");
 
-  // A function with only a return statement still has the BlockStatement nesting, so depth >= 1
-  assert(depth >= 1, `Linear function should have nesting depth >= 1 (got ${depth})`);
+  // A function body's own `{ }` is not a nesting level — otherwise Babel numbers would not be
+  // comparable with the tree-sitter languages, and every one-liner would report depth 1.
+  assert.equal(depth, 0, `Linear function should have nesting depth 0 (got ${depth})`);
 });
 
 test("nestingDepth: double-nested if", () => {

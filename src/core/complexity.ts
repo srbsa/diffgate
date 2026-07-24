@@ -351,7 +351,11 @@ const BABEL_PROFILE: ComplexityProfile = {
   paramsField: "params",
   paramField: "params",
   decisionTypes: new Set(["IfStatement", "ForStatement", "WhileStatement", "SwitchStatement", "TryStatement", "ConditionalExpression"]),
-  nestingTypes: new Set(["IfStatement", "ForStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement", "TryStatement", "BlockStatement"]),
+  // BlockStatement is deliberately NOT a nesting type. It is the `{ }` of every function and every
+  // branch, so counting it made a flat one-liner report depth 1 and inflated both nesting and
+  // cognitive score ~2x against the tree-sitter languages — which silently made the per-language
+  // thresholds incomparable between the two backends.
+  nestingTypes: new Set(["IfStatement", "ForStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement", "TryStatement"]),
   logicalOperatorTypes: new Set(["LogicalExpression"]),
   logicalOpField: "operator",
   statementTypes: new Set(["ExpressionStatement", "ReturnStatement", "VariableDeclaration", "BlockStatement"]),

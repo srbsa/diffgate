@@ -95,19 +95,23 @@ test("structural: too-many-parameters fires on JS function with many params", ()
 
 test("structural: deep-nesting fires on deeply nested JS function", () => {
   const filePath = "test.js";
-  const content = `function nested(a, b, c, d) {
+  // The JS/TS nesting threshold is 4, so this needs 5 real levels. A function's own braces are not
+  // a level — only control-flow constructs count.
+  const content = `function nested(a, b, c, d, e) {
   if (a) {
     if (b) {
       if (c) {
         if (d) {
-          return true;
+          if (e) {
+            return true;
+          }
         }
       }
     }
   }
 }`;
 
-  const result = analyze({ filePath, content, config: DEFAULT_CONFIG, changedLines: new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) });
+  const result = analyze({ filePath, content, config: DEFAULT_CONFIG, changedLines: new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) });
 
   const finding = result.findings.find(f => f.ruleId === "deep-nesting");
   assert(finding, "Should find deep-nesting finding");
