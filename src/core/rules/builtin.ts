@@ -7,6 +7,7 @@ import { RUBY_RULES } from "./ruby.js";
 import { JAVA_RULES } from "./java.js";
 import { CSHARP_RULES } from "./csharp.js";
 import { KOTLIN_RULES } from "./kotlin.js";
+import { STRUCTURAL_TSAST_RULES, STRUCTURAL_AST_RULES } from "./structural.js";
 import type { Rule, AstNode, EmitFn, RuleContext, DeprecatedEntry, Config } from "../types.js";
 
 const JS = ["javascript", "typescript"];
@@ -888,6 +889,11 @@ export const BUILTIN_RULES: Rule[] = [
   ...JAVA_RULES,
   ...CSHARP_RULES,
   ...KOTLIN_RULES,
+
+  // ------------------------------------------ Structural complexity rules (Phase 1)
+  // Universal complexity metrics and LLM anti-pattern detection. Language-differentiated thresholds.
+  ...STRUCTURAL_TSAST_RULES,
+  ...STRUCTURAL_AST_RULES,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1061,5 +1067,17 @@ export const RULE_PACKS: Record<string, string[]> = {
     "leftover-debugger",
     "debug-logging",
     "todo-marker",
+  ],
+  "structural": [
+    // Phase 1: Universal complexity
+    "cognitive-complexity-spike",
+    "deep-nesting",
+    "long-function",
+    "too-many-parameters",
+    // Phase 2: Language-specific anti-patterns
+    "ts-over-generic",
+    // Phase 3: Graph-backed + pure-AST
+    "pass-through-wrapper",
+    "diff-churn-ratio",
   ],
 };
