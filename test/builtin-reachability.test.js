@@ -332,3 +332,133 @@ def admin_cli(name):
   }
 });
 
+
+test("JS/TS entry points: express routes make sinks reachable, unrelated code stays advisory", () => {
+  const dir = makeTempRepo({
+    "src/routes.js": `
+const app = require("express")();
+
+app.get("/users/:id", async (req, res) => {
+  res.json(await db.query("SELECT * FROM users WHERE id = " + req.params.id));
+});
+
+app.post("/search", handleSearch);
+
+function handleSearch(req, res) {
+  return runQuery(req.body.q);
+}
+
+function runQuery(q) {
+  return db.query("SELECT * FROM t WHERE x = '" + q + "'");
+}
+
+function offGraph(q) {
+  return db.query("SELECT * FROM t WHERE x = '" + q + "'");
+}
+`
+  });
+
+  try {
+    const provider = makeBuiltinProvider(dir, { enabled: "auto", provider: "builtin", reachabilityMaxDepth: 6 });
+    const file = path.join(dir, "src/routes.js");
+    const at = (line) => provider.reachability({ symbol: "query", file, line, cwd: dir });
+
+    // Inline arrow handler: no named function to match, matched by the handler's body range.
+    const inline = at(5);
+    assert.equal(inline.reachable, true);
+    assert.equal(inline.entryPoints[0].route, "GET /users/:id");
+
+    // Handler passed by reference, one hop from the sink.
+    const viaChain = at(16);
+    assert.equal(viaChain.reachable, true);
+    assert.equal(viaChain.entryPoints[0].route, "POST /search");
+
+    // Nothing routes to this one — must not be escalated.
+    assert.equal(at(20).reachable, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JS handler exports (Next.js route, lambda) count as entry points", () => {
+  const dir = makeTempRepo({
+    "app/api/items/route.ts": `
+export async function GET(req: Request) {
+  return db.query("SELECT * FROM items WHERE id = " + new URL(req.url).searchParams.get("id"));
+}
+`,
+    "functions/ingest.js": `
+exports.handler = async (event) => {
+  return db.query("SELECT * FROM t WHERE k = '" + event.key + "'");
+};
+`
+  });
+
+  try {
+    const provider = makeBuiltinProvider(dir, { enabled: "auto", provider: "builtin" });
+    assert.equal(
+      provider.reachability({ symbol: "query", file: path.join(dir, "app/api/items/route.ts"), line: 3, cwd: dir }).reachable,
+      true
+    );
+    assert.equal(
+      provider.reachability({ symbol: "query", file: path.join(dir, "functions/ingest.js"), line: 3, cwd: dir }).reachable,
+      true
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("no verdict for languages the graph cannot parse (unknown, never 'unreachable')", () => {
+  const dir = makeTempRepo({
+    "main.rs": `fn handler(q: &str) { db.query(&format!("SELECT * FROM t WHERE x = '{}'", q)); }\n`
+  });
+
+  try {
+    const provider = makeBuiltinProvider(dir, { enabled: "auto", provider: "builtin" });
+    assert.equal(provider.reachability({ symbol: "query", file: path.join(dir, "main.rs"), line: 1, cwd: dir }), null);
+    assert.equal(provider.impact({ symbol: "handler", file: path.join(dir, "main.rs"), line: 1, cwd: dir }), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a budget-truncated graph reports unknown, not a false negative", () => {
+  const files = { "src/sink.js": `function sink(q) { return db.query("SELECT " + q); }\n` };
+  for (let i = 0; i < 12; i++) files[`src/f${i}.js`] = `function f${i}() { return ${i}; }\n`;
+  const dir = makeTempRepo(files);
+
+  try {
+    const provider = makeBuiltinProvider(dir, { enabled: "auto", provider: "builtin" }, {}, { maxFiles: 2 });
+    assert.equal(provider.reachability({ symbol: "query", file: path.join(dir, "src/sink.js"), line: 1, cwd: dir }), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("non-request event listeners are not untrusted entry points (no false escalation)", () => {
+  const dir = makeTempRepo({
+    "src/lifecycle.js": `
+process.on("exit", () => {
+  db.query("DELETE FROM sessions WHERE id = '" + cachedId + "'");
+});
+
+socket.on("message", (msg) => {
+  db.query("SELECT * FROM t WHERE k = '" + msg.key + "'");
+});
+`
+  });
+
+  try {
+    const provider = makeBuiltinProvider(dir, { enabled: "auto", provider: "builtin" });
+    const file = path.join(dir, "src/lifecycle.js");
+    // Unknown (no enclosing named function, and the hook is not an entry point) — the point is that
+    // it is never claimed reachable, which would escalate it to a blocking finding.
+    const exitHook = provider.reachability({ symbol: "query", file, line: 3, cwd: dir });
+    assert.notEqual(exitHook?.reachable, true, "process exit hook carries no outside input");
+    assert.equal(provider.reachability({ symbol: "query", file, line: 7, cwd: dir }).reachable, true,
+      "socket message handler does");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

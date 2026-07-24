@@ -47,8 +47,8 @@ def execute_sql(sql):
 
   try {
     const graph = buildCallGraph(dir, {
-      entryPointDetector: (tree, file, lang) => {
-        const eps = detectEntryPoints(tree, file, lang);
+      entryPointDetector: (source, file, lang) => {
+        const eps = source.tree ? detectEntryPoints(source.tree, file, lang) : [];
         return eps.map((e) => e.qualName);
       }
     });

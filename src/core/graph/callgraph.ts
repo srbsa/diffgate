@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { TsTree, TsNode, Config } from "../types.js";
+import { TsTree, TsNode, AstNode, Config } from "../types.js";
 import { parseTs, treeSitterReady } from "../parsers/treesitter.js";
 import { detectLanguage, AST_LANGUAGES } from "../parsers/index.js";
 import { parseJs } from "../parsers/javascript.js";
@@ -31,6 +31,9 @@ export interface CallGraph {
   callers: Map<string, CallSite[]>;
   /** Qualified function names that are framework entry points (detected by entry-points.ts). */
   entryPointNames: Set<string>;
+  /** True when the walk hit its file or time budget and stopped early. A partial graph may be
+   *  missing callers and entry points, so "no path found" is unknown, not proven-unreachable. */
+  partial: boolean;
 }
 
 interface CallGraphProfile {
@@ -254,17 +257,26 @@ function extractCallSites(tree: TsTree, file: string, language: string, profile:
  */
 export function buildCallGraph(cwd: string, opts?: {
   maxFileSize?: number;
-  entryPointDetector?: (tree: TsTree, file: string, lang: string) => string[];
+  /** Stop after this many parsed files (graph is then `partial`). Default 3000. */
+  maxFiles?: number;
+  /** Stop after this much wall time (graph is then `partial`). Default 8000ms. */
+  budgetMs?: number;
+  entryPointDetector?: (source: { tree: TsTree } | { ast: AstNode }, file: string, lang: string) => string[];
   /** Full config (only `.ignore` is read) — respected the same way the diff/editor/MCP walks are. */
   config?: Partial<Config>;
 }): CallGraph {
   const graph: CallGraph = {
     functions: new Map(),
     callers: new Map(),
-    entryPointNames: new Set()
+    entryPointNames: new Set(),
+    partial: false
   };
 
   const maxFileSize = opts?.maxFileSize || 100 * 1024;
+  const maxFiles = opts?.maxFiles ?? 3000;
+  const budgetMs = opts?.budgetMs ?? 8000;
+  const startedAt = Date.now();
+  let parsed = 0;
   const ignoreConfig = (opts?.config || {}) as Config;
 
   function addFns(fns: FnDef[]) {
@@ -292,6 +304,7 @@ export function buildCallGraph(cwd: string, opts?: {
     }
 
     for (const entry of entries) {
+      if (graph.partial) return;
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!IGNORE_DIR_NAMES.has(entry.name)) {
@@ -306,6 +319,15 @@ export function buildCallGraph(cwd: string, opts?: {
 
           const lang = detectLanguage(fullPath);
           if (!lang) continue;
+          if (!AST_LANGUAGES.has(lang) && !CALL_GRAPH_PROFILES[lang]) continue;
+
+          // Budget guard: a huge monorepo must not turn the gate into a minute-long parse. Checked
+          // only for files we're actually about to parse, so it measures work, not directory size.
+          if (parsed >= maxFiles || Date.now() - startedAt > budgetMs) {
+            graph.partial = true;
+            return;
+          }
+          parsed++;
 
           if (AST_LANGUAGES.has(lang)) {
             // JS/TS isn't tree-sitter-parsed in this build — reuse the Babel AST instead.
@@ -314,19 +336,23 @@ export function buildCallGraph(cwd: string, opts?: {
             const { fns, sites } = extractJs(ast, fullPath);
             addFns(fns);
             addSites(sites);
+            if (opts?.entryPointDetector) {
+              for (const ep of opts.entryPointDetector({ ast }, fullPath, lang)) {
+                graph.entryPointNames.add(ep);
+              }
+            }
             continue;
           }
 
           if (!treeSitterReady(lang)) continue;
           const profile = CALL_GRAPH_PROFILES[lang];
-          if (!profile) continue;
 
           const content = fs.readFileSync(fullPath, "utf-8");
           const tree = parseTs(content, lang);
           if (!tree) continue;
 
           if (opts?.entryPointDetector) {
-            const eps = opts.entryPointDetector(tree, fullPath, lang);
+            const eps = opts.entryPointDetector({ tree }, fullPath, lang);
             for (const ep of eps) {
               graph.entryPointNames.add(ep);
             }
