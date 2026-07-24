@@ -1,12 +1,12 @@
 import type {
-  GraphProvider, ImpactQuery, PrContextQuery, ReachabilityQuery
+  GraphProvider, ImpactQuery, ReachabilityQuery
 } from "./index.js";
 import type {
-  GraphConfig, ImpactInfo, PrContextInfo, ReachabilityVerdict, ReachabilityEntryPoint, ImpactRef,
+  GraphConfig, ImpactInfo, ReachabilityVerdict, ReachabilityEntryPoint, ImpactRef,
   EditContext, SecurityVerdict, Config
 } from "../types.js";
 import { buildCallGraph, resolveEnclosingFunction, getCallers, isCallGraphLanguage, CallGraph } from "./callgraph.js";
-import { detectEntryPoints, DetectedEntryPoint } from "./entry-points.js";
+import { detectEntryPoints, detectJsEntryPoints, DetectedEntryPoint } from "./entry-points.js";
 import { detectLanguage } from "../parsers/index.js";
 
 /**
@@ -20,24 +20,33 @@ import { detectLanguage } from "../parsers/index.js";
 const GRAPH_CACHE_TTL_MS = 30_000;
 const graphCache = new Map<string, { graph: CallGraph; entryPoints: DetectedEntryPoint[]; builtAt: number }>();
 
+/** Walk budgets. Not config keys — a host embedding the engine (or a test) can tighten them; the
+ *  defaults are the point where a gate run stops being interactive on a very large repo. */
+export interface BuildBudget { maxFiles?: number; budgetMs?: number }
+
 export class BuiltinGraphProvider implements GraphProvider {
   public readonly id = "builtin";
   private cwd: string;
   private config: GraphConfig;
   private fullConfig: Partial<Config>;
+  private budget: BuildBudget;
   private graph: CallGraph | null = null;
   private detectedEntryPoints: DetectedEntryPoint[] = [];
 
-  constructor(cwd: string, config: GraphConfig, fullConfig: Partial<Config> = {}) {
+  constructor(cwd: string, config: GraphConfig, fullConfig: Partial<Config> = {}, budget: BuildBudget = {}) {
     this.cwd = cwd;
     this.config = config;
     this.fullConfig = fullConfig;
+    this.budget = budget;
   }
 
   private ensureGraph(): CallGraph {
     if (this.graph) return this.graph;
 
-    const cached = graphCache.get(this.cwd);
+    // The cache is keyed by cwd alone, so a custom budget (different coverage) neither reads nor
+    // writes it.
+    const cacheable = this.budget.maxFiles === undefined && this.budget.budgetMs === undefined;
+    const cached = cacheable ? graphCache.get(this.cwd) : undefined;
     if (cached && Date.now() - cached.builtAt < GRAPH_CACHE_TTL_MS) {
       this.graph = cached.graph;
       this.detectedEntryPoints = cached.entryPoints;
@@ -48,15 +57,24 @@ export class BuiltinGraphProvider implements GraphProvider {
 
     this.graph = buildCallGraph(this.cwd, {
       config: this.fullConfig,
-      entryPointDetector: (tree, file, lang) => {
-        const eps = detectEntryPoints(tree, file, lang);
+      maxFiles: this.budget.maxFiles,
+      budgetMs: this.budget.budgetMs,
+      entryPointDetector: (source, file, lang) => {
+        const eps = "tree" in source
+          ? detectEntryPoints(source.tree, file, lang)
+          : detectJsEntryPoints(source.ast, file);
         entryPointsList.push(...eps);
         return eps.map((e) => e.qualName);
       }
     });
 
     this.detectedEntryPoints = entryPointsList;
-    graphCache.set(this.cwd, { graph: this.graph, entryPoints: entryPointsList, builtAt: Date.now() });
+    // Drop entries that have aged out rather than letting the map grow per-cwd forever (a
+    // long-lived MCP server can be pointed at many repos over a session).
+    for (const [key, entry] of graphCache) {
+      if (Date.now() - entry.builtAt >= GRAPH_CACHE_TTL_MS) graphCache.delete(key);
+    }
+    if (cacheable) graphCache.set(this.cwd, { graph: this.graph, entryPoints: entryPointsList, builtAt: Date.now() });
     return this.graph;
   }
 
@@ -66,6 +84,8 @@ export class BuiltinGraphProvider implements GraphProvider {
 
     const graph = this.ensureGraph();
     const callers = getCallers(graph, query.symbol);
+    // A truncated walk can't distinguish "no callers" from "didn't get that far".
+    if (callers.length === 0 && graph.partial) return null;
     const related = this.relatedTests(query) || [];
     const defs = graph.functions.get(query.symbol) || [];
 
@@ -90,37 +110,11 @@ export class BuiltinGraphProvider implements GraphProvider {
     };
   }
 
-  prContext(query: PrContextQuery): PrContextInfo | null {
-    const graph = this.ensureGraph();
-    const bySymbol: Record<string, ImpactInfo> = {};
-
-    for (const [name, fnDefs] of graph.functions.entries()) {
-      const callers = getCallers(graph, name);
-      if (callers.length > 0) {
-        bySymbol[name] = {
-          source: "codegraph",
-          symbol: name,
-          callerCount: callers.length,
-          callers: callers.map((c) => ({
-            file: c.file,
-            line: c.line,
-            symbol: c.callerQualName
-          })),
-          reachable: null,
-          reviewers: [],
-          testGaps: [],
-          truncated: false,
-          ambiguous: fnDefs.length > 1
-        };
-      }
-    }
-
-    return {
-      source: "codegraph",
-      bySymbol,
-      staleDocs: []
-    };
-  }
+  // No prContext: a whole-repo bySymbol dump carries nothing `impact()` doesn't (no reviewers, no
+  // stale docs, no complexity here), costs a full-repo map, and is matched by bare name — so a
+  // same-named symbol in an uncovered language could answer for a finding `impact()` would have
+  // correctly reported as unknown. attachImpact falls back to the per-finding path, which shares
+  // the same cached graph.
 
   relatedTests(query: ImpactQuery): ImpactRef[] | null {
     const graph = this.ensureGraph();
@@ -153,11 +147,19 @@ export class BuiltinGraphProvider implements GraphProvider {
   }
 
   reachability(query: ReachabilityQuery): ReachabilityVerdict | null {
+    // Outside the languages this graph parses, silence is absence of evidence — never report
+    // "unreachable" for a file we never read.
+    if (!isCallGraphLanguage(detectLanguage(query.file))) return null;
+
     const graph = this.ensureGraph();
     const maxDepth = query.maxDepth ?? this.config.reachabilityMaxDepth ?? 6;
 
     const untrustedKinds = new Set(query.untrustedKinds || ["http_handler", "event_handler"]);
     const validEntryPoints = this.detectedEntryPoints.filter((e) => untrustedKinds.has(e.kind));
+
+    // Same rule for a truncated walk: the handler that reaches this sink may be in a file the
+    // budget cut off, so a negative verdict is unknown, not proven.
+    if (graph.partial && validEntryPoints.length === 0) return null;
 
     if (validEntryPoints.length === 0) {
       return {
@@ -269,6 +271,8 @@ export class BuiltinGraphProvider implements GraphProvider {
       };
     }
 
+    if (graph.partial) return null; // negative result off a truncated graph proves nothing
+
     return {
       source: "codegraph",
       reachable: false,
@@ -285,6 +289,8 @@ export class BuiltinGraphProvider implements GraphProvider {
   }
 }
 
-export function makeBuiltinProvider(cwd: string, config: GraphConfig, fullConfig?: Partial<Config>): GraphProvider {
-  return new BuiltinGraphProvider(cwd, config, fullConfig);
+export function makeBuiltinProvider(
+  cwd: string, config: GraphConfig, fullConfig?: Partial<Config>, budget?: BuildBudget
+): GraphProvider {
+  return new BuiltinGraphProvider(cwd, config, fullConfig, budget);
 }

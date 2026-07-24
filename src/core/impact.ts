@@ -147,6 +147,11 @@ export function attachImpact(
 ): AnalyzeResult[] {
   const { graph } = opts;
   if (!graph) return files;
+  // Nothing here can consume impact data — bail before pr_context, which is the expensive call
+  // (a full-repo graph build for the built-in provider, a subprocess for CodeGraph). Without this
+  // every run pays for the graph even on a diff with no impact-eligible finding.
+  const eligible = files.some((f) => f.findings.some((fn) => fn.symbol && IMPACT_RULES.has(fn.ruleId)));
+  if (!eligible) return files;
   const g = resolveGraphConfig(opts.config);
 
   // Primary source: one whole-diff pr_context call (when the provider supports it).
