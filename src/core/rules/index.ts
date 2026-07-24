@@ -114,13 +114,27 @@ export function getRules(config: Partial<Config>, language: string): Rule[] {
   ];
   const overrides = (config && config.rules) || {};
 
-  // Find disabled packs
+  // Find disabled/enabled packs. Driven by RULE_PACKS itself so a newly added pack is honored
+  // without touching this list.
   const disabledPacks = new Set<string>();
+  const enabledPacks = new Set<string>();
   for (const [key, value] of Object.entries(overrides)) {
-    if (value === false && (key === "web-security" || key === "compatibility" || key === "hygiene")) {
-      disabledPacks.add(key);
+    if (!Object.prototype.hasOwnProperty.call(RULE_PACKS, key)) continue;
+    const v = value as unknown;
+    if (v === false) disabledPacks.add(key);
+    // `"pack": true` (or `{enabled:true}`) opts a default-off pack in wholesale, so a family that
+    // ships opt-in doesn't need one override line per rule.
+    else if (v === true || (v && typeof v === "object" && (v as { enabled?: boolean }).enabled)) {
+      enabledPacks.add(key);
     }
   }
+  const inEnabledPack = (id: string): boolean => {
+    for (const pack of enabledPacks) {
+      const ids = RULE_PACKS[pack];
+      if (ids && ids.includes(id)) return true;
+    }
+    return false;
+  };
 
   const out: Rule[] = [];
   for (const rule of all) {
@@ -140,7 +154,11 @@ export function getRules(config: Partial<Config>, language: string): Rule[] {
 
     const ov = overrides[rule.id];
     if (ov === false) continue;
-    if (rule.enabledByDefault === false && !(ov && (ov as { enabled?: boolean }).enabled)) continue;
+    if (
+      rule.enabledByDefault === false &&
+      !(ov && (ov as { enabled?: boolean }).enabled) &&
+      !inEnabledPack(rule.id)
+    ) continue;
     if (!ruleAppliesToLanguage(rule, language)) continue;
     if (rule.skipIfAst && hasAstSupport(language)) continue;
 

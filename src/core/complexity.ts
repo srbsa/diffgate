@@ -105,7 +105,7 @@ export function computeBabelComplexity(root: AstNode, profile: ComplexityProfile
 function analyzeFunctionNode(node: TsNode | AstNode, kind: "tree" | "babel", profile: ComplexityProfile): FunctionComplexity | null {
   const name = extractName(node, kind, profile);
   const { startLine, endLine } = extractLineRange(node, kind);
-  if (!startLine || !endLine) return null;
+  if (startLine === null || endLine === null) return null;
 
   const bodyLines: number[] = [];
   for (let i = startLine; i <= endLine; i++) bodyLines.push(i);
@@ -151,8 +151,11 @@ function extractName(node: TsNode | AstNode, kind: "tree" | "babel", profile: Co
 
 function extractLineRange(node: TsNode | AstNode, kind: "tree" | "babel"): { startLine: number | null; endLine: number | null } {
   if (kind === "tree") {
+    // tree-sitter rows are 0-based; every consumer (findings, inChange, ctx.lines) is 1-based.
     const tsNode = node as TsNode;
-    return { startLine: tsNode.startPosition?.row ?? null, endLine: tsNode.endPosition?.row ?? null };
+    const start = tsNode.startPosition ? tsNode.startPosition.row + 1 : null;
+    const end = tsNode.endPosition ? tsNode.endPosition.row + 1 : null;
+    return { startLine: start, endLine: end };
   } else {
     const astNode = node as AstNode;
     const start = (astNode as any).loc?.start?.line ?? null;

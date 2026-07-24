@@ -1076,8 +1076,13 @@ export const RULE_PACKS: Record<string, string[]> = {
     "too-many-parameters",
     // Phase 2: Language-specific anti-patterns
     "ts-over-generic",
+    "py-unnecessary-class",
+    "py-unnecessary-abc",
+    "go-premature-interface",
+    "java-single-impl-interface",
     // Phase 3: Graph-backed + pure-AST
     "pass-through-wrapper",
     "diff-churn-ratio",
+    "single-caller-abstraction",
   ],
 };
