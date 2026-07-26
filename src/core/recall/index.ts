@@ -3,7 +3,7 @@
 // to a review — diff-scoped, deduped against native findings, ADVISORY-only (never blocking).
 
 import path from "path";
-import { overallTier, tierCounts } from "../tiers.js";
+import { recomputeResult } from "../tiers.js";
 import { makeSemgrepProvider, semgrepAvailable, diffScope, dedupeAgainst, toFindings } from "./semgrep.js";
 import type { RecallProvider, RawRecallFinding } from "./semgrep.js";
 import type { AnalyzeResult, Config, RecallConfig } from "../types.js";
@@ -43,16 +43,6 @@ export function getRecallProvider(
   if (g.provider !== "semgrep") return null;
   if (!semgrepAvailable(g.command)) return null;
   return makeSemgrepProvider({ command: g.command, config: g.config, timeoutMs: g.timeoutMs });
-}
-
-function recompute(result: AnalyzeResult, findings: AnalyzeResult["findings"]): AnalyzeResult {
-  return {
-    ...result,
-    findings,
-    tier: overallTier(findings),
-    counts: tierCounts(findings),
-    blocking: findings.some((f) => f.blocking),
-  };
 }
 
 /**
@@ -95,7 +85,7 @@ export function attachRecall(
     const borrowed = toFindings(dedupeAgainst(diffScope(raw, changedLines), result.findings));
     if (borrowed.length === 0) return result;
     const findings = [...result.findings, ...borrowed].sort((a, b) => a.line - b.line);
-    return recompute(result, findings);
+    return recomputeResult(result, findings);
   });
 }
 

@@ -75,6 +75,52 @@ worthless, so it is inert by default:
 { "rules": { "single-caller-abstraction": { "enabled": true } } }
 ```
 
+### Repo-backed
+
+| Rule | Fires when |
+|---|---|
+| `reinvented-helper` | A new function duplicates one that already exists elsewhere in the repo |
+
+Everything above this line looks at code that is *too structured*. This rule looks at the opposite
+failure, and it is the one the field data says is more common. GitClear's 2026 corpus finds block
+duplication up 81% since 2023, refactored code down from 21% of changed lines to 3.8%, and function
+connectivity — how often new code calls existing code — down 35%. Agents reinvent far more often
+than they over-abstract.
+
+No diff-scoped metric can catch that, because the diff is locally fine. The function is a reasonable
+function; it just already exists two directories over.
+
+The detector fingerprints each added function: a hash over the normalized AST node-type sequence of
+its body, with identifiers, literals, and type annotations erased. Two functions doing the same work
+with different names and constants hash identically.
+[`attachReinvention`](../src/core/reinvention.ts) then indexes every function in the repo by that
+hash and keeps a finding only when **all** of these hold:
+
+- identical, non-empty shape hash, and identical parameter count
+- at least 5 shape nodes — smaller bodies are too generic to be evidence of anything
+- name-token overlap (Jaccard) ≥ 0.25
+- the match is in a different file, is not a test file, and is not itself part of this diff
+  (a function moved between two files is a move, not a reinvention)
+
+The name is deliberately the weakest gate — an identical body over 5+ statements is already strong
+evidence, and the name only has to corroborate it. The floor was calibrated up from 0.34, which
+rejected the canonical case: two two-token names sharing one token (`resolveThresholds` rewritten as
+`resolveLimits`) score exactly 1/3.
+
+**The error direction here is the reverse of `single-caller-abstraction`**, which is why a partial
+walk is treated differently. A truncated graph walk can report zero callers for a symbol that has
+many, so an unconfirmed abstraction must be dropped. A truncated *shape* walk can only miss a
+duplicate, never invent one — a match is positive evidence on its own. Partial coverage costs recall
+here, not precision.
+
+Opt-in while it accumulates calibration data:
+
+```jsonc
+{ "rules": { "reinvented-helper": true } }
+```
+
+> Found six byte-identical copies of one `recompute` helper in this repo on its first real run.
+
 ---
 
 ## Tuning

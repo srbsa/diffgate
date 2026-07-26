@@ -15,7 +15,7 @@
 // Pro wins: a finding the security graph already ruled on (tainted true/false) is left to that
 // authoritative verdict. Everything degrades to a no-op when no graph / no reachability capability.
 
-import { overallTier, tierCounts } from "./tiers.js";
+import { recomputeResult } from "./tiers.js";
 import { resolveGraphConfig } from "./graph/index.js";
 import { SECURITY_RULES } from "./security.js";
 import type { GraphProvider } from "./graph/index.js";
@@ -36,16 +36,6 @@ export const REACHABILITY_RULES = new Set<string>([
 function tierPinned(config: Partial<Config>, ruleId: string): boolean {
   const ov = config.rules?.[ruleId];
   return !!(ov && typeof ov === "object" && (ov.tier !== undefined || ov.blocking !== undefined));
-}
-
-function recompute(result: AnalyzeResult, findings: Finding[]): AnalyzeResult {
-  return {
-    ...result,
-    findings,
-    tier: overallTier(findings),
-    counts: tierCounts(findings),
-    blocking: findings.some((f) => f.blocking),
-  };
 }
 
 /** Name the proven entry point(s) for the finding message. */
@@ -140,6 +130,6 @@ export function attachReachability(
       changed = true;
       return withReachability(finding, verdict, { deescalate, pinned: tierPinned(opts.config, finding.ruleId) });
     });
-    return changed ? recompute(result, findings) : result;
+    return changed ? recomputeResult(result, findings) : result;
   });
 }

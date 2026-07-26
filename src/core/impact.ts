@@ -10,7 +10,7 @@
 // or when pr_context is unavailable — fall back to a per-finding `analyze_impact` lookup, with
 // `find_related_tests` filling in test-gap data the impact call lacks.
 
-import { overallTier, tierCounts } from "./tiers.js";
+import { recomputeResult } from "./tiers.js";
 import { resolveGraphConfig } from "./graph/index.js";
 import type { GraphProvider } from "./graph/index.js";
 import type { AnalyzeResult, Config, Finding, ImpactInfo, PrContextInfo } from "./types.js";
@@ -98,16 +98,6 @@ function withImpact(
     next.message = `${finding.message}\n\n${blastSummary(impact)}`;
   }
   return next;
-}
-
-function recompute(result: AnalyzeResult, findings: Finding[]): AnalyzeResult {
-  return {
-    ...result,
-    findings,
-    tier: overallTier(findings),
-    counts: tierCounts(findings),
-    blocking: findings.some((f) => f.blocking),
-  };
 }
 
 /** Last dotted/`#`/`::`-delimited segment of a symbol (StripeClient.charge → charge). */
@@ -219,6 +209,6 @@ export function attachImpact(
         pinned: tierPinned(opts.config, finding.ruleId),
       });
     });
-    return changed ? recompute(result, findings) : result;
+    return changed ? recomputeResult(result, findings) : result;
   });
 }

@@ -1,4 +1,4 @@
-import type { Tier, TierCounts, Finding } from "./types.js";
+import type { Tier, TierCounts, Finding, AnalyzeResult } from "./types.js";
 
 export type { Tier };
 
@@ -36,4 +36,22 @@ export function tierCounts(findings: Pick<Finding, "tier">[]): TierCounts {
     if (f.tier in counts) counts[f.tier as Tier] += 1;
   }
   return counts;
+}
+
+/**
+ * Rebuild an AnalyzeResult around a filtered finding list.
+ *
+ * Every attach-pass that drops or rewrites findings has to restate the file's tier, counts, and
+ * blocking flag together — forget one and the file reports a tier no surviving finding justifies.
+ * This lived as three byte-identical private copies (impact, structural-impact, reinvention) until
+ * `reinvented-helper` flagged its own third copy.
+ */
+export function recomputeResult(result: AnalyzeResult, findings: Finding[]): AnalyzeResult {
+  return {
+    ...result,
+    findings,
+    tier: overallTier(findings),
+    counts: tierCounts(findings),
+    blocking: findings.some((f) => f.blocking),
+  };
 }

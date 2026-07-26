@@ -11,7 +11,7 @@
 // NOTE: validated against CodeGraph's documented tool contract and injected fakes, not a live
 // Pro binary — see CHANGELOG.
 
-import { overallTier, tierCounts } from "./tiers.js";
+import { recomputeResult } from "./tiers.js";
 import { resolveGraphConfig } from "./graph/index.js";
 import type { GraphProvider } from "./graph/index.js";
 import type { AnalyzeResult, Config, Finding, SecurityVerdict } from "./types.js";
@@ -58,16 +58,6 @@ export function labelTrust(files: AnalyzeResult[]): AnalyzeResult[] {
 function tierPinned(config: Partial<Config>, ruleId: string): boolean {
   const ov = config.rules?.[ruleId];
   return !!(ov && typeof ov === "object" && (ov.tier !== undefined || ov.blocking !== undefined));
-}
-
-function recompute(result: AnalyzeResult, findings: Finding[]): AnalyzeResult {
-  return {
-    ...result,
-    findings,
-    tier: overallTier(findings),
-    counts: tierCounts(findings),
-    blocking: findings.some((f) => f.blocking),
-  };
 }
 
 function taintTrace(verdict: SecurityVerdict): string {
@@ -141,6 +131,6 @@ export function attachSecurity(
       changed = true;
       return withSecurity(finding, verdict, { deescalate, pinned: tierPinned(opts.config, finding.ruleId) });
     });
-    return changed ? recompute(result, findings) : result;
+    return changed ? recomputeResult(result, findings) : result;
   });
 }

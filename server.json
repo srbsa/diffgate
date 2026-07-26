@@ -6,13 +6,13 @@
     "url": "https://github.com/srbsa/diffgate",
     "source": "github"
   },
-  "version": "0.7.11",
+  "version": "0.8.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "diffgate-review",
-      "version": "0.7.11",
+      "version": "0.8.0",
       "runtimeHint": "npx",
       "packageArguments": [
         {
