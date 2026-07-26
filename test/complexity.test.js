@@ -5,9 +5,16 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { computeBabelComplexity, computeTreeComplexity, cognitiveComplexity, nestingDepth, profileFor, analyzeComplexity } from "../dist/core/complexity.js";
 import { parseJs } from "../dist/core/parsers/javascript.js";
-import { parseTs } from "../dist/core/parsers/treesitter.js";
+import { parseTs, initTreeSitter } from "../dist/core/parsers/treesitter.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Each test FILE gets its own module instance under `node --test` — initTreeSitter() called in
+// another test file does NOT leave this file's parserCache populated. Every tree-sitter case below
+// silently degraded to a no-op skip until this was added, which is exactly how two real cross-
+// language bugs (the else-branch reference-identity bug, the parameter-count field-name bug) went
+// unnoticed by this suite despite being "covered."
+await initTreeSitter();
 
 test("cognitiveComplexity: linear function (no decisions)", () => {
   // Parse a simple linear function
@@ -211,7 +218,7 @@ def complex_func(a, b):
     return a + b
 `;
 
-  const tree = await parseTs("python", pythonCode);
+  const tree = await parseTs(pythonCode, "python");
   if (!tree) {
     console.log("Tree-sitter parser unavailable for Python; skipping this test");
     return;
@@ -231,7 +238,7 @@ test("analyzeComplexity: Tree-sitter path (with ctx.tsTree)", async () => {
     return 0
 `;
 
-  const tree = await parseTs("python", pythonCode);
+  const tree = await parseTs(pythonCode, "python");
   if (!tree) {
     console.log("Tree-sitter parser unavailable for Python; skipping this test");
     return;
@@ -303,4 +310,114 @@ test("logical operator sequences: a && b && c vs a && b || c", () => {
 
   // cog2 should be >= cog1 because of the operator sequence break
   assert(cog2 >= cog1, `Operator break should increase complexity (${cog1} vs ${cog2})`);
+});
+
+// --- Spec-parity regression suite ---------------------------------------------------------------
+// Exact SonarSource cognitive-complexity values for a fixed set of shapes. These pin down three
+// defects a corpus scan found after the metric shipped: the first occurrence of a logical-operator
+// run scored 0 instead of 1 (the "prevOp !== null" guard), the tree-sitter operator extractor
+// returned the whole subexpression's text instead of the operator token (so runs never matched
+// across languages), and else/elif/else-if chains were scored as ordinary nested ifs — doubling or
+// tripling the score of an extremely common pattern. Each case is checked on JS (Babel) and, where
+// the grammar loads, on every tree-sitter language, since the whole point of a shared metric is
+// that the same logical shape scores identically regardless of which parser produced the tree.
+
+function jsCognitive(src) {
+  const fn = computeBabelComplexity(parseJs(src), profileFor("javascript"))[0];
+  return fn ? fn.metrics.cognitive : null;
+}
+
+test("spec: a single if with one && scores 2 (1 for if, 1 for the run)", () => {
+  assert.equal(jsCognitive("function f(a,b){ if (a && b) {} }"), 2);
+});
+
+test("spec: a && b && c is ONE run — the first operator counts, later same-operator ones don't", () => {
+  assert.equal(jsCognitive("function f(a,b,c){ if (a && b && c) {} }"), 2); // 1 (if) + 1 (one run)
+});
+
+test("spec: a mixed a && b || c is TWO runs", () => {
+  assert.equal(jsCognitive("function f(a,b,c){ if (a && b || c) {} }"), 3); // 1 (if) + 2 (two runs)
+});
+
+test("spec: two independent ifs each with && score 4 total, not 2", () => {
+  // Guards the prevOp bug specifically: a global "previous operator" that never resets between
+  // unrelated ifs would silently treat the second if's && as a continuation of the first's.
+  assert.equal(jsCognitive("function f(a,b,c,d){ if (a && b) {} if (c && d) {} }"), 4);
+});
+
+test("spec: branch-free arithmetic scores 0 — no decision, no comparison", () => {
+  assert.equal(jsCognitive("function f(a,b){ return a + b * 2 - 1; }"), 0);
+});
+
+test("spec: a plain if/else scores 2 — else is a flat +1, not silently unscored", () => {
+  assert.equal(jsCognitive("function f(a){ if (a) {} else {} }"), 2);
+});
+
+test("spec: an else-if chain of any length scores 1 per branch, never compounding", () => {
+  assert.equal(jsCognitive("function f(a,b,c){ if(a){}else if(b){}else if(c){} }"), 3);
+  assert.equal(
+    jsCognitive(`function f(a,b,c,d,e){
+      if (a) { return 1; } else if (b) { return 2; } else if (c) { return 3; } else if (d) { return 4; } else { return 5; }
+    }`),
+    5
+  );
+});
+
+test("spec: a genuinely nested if inside an else-if's body still nests normally", () => {
+  // if(a) is +1; the nested if(b) inside a's body is +2 (nested, not else-if); the else-if(c)
+  // chained off if(b) is a flat +1 regardless of how deep if(b) itself sits. Total 4.
+  assert.equal(jsCognitive("function f(a,b,c){ if(a){ if(b){} else if(c){} } }"), 4);
+});
+
+test("spec: only catch scores, not the bare try keyword", () => {
+  assert.equal(jsCognitive("function f(){ try {} catch (e) {} }"), 1);
+});
+
+test("spec parity across every loaded tree-sitter grammar", async () => {
+  const cases = [
+    ["python", "def f(a,b,c):\n    if a:\n        pass\n    elif b:\n        pass\n    elif c:\n        pass\n"],
+    ["python", "def f(a,b):\n    return a+b*2-1\n"],
+    ["go", "func f(a bool,b bool,c bool){ if a {} else if b {} else if c {} }"],
+    ["go", "func f(a int,b int) int { return a+b*2-1 }"],
+    ["java", "class C{ void f(boolean a,boolean b,boolean c){ if(a){}else if(b){}else if(c){} } }"],
+    ["java", "class C{ int f(int a,int b){ return a+b*2-1; } }"],
+    ["csharp", "class C{ int f(int a,int b){ return a+b*2-1; } }"],
+    ["kotlin", "fun f(a:Boolean,b:Boolean,c:Boolean){ if(a){}else if(b){}else if(c){} }"],
+    ["php", "<?php\nfunction f($a,$b,$c) { if ($a) {} elseif ($b) {} elseif ($c) {} }"],
+    ["ruby", "def f(a,b,c)\n  if a\n  elsif b\n  elsif c\n  end\nend\n"],
+  ];
+  const expected = [3, 0, 3, 0, 3, 0, 0, 3, 3, 3];
+
+  for (let i = 0; i < cases.length; i++) {
+    const [lang, src] = cases[i];
+    const tree = await parseTs(src, lang);
+    if (!tree) { console.log(`${lang} grammar unavailable — skipping`); continue; }
+    const fn = computeTreeComplexity(tree, profileFor(lang))[0];
+    assert.ok(fn, `${lang}: expected to find a function`);
+    assert.equal(fn.metrics.cognitive, expected[i], `${lang}: ${JSON.stringify(src)}`);
+  }
+});
+
+// --- Parameter-count regression: 4 grammars had no "parameters" field under their old name -------
+// java/php/csharp used their PARSE-TREE NODE TYPE ("formal_parameters", "parameter_list") as the
+// tree-sitter FIELD NAME, which doesn't exist as a field, so childForFieldName() always returned
+// null and every function in those languages silently reported 0 parameters. Kotlin exposes no
+// field at all for its parameter list, so it needs the type-based fallback specifically.
+test("parameter count is non-zero for every tree-sitter language with a real parameter list", async () => {
+  const cases = [
+    ["java", "class C { void f(int a,int b,int c,int d,int e,int f) {} }", 6],
+    ["php", "<?php function f($a,$b,$c,$d,$e,$f) {}", 6],
+    ["csharp", "class C { void f(int a,int b,int c,int d,int e,int f) {} }", 6],
+    ["kotlin", "fun f(a:Int,b:Int,c:Int,d:Int,e:Int,f:Int) {}", 6],
+    ["go", "func f(a int,b int,c int,d int,e int,f int) {}", 6],
+    ["python", "def f(a,b,c,d,e,f):\n    pass\n", 6],
+    ["ruby", "def f(a,b,c,d,e,f)\nend\n", 6],
+  ];
+  for (const [lang, src, expectedCount] of cases) {
+    const tree = await parseTs(src, lang);
+    if (!tree) { console.log(`${lang} grammar unavailable — skipping`); continue; }
+    const fn = computeTreeComplexity(tree, profileFor(lang))[0];
+    assert.ok(fn, `${lang}: expected to find a function`);
+    assert.equal(fn.metrics.params, expectedCount, `${lang}: parameter count`);
+  }
 });

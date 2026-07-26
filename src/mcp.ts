@@ -21,6 +21,7 @@ import {
   recordLearning,
   getGraph,
   attachImpact,
+  attachStructuralImpact,
   attachSecurity,
   attachReachability,
   labelTrust,
@@ -572,6 +573,11 @@ export async function handleAnalyze(
   // Cross-file blast radius + graph-aware security/reachability (no-ops without a code graph).
   const graph = opts.graph !== undefined ? opts.graph : getGraph(cwd, config);
   let [withImpact] = attachImpact([result], { cwd, config, graph, mode: "working" });
+  // Without this, a repo that opts into the "structural" pack (or single-caller-abstraction
+  // directly) would leak an unconfirmed "speculative abstraction" finding through this MCP path —
+  // reviewChanges() runs this same pass, but handleAnalyze builds its own pipeline and previously
+  // skipped it.
+  [withImpact] = attachStructuralImpact([withImpact], { cwd, config, graph });
   [withImpact] = attachSecurity([withImpact], { cwd, config, graph });
   [withImpact] = attachReachability([withImpact], { cwd, config, graph });
   [withImpact] = labelTrust([withImpact]);

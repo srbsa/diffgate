@@ -77,7 +77,11 @@ function countReferences(root: TsNode, name: string, declLine: number): number {
  */
 function forwardsParamsUnchanged(fn: TsNode, call: TsNode, profile: ComplexityProfile): boolean {
   const paramsNode = fn.childForFieldName(profile.paramsField);
-  const params = paramsNode ? namedChildren(paramsNode) : [];
+  // No field found (e.g. Kotlin, which exposes no "parameters" field on function_declaration) means
+  // we cannot see the real parameter list — that's inconclusive, not zero. Treating it as zero would
+  // let a genuinely zero-arg call falsely "prove" forwarding for a function we never actually checked.
+  if (!paramsNode) return false;
+  const params = namedChildren(paramsNode);
   const paramNames = params.map((p) => {
     if (p.type === "identifier") return p.text;
     const id = p.childForFieldName("name");

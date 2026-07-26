@@ -313,6 +313,50 @@ test("handleAnalyze: injection with no graph is labeled trust:'unconfirmed'", as
   }
 });
 
+test("handleAnalyze confirms single-caller-abstraction via the graph when the pack is opted in", async () => {
+  const dir = gitRepo({ "a.py": "x = 1\n" });
+  fs.writeFileSync(
+    path.join(dir, "a.py"),
+    "x = 1\n\nclass PaymentGateway:\n    def charge(self, amount):\n        return amount\n"
+  );
+  fs.writeFileSync(path.join(dir, ".diffgate.json"), JSON.stringify({ rules: { structural: true } }));
+  try {
+    const withGraph = await handleAnalyze(
+      { filePath: "a.py", cwd: dir },
+      { graph: { id: "fake", impact: () => ({ callerCount: 0, source: "fake", ambiguous: false, testGaps: [], refs: [] }) } }
+    );
+    assert.ok(
+      withGraph.findings.some((f) => f.ruleId === "single-caller-abstraction"),
+      "0 callers confirmed by the graph → kept"
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Regression: handleAnalyze used to build its own pipeline (attachImpact, attachSecurity, ...)
+// without ever calling attachStructuralImpact, so a repo that opted into the "structural" pack got
+// an UNCONFIRMED "speculative abstraction" finding straight from the detector — no graph backing it
+// at all. reviewChanges() (the CLI/gate path) always called the confirmation pass; handleAnalyze
+// (the diffgate_analyze MCP tool VS Code and agents call directly) did not.
+test("handleAnalyze drops single-caller-abstraction when there is no graph to confirm it", async () => {
+  const dir = gitRepo({ "a.py": "x = 1\n" });
+  fs.writeFileSync(
+    path.join(dir, "a.py"),
+    "x = 1\n\nclass PaymentGateway:\n    def charge(self, amount):\n        return amount\n"
+  );
+  fs.writeFileSync(path.join(dir, ".diffgate.json"), JSON.stringify({ rules: { structural: true } }));
+  try {
+    const result = await handleAnalyze({ filePath: "a.py", cwd: dir }, { graph: null });
+    assert.ok(
+      !result.findings.some((f) => f.ruleId === "single-caller-abstraction"),
+      "no graph → the detector's optimistic finding must be dropped, not leaked"
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- handleCheckStaged -------------------------------------------------------
 
 test("handleCheckStaged errors on a non-git dir instead of a false 'clean'", async () => {
