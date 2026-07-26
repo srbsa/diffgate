@@ -13,23 +13,28 @@
 
 import type { AnalyzeResult, Config, Finding, ImpactInfo } from "./types.js";
 import type { GraphProvider } from "./graph/index.js";
-import { overallTier, tierCounts } from "./tiers.js";
+import { recomputeResult } from "./tiers.js";
 
 /** Rule ids whose findings only survive when the graph positively confirms them. */
 export const STRUCTURAL_IMPACT_RULES = new Set(["single-caller-abstraction"]);
 
+/**
+ * Every rule that emits optimistically and relies on a later attach-pass to confirm or drop it.
+ *
+ * These rules are NOT self-sufficient: their detector half deliberately over-emits because it can
+ * only see one file, and the finding is only meaningful after confirmation. Any analysis path that
+ * cannot run the corresponding attach-pass must therefore DROP them rather than display them —
+ * skipping the pass does not make them quiet, it makes them leak raw candidates. `reviewCommit`
+ * learned this the hard way: it skipped the graph passes as "no-ops without a graph" (true for
+ * genuine graph passes) and consequently printed unconfirmed candidates on every historical commit.
+ */
+export const CONFIRMATION_REQUIRED_RULES = new Set([
+  ...STRUCTURAL_IMPACT_RULES,
+  "reinvented-helper",
+]);
+
 /** Callers at or below this count make an abstraction speculative. */
 const SPECULATIVE_AT_OR_BELOW = 1;
-
-function recompute(result: AnalyzeResult, findings: Finding[]): AnalyzeResult {
-  return {
-    ...result,
-    findings,
-    tier: overallTier(findings),
-    counts: tierCounts(findings),
-    blocking: findings.some((f) => f.blocking),
-  };
-}
 
 function confirmedMessage(symbol: string, impact: ImpactInfo): string {
   const n = impact.callerCount;
@@ -63,7 +68,7 @@ export function attachStructuralImpact(
   if (!graph) {
     return files.map((f) => {
       const kept = f.findings.filter((fn) => !STRUCTURAL_IMPACT_RULES.has(fn.ruleId));
-      return kept.length === f.findings.length ? f : recompute(f, kept);
+      return kept.length === f.findings.length ? f : recomputeResult(f, kept);
     });
   }
 
@@ -110,6 +115,6 @@ export function attachStructuralImpact(
 
     return next.length === file.findings.length && next.every((f, i) => f === file.findings[i])
       ? file
-      : recompute(file, next);
+      : recomputeResult(file, next);
   });
 }

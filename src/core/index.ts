@@ -47,6 +47,7 @@ export {
 export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, ReachabilityQuery, GraphStatus, GraphRunner } from "./graph/index.js";
 export { attachImpact, IMPACT_RULES } from "./impact.js";
 export { attachStructuralImpact, STRUCTURAL_IMPACT_RULES } from "./structural-impact.js";
+export { attachReinvention } from "./reinvention.js";
 export { attachSecurity, SECURITY_RULES, labelTrust, trustFor } from "./security.js";
 export { attachReachability, REACHABILITY_RULES } from "./reachability.js";
 export {
@@ -70,6 +71,7 @@ import { loadMergedLearnings as _loadMergedLearnings, applyLearnings as _applyLe
 import { getGraph as _getGraph } from "./graph/index.js";
 import { attachImpact as _attachImpact } from "./impact.js";
 import { attachStructuralImpact as _attachStructuralImpact } from "./structural-impact.js";
+import { attachReinvention as _attachReinvention } from "./reinvention.js";
 import { attachSecurity as _attachSecurity, labelTrust as _labelTrust } from "./security.js";
 import { attachReachability as _attachReachability } from "./reachability.js";
 import { getRecallProvider as _getRecallProvider, attachRecall as _attachRecall } from "./recall/index.js";
@@ -122,6 +124,8 @@ export function reviewChanges(
   files = _attachImpact(files, { cwd, config, graph, mode });
   // Confirms or drops speculative-abstraction findings; drops them all when there is no graph.
   files = _attachStructuralImpact(files, { cwd, config, graph });
+  // Confirms or drops reinvented-helper findings by looking up the repo's shape index.
+  files = _attachReinvention(files, { cwd, config });
   files = _attachSecurity(files, { cwd, config, graph });
   files = _attachReachability(files, { cwd, config, graph });
   files = _labelTrust(files);

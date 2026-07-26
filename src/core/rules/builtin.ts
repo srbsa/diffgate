@@ -1083,6 +1083,7 @@ export const RULE_PACKS: Record<string, string[]> = {
     // Phase 3: Graph-backed + pure-AST
     "pass-through-wrapper",
     "diff-churn-ratio",
+    "reinvented-helper",
     "single-caller-abstraction",
   ],
 };

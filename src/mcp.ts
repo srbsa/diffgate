@@ -22,6 +22,7 @@ import {
   getGraph,
   attachImpact,
   attachStructuralImpact,
+  attachReinvention,
   attachSecurity,
   attachReachability,
   labelTrust,
@@ -578,6 +579,11 @@ export async function handleAnalyze(
   // reviewChanges() runs this same pass, but handleAnalyze builds its own pipeline and previously
   // skipped it.
   [withImpact] = attachStructuralImpact([withImpact], { cwd, config, graph });
+  // Same reasoning for `reinvented-helper`: its detector emits a candidate for every changed
+  // function and only this pass can tell a genuine duplicate from an ordinary new function. The
+  // agent loop is the surface where an unconfirmed candidate does the most damage — it would send
+  // the model off rewriting code that has no duplicate at all.
+  [withImpact] = attachReinvention([withImpact], { cwd, config });
   [withImpact] = attachSecurity([withImpact], { cwd, config, graph });
   [withImpact] = attachReachability([withImpact], { cwd, config, graph });
   [withImpact] = labelTrust([withImpact]);

@@ -357,6 +357,43 @@ test("handleAnalyze drops single-caller-abstraction when there is no graph to co
   }
 });
 
+// Regression, the same shape as the single-caller-abstraction leak above: handleAnalyze called
+// attachStructuralImpact but not attachReinvention, so `reinvented-helper` reached the agent as a
+// raw detector candidate ("Possible reinvented helper: X") for every changed function. The agent
+// loop is the worst place for that — the model would go rewriting code that has no duplicate.
+test("handleAnalyze drops reinvented-helper when nothing in the repo duplicates the function", async () => {
+  const dir = gitRepo({ "seed.js": "const x = 1;\n" });
+  fs.writeFileSync(
+    path.join(dir, "solo.js"),
+    [
+      "export function summarizeLedgerRows(rows) {",
+      "  let total = 0;",
+      "  for (const row of rows) {",
+      "    if (row.credit) {",
+      "      total += row.amount * 1.5;",
+      "    } else {",
+      "      total += row.amount;",
+      "    }",
+      "  }",
+      "  return total;",
+      "}",
+      "",
+    ].join("\n")
+  );
+  fs.writeFileSync(path.join(dir, ".diffgate.json"), JSON.stringify({ rules: { structural: true } }));
+  try {
+    const result = await handleAnalyze({ filePath: "solo.js", cwd: dir }, { graph: null });
+    const leaked = result.findings.filter((f) => f.ruleId === "reinvented-helper");
+    assert.equal(
+      leaked.length,
+      0,
+      `no duplicate exists, so nothing may surface: ${JSON.stringify(leaked.map((f) => f.message))}`
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- handleCheckStaged -------------------------------------------------------
 
 test("handleCheckStaged errors on a non-git dir instead of a false 'clean'", async () => {

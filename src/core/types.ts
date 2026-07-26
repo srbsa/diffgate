@@ -54,6 +54,8 @@ export interface Finding {
    *                  sink. Advisory only — coverage depends on the index, so verify before dismissing.
    */
   trust?: "confirmed" | "unconfirmed" | "cleared" | "reachable" | "unreachable" | null;
+  /** Metadata attached by a rule for consumption by an attach-pass; never rendered to users. */
+  meta?: Record<string, unknown>;
 }
 
 /** A single location in the codebase (a call site, a missing-test target, etc.). */
@@ -389,7 +391,9 @@ export interface Config {
   ai: AiConfig;
   testCommand?: string | null;
   ignore?: string[];
-  rules?: Record<string, false | { enabled?: boolean; tier?: Tier; blocking?: boolean; include?: string[]; exclude?: string[] }>;
+  /** Per-rule (or per-pack) override. `false` turns a rule off; `true` opts a default-off rule in,
+   *  the shorthand for `{ enabled: true }`. An object form additionally re-tiers or path-scopes. */
+  rules?: Record<string, boolean | { enabled?: boolean; tier?: Tier; blocking?: boolean; include?: string[]; exclude?: string[] }>;
   customPatterns?: CustomPattern[];
   deprecated?: DeprecatedEntry[];
   orangePatterns?: string[];
@@ -487,6 +491,8 @@ export interface FindingEmitArg {
     start: { line: number; column: number };
     end?: { line: number; column: number };
   };
+  /** Metadata a rule attaches for a later attach-pass to consume; never rendered to users. */
+  meta?: Record<string, unknown>;
 }
 
 export type EmitFn = (partial: FindingEmitArg) => void;

@@ -154,8 +154,13 @@ export function getRules(config: Partial<Config>, language: string): Rule[] {
 
     const ov = overrides[rule.id];
     if (ov === false) continue;
+    // `rules: { "<id>": true }` opts a default-off rule in, mirroring `false` turning one off.
+    // Without this, the boolean form was asymmetric: `false` disabled a rule but `true` was a silent
+    // no-op, so a config that looked like it enabled `single-caller-abstraction` or
+    // `reinvented-helper` quietly did nothing and the user saw an unexplained absence of findings.
     if (
       rule.enabledByDefault === false &&
+      ov !== true &&
       !(ov && (ov as { enabled?: boolean }).enabled) &&
       !inEnabledPack(rule.id)
     ) continue;
@@ -196,6 +201,7 @@ function makeFinding(rule: Rule, fields: FindingEmitArg & { line: number }): Fin
     fix: fields.fix || null,
     symbol: fields.symbol ?? null,
     tierAdjusted: fields.tierAdjusted,
+    meta: fields.meta,
   };
 }
 
@@ -266,6 +272,7 @@ function runFile(rule: FileRule, ctx: RuleContext, findings: Finding[]): void {
         code: text.trim(),
         message: partial.message,
         tier: partial.tier,
+        meta: partial.meta,
       })
     );
   });
@@ -292,6 +299,7 @@ function runAst(rule: AstRule, ast: AstNode, ctx: RuleContext, findings: Finding
           tierAdjusted: arg.tierAdjusted,
           fix: arg.fix,
           symbol: arg.symbol,
+          meta: arg.meta,
         })
       );
     });
@@ -321,6 +329,7 @@ function runTsAst(rule: TsAstRule, tree: TsTree, ctx: RuleContext, findings: Fin
         tierAdjusted: arg.tierAdjusted,
         fix: arg.fix,
         symbol: arg.symbol,
+        meta: arg.meta,
       })
     );
   };

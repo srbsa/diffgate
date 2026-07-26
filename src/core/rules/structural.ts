@@ -12,6 +12,8 @@
 import type { TsAstRule, AstRule, TsNode, AstNode, RuleContext, EmitFn } from "../types.js";
 import { resolveThresholds } from "../language-thresholds.js";
 import { analyzeComplexity, profileFor, type ComplexityProfile } from "../complexity.js";
+import { shapeFunctions } from "../fingerprint.js";
+import { isTestFile } from "../reinvention.js";
 
 // ===== Shared tree-sitter helpers =====
 
@@ -661,6 +663,109 @@ export const DiffChurnRatioAst: AstRule = {
 };
 
 /**
+ * reinvented-helper (detector half).
+ *
+ * Emits when a new function is added in the diff; `attachReinvention` then looks up the repo's
+ * shape index and either confirms it duplicates existing code or drops it. This rule needs
+ * calibration before defaulting on — left opt-in for now.
+ */
+export const ReinventedHelperTsAst: TsAstRule = {
+  id: "reinvented-helper",
+  type: "tsast",
+  title: "Function duplicates existing implementation in the codebase",
+  tier: "yellow",
+  blocking: false,
+  enabledByDefault: false,
+  languages: ["python", "go", "java", "kotlin", "ruby", "php", "csharp"],
+  visit: (node: TsNode, ctx: RuleContext, emit: EmitFn) => {
+    const profile = profileFor(ctx.language);
+    if (!profile || !profile.functionTypes.has(node.type)) return;
+
+    // Only emit when the function starts in changed lines (diff-scoped rule). Tree-sitter rows are
+    // 0-based, so compare against null explicitly — a truthiness check drops row 0, i.e. every
+    // function on the file's first line.
+    const startLine = node.startPosition?.row != null ? node.startPosition.row + 1 : null;
+    if (startLine === null) return;
+    // `changedLines === null` means "no diff info" — a new/untracked file or whole-file mode — and
+    // the engine's own `inChange` treats that as everything being in scope. Returning early there
+    // instead would silence this rule on exactly its best case: a file an agent just created that
+    // reimplements something the repo already has.
+    if (ctx.changedLines && !ctx.changedLines.has(startLine)) return;
+
+    if (isTestFile(ctx.filePath)) return;
+
+    // Get function shapes and emit for each one that survives gates.
+    const shapes = shapeFunctions(ctx);
+    const name = extractTsName(node, profile);
+    if (!name) return;
+
+    for (const shape of shapes) {
+      // Skip shapes with empty hash or low statement count — they won't match.
+      if (!shape.shapeHash || shape.statementCount < 5) continue;
+      if (shape.startLine !== startLine) continue;
+
+      // Emit with metadata for attachReinvention to use.
+      emit({
+        loc: tsLoc(node),
+        symbol: name,
+        message: `⚡ Possible reinvented helper: ${name}`,
+        meta: {
+          shapeHash: shape.shapeHash,
+          arity: shape.arity,
+          statementCount: shape.statementCount,
+          name,
+        },
+      });
+    }
+  },
+};
+
+export const ReinventedHelperAst: AstRule = {
+  id: "reinvented-helper",
+  type: "ast",
+  title: "Function duplicates existing implementation in the codebase",
+  tier: "yellow",
+  blocking: false,
+  enabledByDefault: false,
+  languages: ["javascript", "typescript", "jsx", "tsx"],
+  visit: (node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) => {
+    if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type)) return;
+
+    // Only emit when the function starts in changed lines (diff-scoped rule).
+    // See the tree-sitter twin: a null `changedLines` is "whole file in scope", not "skip".
+    const nodeLoc = node.loc;
+    if (!nodeLoc) return;
+    if (ctx.changedLines && !ctx.changedLines.has(nodeLoc.start.line)) return;
+
+    if (isTestFile(ctx.filePath)) return;
+
+    // Get function shapes and emit for each one that survives gates.
+    const shapes = shapeFunctions(ctx);
+    const name = (node as { id?: { name?: string } }).id?.name;
+    if (!name) return;
+
+    for (const shape of shapes) {
+      // Skip shapes with empty hash or low statement count — they won't match.
+      if (!shape.shapeHash || shape.statementCount < 5) continue;
+      if (shape.startLine !== nodeLoc.start.line) continue;
+
+      // Emit with metadata for attachReinvention to use.
+      emit({
+        loc: node.loc,
+        symbol: name,
+        message: `⚡ Possible reinvented helper: ${name}`,
+        meta: {
+          shapeHash: shape.shapeHash,
+          arity: shape.arity,
+          statementCount: shape.statementCount,
+          name,
+        },
+      });
+    }
+  },
+};
+
+/**
  * single-caller-abstraction (detector half).
  *
  * Emits optimistically for every new class/interface in the diff; `attachStructuralImpact` then
@@ -729,6 +834,7 @@ export const STRUCTURAL_TSAST_RULES: TsAstRule[] = [
   JavaSingleImplInterfaceTsAst,
   // Phase 3
   PassThroughWrapperTsAst,
+  ReinventedHelperTsAst,
   SingleCallerAbstractionTsAst,
 ];
 
@@ -743,5 +849,6 @@ export const STRUCTURAL_AST_RULES: AstRule[] = [
   // Phase 3
   PassThroughWrapperAst,
   DiffChurnRatioAst,
+  ReinventedHelperAst,
   SingleCallerAbstractionAst,
 ];
