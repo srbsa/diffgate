@@ -184,7 +184,7 @@ test("codeGraphAvailable detects the newer ~/.codegraph/projects layout, not jus
 
 test("resolveGraphConfig fills defaults and applies overrides", () => {
   const g = resolveGraphConfig({ graph: { escalateThreshold: 5 } });
-  assert.equal(g.provider, "codegraph");
+  assert.equal(g.provider, "builtin");
   assert.equal(g.escalateThreshold, 5);
   assert.equal(g.maxCallers, 20);
   // New capability flags default on (security "auto", de-escalation off).
@@ -369,7 +369,7 @@ test("graphStatus reports disabled and command-resolution states without spawnin
 
   // enabled + a bogus command path → enabled true, command not found. (indexed depends on the
   // host's ~/.codegraph, so we don't assert it here.)
-  const on = graphStatus({ graph: { enabled: "auto", command: "/definitely/not/real-xyz" } });
+  const on = graphStatus({ graph: { enabled: "auto", provider: "codegraph", command: "/definitely/not/real-xyz" } });
   assert.equal(on.enabled, true);
   assert.equal(on.commandFound, false);
   assert.equal(typeof on.reason, "string");

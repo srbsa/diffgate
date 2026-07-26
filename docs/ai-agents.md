@@ -28,15 +28,17 @@ Tools: `diffgate_capabilities`, `diffgate_analyze`, `diffgate_check_staged`,
 [`MCP.md`](../MCP.md). The agent calls these, sees the tiered findings, and fixes orange
 issues before showing you the diff.
 
-**Call `diffgate_capabilities` first.** DiffGate has three optional layers — core (always),
-code graph, and LLM — and not every install has all three. The manifest tells the agent up
-front which tools work without erroring, whether blast-radius/taint data is available, and
-the autonomy budget it should respect — instead of discovering missing layers via thrown
-errors mid-loop:
+**Call `diffgate_capabilities` first.** DiffGate has three layers — core (always), code
+graph, and LLM — and not every install has all three. The code-graph layer is on by default
+now (`graph.provider: "builtin"`, in-process, no external binary or index required), so
+`graph.available` is normally `true` out of the box; the manifest tells the agent up front
+which tools work without erroring, whether blast-radius/taint data is available, and the
+autonomy budget it should respect — instead of discovering missing layers via thrown errors
+mid-loop:
 
 ```jsonc
 {
-  "graph": { "available": false, "reason": "codegraph-server not found on PATH" },
+  "graph": { "available": true, "reason": "Using the built-in in-process call graph (tree-sitter + Babel) — no external binary or index needed." },
   "llm":   { "available": true,  "provider": "anthropic" },
   "availableTools": ["diffgate_analyze", "diffgate_check_staged", "…", "diffgate_explain"],
   "unavailableTools": [],
@@ -44,6 +46,10 @@ errors mid-loop:
   "protocol": ["Loop budget: apply at most 3 DiffGate fixes per turn…", "…"]
 }
 ```
+
+`graph.available` is only `false` when graphing is turned off (`graph.enabled: false` or
+`graph.mode: "off"`) or when `graph.provider: "codegraph"` is set and the external binary
+isn't installed/indexed yet.
 
 `diffgate_analyze` / `diffgate_check_staged` also embed a compact `_diffgate: { graph, llm,
 agentMode }` hint on every response, so the agent always knows the lay of the land.

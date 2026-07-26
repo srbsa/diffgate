@@ -1,22 +1,38 @@
-# Cross-file blast radius (optional code graph)
+# Cross-file blast radius (code graph)
 
 Most reviewers face a false tradeoff: index the whole repo for cross-file context and you catch breaking changes *but get noisier*; stay diff-scoped and you're quiet *but miss the call sites*. DiffGate resolves it because tiers **route attention instead of emitting comments**, so cross-file context makes the review *quieter and more complete at once*.
 
-Fully optional and graceful: a complete no-op when no graph is present.
+Zero setup by default. DiffGate ships a **built-in** call graph (`graph.provider: "builtin"`, tree-sitter + Babel, in-process) that requires no external binary and no index step — it parses the repo and builds the call graph on the fly, briefly cached in a long-lived host like the MCP server. An external, more powerful graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph), Apache-2.0) remains available as an opt-in upgrade (`graph.provider: "codegraph"`) for cross-repo impact, richer resolution, and the ~40-tool agent/IDE ecosystem.
 
 ---
 
 ## What it does
 
-When an optional code graph ([codegraph-ai/CodeGraph](https://github.com/codegraph-ai/CodeGraph), Apache-2.0) is present, the impact pass enriches public-surface findings (`public-api-change`, `signature-drift`, `deprecated-api`) and adjusts their tier:
+The impact pass enriches public-surface findings (`public-api-change`, `signature-drift`, `deprecated-api` — currently JS/TS only, since those are the only rules that emit a symbol) and adjusts their tier:
 
 | Situation | What DiffGate does |
 |-----------|--------------------|
 | Public change **with callers** | Stays 🟠, message names the caller count, **suggested reviewers**, **untested** call sites, plus complexity and stale-doc flags (`tierAdjusted: escalated`) |
 | Public change **nobody calls** | De-escalates 🟠 → 🟡 and **stops blocking the gate** (`tierAdjusted: deescalated`) |
-| No graph available | Complete no-op; same behavior as before, no subprocess cost |
+| Bare name matched to >1 definition in the repo | Enrich-only — the count is shown but never drives the tier (`impact.ambiguous: true`); the builtin graph matches callers by bare identifier name, so two unrelated classes with the same method name can't be told apart without type information |
+| No graph available (`graph.enabled: false`) | Complete no-op; same behavior as before, no cost |
 
 ---
+
+## Builtin vs CodeGraph
+
+| | `builtin` (default) | `codegraph` (opt-in) |
+|---|---|---|
+| Setup | None — in-process | Install the binary, run `diffgate graph index` |
+| Coverage | JS/TS (Babel) + Python/Go/Java/Kotlin/Ruby/PHP/C# (tree-sitter), bare-name matching, single repo | Same languages plus proper symbol resolution, cross-repo consumers, Pro taint analysis |
+| Freshness | Rebuilt from source each run (briefly cached for a resident host) | Kept fresh by CodeGraph's own daemon/filesystem watch |
+| `diffgate graph index` | No-op (forces an immediate in-process rebuild) | Builds/refreshes the external index |
+
+Switch providers in `.diffgate.json`:
+
+```jsonc
+"graph": { "provider": "codegraph", "command": "codegraph-server" }
+```
 
 ## How it sources impact
 
@@ -29,11 +45,11 @@ Impact surfaces everywhere a finding does: the CLI report, GitHub PR annotations
 ## Setup
 
 ```bash
-diffgate graph status   # is the code graph enabled / installed / indexed?
-diffgate graph index    # build the cross-file index (or prints install instructions)
+diffgate graph status   # which provider, and is it ready?
+diffgate graph index    # builtin: force an immediate rebuild. codegraph: build the index (or print install instructions)
 ```
 
-DiffGate auto-detects the index — the legacy `~/.codegraph/graph.db` or the newer per-project `~/.codegraph/projects/<slug>/` (CodeGraph ≥ 0.18). The graph indexes committed/disk state, so *who calls a changed symbol* is reliable. DiffGate **reads** the index via one-shot queries; the index itself is built and kept fresh by CodeGraph (its VS Code extension / daemon, or `diffgate graph index`). If reachability quietly returns no escalation, check `diffgate graph status` — a cold or partially-built index can't resolve a sink's callers (it degrades to advisory `unconfirmed`, never a false block). To never auto-de-escalate a rule, pin its tier:
+Under `provider: "codegraph"`, DiffGate auto-detects the index — the legacy `~/.codegraph/graph.db` or the newer per-project `~/.codegraph/projects/<slug>/` (CodeGraph ≥ 0.18). The graph indexes committed/disk state, so *who calls a changed symbol* is reliable. DiffGate **reads** the index via one-shot queries; the index itself is built and kept fresh by CodeGraph (its VS Code extension / daemon, or `diffgate graph index`). If reachability quietly returns no escalation, check `diffgate graph status` — a cold or partially-built index can't resolve a sink's callers (it degrades to advisory `unconfirmed`, never a false block). To never auto-de-escalate a rule, pin its tier:
 
 ```jsonc
 "rules": { "signature-drift": { "tier": "orange" } }
@@ -41,9 +57,9 @@ DiffGate auto-detects the index — the legacy `~/.codegraph/graph.db` or the ne
 
 ---
 
-## Does the graph still earn its place as DiffGate adds per-language AST?
+## Does an external graph still earn its place as DiffGate adds per-language AST?
 
-Yes — its value is **orthogonal** to AST precision, and concentrated. AST rules (`@babel` for JS/TS, tree-sitter for Python and PHP) are *intra-procedural*: "is this sink dangerous as written, past local sanitizers/guards/static constants?" The graph is *inter-procedural*: "can untrusted input reach it across files, what's the blast radius, who reviews it, is it tested?" Neither subsumes the other — they compose. DiffGate uses a focused ~7 of community CodeGraph's ~40 tools on purpose (the rest are agent/IDE features: doc indexing, memory, architecture-doc generation, semantic search). As AST precision lands language-by-language, the graph's role shifts from *the* justification to block a noisy regex → *reachability refinement + the language-agnostic blast-radius/cross-repo/reviewers/test-gap layer* ([src/core/impact.ts](src/core/impact.ts)) — strongest on web-server code, lighter on CLI/data/ML repos that have no HTTP entry points.
+Yes — its value is **orthogonal** to AST precision, and concentrated. AST rules (`@babel` for JS/TS, tree-sitter for the rest) are *intra-procedural*: "is this sink dangerous as written, past local sanitizers/guards/static constants?" The graph is *inter-procedural*: "can untrusted input reach it across files, what's the blast radius, who reviews it, is it tested?" Neither subsumes the other — they compose. DiffGate uses a focused ~7 of community CodeGraph's ~40 tools on purpose (the rest are agent/IDE features: doc indexing, memory, architecture-doc generation, semantic search, cross-repo). The builtin provider covers the single-repo, in-process case the community tier needs; CodeGraph adds proper symbol resolution (no bare-name ambiguity) and cross-repo consumers.
 
 ## Reachability (community edition)
 
@@ -51,15 +67,17 @@ The blocking SQL-injection rule is AST-deep on JS/TS (`@babel`) and Python + PHP
 
 For each such finding, DiffGate walks the call graph from the sink back toward **untrusted entry points**:
 
-1. `find_entry_points` → the set of HTTP/event handlers the framework exposes (e.g. a Flask `@app.route` is tagged `http_handler`). Fetched **once per review** and cached.
-2. `get_callers` / `traverse_graph` (incoming `calls`, bounded by `reachabilityMaxDepth`) → the sink's transitive callers.
+1. Detect the set of HTTP/event handlers the framework exposes (e.g. a Flask `@app.route`, a Sinatra `get '/x' do…end`, a Ktor/Laravel/minimal-API route closure, an Express/Fastify `app.get("/x", handler)`, a Next.js `export async function GET`, an `exports.handler` lambda, an `addEventListener` — tagged `http_handler` / `event_handler`). Fetched **once per review** and cached. (`find_entry_points` under `provider: "codegraph"`.)
+2. Walk the sink's transitive callers, bounded by `reachabilityMaxDepth`. (`get_callers` / `traverse_graph` under `provider: "codegraph"`.) DSL-style routes with no separate named function (Sinatra/Ktor/Laravel/minimal-API closures, an inline Go handler) are matched by the handler body's own line span, not by name — a sink inside that span, or reached through a helper called from inside it, counts as reachable even though nothing calls a function literally named after the route.
 3. If an untrusted entry point is in that ancestor set, the sink is **reachable**.
 
 | Verdict | What DiffGate does | Trust label |
 |---------|--------------------|-------------|
 | **Reachable** from a handler | Escalates 🟡/advisory → blocking 🟠, names the entry point (`GET /user → …`) | `reachable` |
 | **Unreachable** (handlers known, no path) | Left as-is by default; down-tiers **only** with `graph.reachabilityDeescalate: true` | `unreachable` |
-| **Unknown** (no index / no handlers / query failed) | Untouched — never a false "unreachable" | `unconfirmed` |
+| **Unknown** (no index / no handlers / language the graph can't parse / walk hit its budget / query failed) | Untouched — never a false "unreachable" | `unconfirmed` |
+
+**Cost posture (builtin).** The graph is built **lazily** — only when a finding actually needs it (an impact-eligible public-surface change, or an injection-class finding). A diff with neither never pays for a parse. The walk is bounded (3000 parsed files / 8s wall); if it truncates, every negative verdict downgrades to *unknown* rather than a false "no callers"/"unreachable".
 
 **Fail-safe posture.** Any uncertainty returns "unknown", never "unreachable" — an incomplete index must never hide a real vulnerability. Default is escalate-can-block, **never auto-clear**. Untrusted roots are `http_handler` + `event_handler` by default (configurable via `graph.untrustedEntryKinds`); `cli_command` / `test` / `main` are not untrusted.
 

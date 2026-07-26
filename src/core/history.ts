@@ -3,6 +3,7 @@ import { loadConfig, isIgnored } from "./config.js";
 import { listCommits, getCommitChangedFiles, getBlobAtRef, repoRoot } from "./git.js";
 import { overallTier, tierCounts } from "./tiers.js";
 import { loadMergedLearnings, applyLearnings } from "./learnings.js";
+import { CONFIRMATION_REQUIRED_RULES } from "./structural-impact.js";
 import type { AnalyzeResult, Commit, CommitReview, Config, HistorySelection } from "./types.js";
 import type { LearningStore } from "./learnings.js";
 
@@ -18,6 +19,10 @@ export interface HistoryResult {
  * any commit in history and never touches the working tree. Graph passes (impact/security/
  * reachability) are skipped: they're no-ops without a code graph, so rules + learnings is the
  * faithful core for a per-commit audit.
+ *
+ * The one thing skipping those passes does NOT make quiet is a rule that emits optimistically and
+ * expects to be confirmed later — without its attach-pass it would print raw, unconfirmed
+ * candidates. Those rules are dropped outright here; see `CONFIRMATION_REQUIRED_RULES`.
  */
 export function reviewCommit(
   cwd: string,
@@ -33,10 +38,21 @@ export function reviewCommit(
     const content = getBlobAtRef(root, commit.sha, filePath);
     if (content === null) continue; // deleted at this commit — nothing to review
     const previousContent = getBlobAtRef(root, `${commit.sha}^`, filePath);
-    const result = applyLearnings(
+    const analyzed = applyLearnings(
       analyze({ filePath, content, previousContent, changedLines, config }),
       learnings
     );
+    const kept = analyzed.findings.filter((f) => !CONFIRMATION_REQUIRED_RULES.has(f.ruleId));
+    const result =
+      kept.length === analyzed.findings.length
+        ? analyzed
+        : {
+            ...analyzed,
+            findings: kept,
+            tier: overallTier(kept),
+            counts: tierCounts(kept),
+            blocking: kept.some((f) => f.blocking),
+          };
     if (result.findings.length > 0) files.push(result);
   }
   const allFindings = files.flatMap((f) => f.findings);

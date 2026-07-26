@@ -54,7 +54,7 @@ export const DEFAULT_CONFIG: Config = {
   testScope: true,
   guidelines: { enabled: true, autoDetect: true, files: [], maxDepth: 3, maxBytesPerFile: 8000, tier: "yellow", blocking: false, evaluator: "auto" },
   graph: {
-    enabled: "auto", provider: "codegraph", command: "codegraph-server", mode: "cli",
+    enabled: "auto", provider: "builtin", command: "codegraph-server", mode: "cli",
     maxCallers: 20, escalateThreshold: 1, timeoutMs: 4000,
     prContext: true, relatedTests: true, editContext: true, security: "auto", securityDeescalate: false,
   },
@@ -127,6 +127,7 @@ function normalize(raw: Partial<Config> & Record<string, unknown>): Config {
   cfg.guidelines = { ...DEFAULT_CONFIG.guidelines, ...(raw.guidelines || {}) };
   cfg.graph = { ...DEFAULT_CONFIG.graph, ...(raw.graph || {}) };
   if (raw.learnings) cfg.learnings = raw.learnings as Config["learnings"];
+  if (raw.languageOverrides) cfg.languageOverrides = raw.languageOverrides as Config["languageOverrides"];
   delete cfg.extends;
   validate(cfg);
   return cfg;
@@ -138,7 +139,7 @@ const TRUST_SOURCES = ["deterministic", "any"];
 const GATE_MODES = ["staged", "working"];
 const EVALUATORS = ["auto", "model", "host"];
 const GRAPH_MODES = ["cli", "off"];
-const GRAPH_PROVIDERS = ["codegraph"];
+const GRAPH_PROVIDERS = ["builtin", "codegraph"];
 
 /** Enforce the enum-valued config fields so a typo fails loudly at load instead of silently
  *  falling back to a default behavior (e.g. agent.mode:"gated2" → silent advisory). */
@@ -175,6 +176,17 @@ function validate(cfg: Config): void {
   }
   if (cfg.testScope !== undefined && typeof cfg.testScope !== "boolean") {
     throw new Error(`config: testScope must be true or false, got ${JSON.stringify(cfg.testScope)}`);
+  }
+  if (cfg.languageOverrides) {
+    for (const [lang, overrides] of Object.entries(cfg.languageOverrides)) {
+      if (overrides && typeof overrides === "object") {
+        for (const [key, val] of Object.entries(overrides)) {
+          if (val !== undefined && (typeof val !== "number" || val <= 0)) {
+            throw new Error(`config: languageOverrides.${lang}.${key} must be a positive number, got ${JSON.stringify(val)}`);
+          }
+        }
+      }
+    }
   }
 }
 

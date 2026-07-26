@@ -2,7 +2,7 @@
   "name": "diffgate",
   "displayName": "DiffGate",
   "description": "Catches the guardrails your coding agent deletes while editing — deterministic review gate on just the changed lines, before any review bot. Grades each line green/yellow/orange by impact; 0 false blocks.",
-  "version": "0.7.11",
+  "version": "0.8.0",
   "author": {
     "name": "srbsa",
     "url": "https://github.com/srbsa"

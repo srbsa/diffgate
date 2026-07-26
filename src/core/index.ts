@@ -5,6 +5,7 @@ export {
   getChangedLinesForFile,
   getPreviousContent,
   isGitRepo,
+  isGitIgnoredPath,
   repoRoot,
   headSha,
   blameLine,
@@ -39,12 +40,14 @@ export { loadLearnings, loadMergedLearnings, mergeLearningStores, readStoreFile,
 export { TOOLS as agentTools } from "./agent/tools.js";
 export { TIERS, TIER_META, TIER_ORDER, maxTier, overallTier, tierCounts, isTier } from "./tiers.js";
 export {
-  getGraph, resolveGraphConfig, graphStatus, makeCodeGraphProvider, codeGraphAvailable,
+  getGraph, resolveGraphConfig, graphStatus, makeCodeGraphProvider, makeBuiltinProvider, codeGraphAvailable,
   commandAvailable, graphDbDir, graphIndexPath, normalizeImpact, normalizePrContext, normalizeEditContext,
   normalizeSecurity, normalizeTests, normalizeEntryPoints, normalizeAncestors, DEFAULT_GRAPH_CONFIG,
 } from "./graph/index.js";
 export type { GraphProvider, ImpactQuery, PrContextQuery, SecurityQuery, ReachabilityQuery, GraphStatus, GraphRunner } from "./graph/index.js";
 export { attachImpact, IMPACT_RULES } from "./impact.js";
+export { attachStructuralImpact, STRUCTURAL_IMPACT_RULES } from "./structural-impact.js";
+export { attachReinvention } from "./reinvention.js";
 export { attachSecurity, SECURITY_RULES, labelTrust, trustFor } from "./security.js";
 export { attachReachability, REACHABILITY_RULES } from "./reachability.js";
 export {
@@ -67,6 +70,8 @@ import { overallTier as _overallTier, tierCounts as _tierCounts } from "./tiers.
 import { loadMergedLearnings as _loadMergedLearnings, applyLearnings as _applyLearnings } from "./learnings.js";
 import { getGraph as _getGraph } from "./graph/index.js";
 import { attachImpact as _attachImpact } from "./impact.js";
+import { attachStructuralImpact as _attachStructuralImpact } from "./structural-impact.js";
+import { attachReinvention as _attachReinvention } from "./reinvention.js";
 import { attachSecurity as _attachSecurity, labelTrust as _labelTrust } from "./security.js";
 import { attachReachability as _attachReachability } from "./reachability.js";
 import { getRecallProvider as _getRecallProvider, attachRecall as _attachRecall } from "./recall/index.js";
@@ -117,6 +122,10 @@ export function reviewChanges(
   // fills the precision gap for findings it left unconfirmed; trust labels are derived last.
   const graph = _getGraph(cwd, config, opts.graph !== undefined ? { provider: opts.graph } : {});
   files = _attachImpact(files, { cwd, config, graph, mode });
+  // Confirms or drops speculative-abstraction findings; drops them all when there is no graph.
+  files = _attachStructuralImpact(files, { cwd, config, graph });
+  // Confirms or drops reinvented-helper findings by looking up the repo's shape index.
+  files = _attachReinvention(files, { cwd, config });
   files = _attachSecurity(files, { cwd, config, graph });
   files = _attachReachability(files, { cwd, config, graph });
   files = _labelTrust(files);

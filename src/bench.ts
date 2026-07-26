@@ -147,6 +147,10 @@ export const CORPUS: BenchCase[] = [
     content: '$stmt = $db->prepare("SELECT * FROM users WHERE id = ?");\n$stmt->execute([$id]);\n' },
   { name: "clean/ruby-activerecord", language: "ruby", expected: [],
     content: "User.where(name: params[:name])\n" },
+  // Real-world false block (2026-07): env-var names mapped to sidebar labels — values are
+  // display strings, not credentials.
+  { name: "clean/env-key-label-map", language: "python", expected: [],
+    content: 'KEY_LABELS = {"FULLENRICH_API_KEY": "FullEnrich", "OPENAI_API_KEY": "OpenAI", "TAVILY_API_KEY": "Tavily"}\n' },
 ];
 
 function emptyConfig(): Config {

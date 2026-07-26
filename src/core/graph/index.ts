@@ -7,6 +7,7 @@ import type {
   ReachabilityVerdict,
 } from "../types.js";
 import { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir, graphIndexPath } from "./codegraph.js";
+import { makeBuiltinProvider } from "./builtin.js";
 
 export interface ImpactQuery {
   /** Symbol name being changed (e.g. an exported function). */
@@ -63,7 +64,7 @@ export interface GraphProvider {
 
 export const DEFAULT_GRAPH_CONFIG: Required<Omit<GraphConfig, "command">> & { command: string } = {
   enabled: "auto",
-  provider: "codegraph",
+  provider: "builtin",
   command: "codegraph-server",
   mode: "cli",
   maxCallers: 20,
@@ -97,6 +98,9 @@ export function getGraph(
   if (opts.provider !== undefined) return opts.provider;
   const g = resolveGraphConfig(config);
   if (g.enabled === false || g.mode === "off") return null;
+  if (g.provider === "builtin") {
+    return makeBuiltinProvider(cwd, g, config);
+  }
   if (g.provider === "codegraph") {
     if (!codeGraphAvailable(g)) return null;
     return makeCodeGraphProvider(cwd, g);
@@ -142,13 +146,14 @@ function humanizeAge(ms: number): string {
 export function graphStatus(config: Partial<Config>): GraphStatus {
   const g = resolveGraphConfig(config);
   const enabled = !(g.enabled === false || g.mode === "off");
-  const indexed = enabled && codeGraphAvailable(g);
-  const commandFound = commandAvailable(g.command);
-  const dbPath = graphIndexPath();
+  const isBuiltin = g.provider === "builtin";
+  const indexed = enabled && (isBuiltin || codeGraphAvailable(g));
+  const commandFound = isBuiltin || commandAvailable(g.command);
+  const dbPath = isBuiltin ? "in-memory (rebuilt each run)" : graphIndexPath();
   const reachability = enabled && g.reachability !== false;
 
   let indexAgeMs: number | null = null;
-  if (indexed) {
+  if (indexed && !isBuiltin) {
     try {
       indexAgeMs = Math.max(0, Date.now() - fs.statSync(dbPath).mtimeMs);
     } catch {
@@ -158,6 +163,7 @@ export function graphStatus(config: Partial<Config>): GraphStatus {
 
   let reason: string;
   if (!enabled) reason = "Graphing is disabled in config (graph.enabled=false or mode=off).";
+  else if (isBuiltin) reason = "Using the built-in in-process call graph (tree-sitter + Babel) — no external binary or index needed.";
   else if (indexed) {
     const age = indexAgeMs != null ? ` Index is ${humanizeAge(indexAgeMs)} old` : "";
     const stale = indexAgeMs != null && indexAgeMs > 7 * 86_400_000
@@ -170,6 +176,7 @@ export function graphStatus(config: Partial<Config>): GraphStatus {
 }
 
 export { makeCodeGraphProvider, codeGraphAvailable, commandAvailable, graphDbDir, graphIndexPath } from "./codegraph.js";
+export { makeBuiltinProvider } from "./builtin.js";
 export { normalizeImpact, normalizePrContext, normalizeEditContext, normalizeSecurity, normalizeTests, normalizeEntryPoints, normalizeAncestors } from "./normalize.js";
 export type { GraphRunner } from "./codegraph.js";
 export type { ImpactInfo };

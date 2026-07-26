@@ -10,7 +10,7 @@
 // or when pr_context is unavailable — fall back to a per-finding `analyze_impact` lookup, with
 // `find_related_tests` filling in test-gap data the impact call lacks.
 
-import { overallTier, tierCounts } from "./tiers.js";
+import { recomputeResult } from "./tiers.js";
 import { resolveGraphConfig } from "./graph/index.js";
 import type { GraphProvider } from "./graph/index.js";
 import type { AnalyzeResult, Config, Finding, ImpactInfo, PrContextInfo } from "./types.js";
@@ -44,6 +44,7 @@ function blastSummary(impact: ImpactInfo): string {
     parts.push(`⚠ ${plural(impact.crossProject.length, "consumer")} in other repo${impact.crossProject.length === 1 ? "" : "s"}${names ? `: ${names}` : ""}`);
   }
   if (typeof impact.breakingCount === "number" && impact.breakingCount > 0) parts.push(`${plural(impact.breakingCount, "breaking site")}`);
+  if (impact.ambiguous) parts.push("⚠ name matched by bare identifier across multiple definitions — count may include unrelated call sites");
   if (impact.reviewers.length) parts.push(`route: ${impact.reviewers.slice(0, 3).map((r) => "@" + r).join(", ")}`);
   if (typeof impact.complexity === "number" && impact.complexity >= HIGH_COMPLEXITY) {
     parts.push(`complexity ${impact.complexity}`);
@@ -70,8 +71,10 @@ function withImpact(
   const next: Finding = { ...finding, impact };
   const crossRepo = (impact.crossProject?.length ?? 0) > 0;
 
-  if (!TIERABLE.has(finding.ruleId) || opts.pinned) {
-    // Non-tierable (e.g. deprecated-api) or user-pinned: enrich text only.
+  if (!TIERABLE.has(finding.ruleId) || opts.pinned || impact.ambiguous) {
+    // Non-tierable (e.g. deprecated-api), user-pinned, or a bare-name match ambiguous across
+    // multiple definitions (can't attribute callers to the right one without type info): enrich
+    // text only — never let an unreliable count move the tier (protects the 0-false-block bar).
     if (impact.callerCount > 0 || impact.testGaps.length || crossRepo) {
       next.message = `${finding.message}\n\n${blastSummary(impact)}`;
     }
@@ -95,16 +98,6 @@ function withImpact(
     next.message = `${finding.message}\n\n${blastSummary(impact)}`;
   }
   return next;
-}
-
-function recompute(result: AnalyzeResult, findings: Finding[]): AnalyzeResult {
-  return {
-    ...result,
-    findings,
-    tier: overallTier(findings),
-    counts: tierCounts(findings),
-    blocking: findings.some((f) => f.blocking),
-  };
 }
 
 /** Last dotted/`#`/`::`-delimited segment of a symbol (StripeClient.charge → charge). */
@@ -144,6 +137,11 @@ export function attachImpact(
 ): AnalyzeResult[] {
   const { graph } = opts;
   if (!graph) return files;
+  // Nothing here can consume impact data — bail before pr_context, which is the expensive call
+  // (a full-repo graph build for the built-in provider, a subprocess for CodeGraph). Without this
+  // every run pays for the graph even on a diff with no impact-eligible finding.
+  const eligible = files.some((f) => f.findings.some((fn) => fn.symbol && IMPACT_RULES.has(fn.ruleId)));
+  if (!eligible) return files;
   const g = resolveGraphConfig(opts.config);
 
   // Primary source: one whole-diff pr_context call (when the provider supports it).
@@ -211,6 +209,6 @@ export function attachImpact(
         pinned: tierPinned(opts.config, finding.ruleId),
       });
     });
-    return changed ? recompute(result, findings) : result;
+    return changed ? recomputeResult(result, findings) : result;
   });
 }

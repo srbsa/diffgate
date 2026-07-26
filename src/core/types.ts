@@ -54,6 +54,8 @@ export interface Finding {
    *                  sink. Advisory only — coverage depends on the index, so verify before dismissing.
    */
   trust?: "confirmed" | "unconfirmed" | "cleared" | "reachable" | "unreachable" | null;
+  /** Metadata attached by a rule for consumption by an attach-pass; never rendered to users. */
+  meta?: Record<string, unknown>;
 }
 
 /** A single location in the codebase (a call site, a missing-test target, etc.). */
@@ -90,6 +92,10 @@ export interface ImpactInfo {
   /** Count of impacted sites the graph marks as breaking (analyze_impact `breaking_changes`),
    *  distinct from total callers — populated on a rename/delete-style change. */
   breakingCount?: number | null;
+  /** True when the graph matched callers by bare name only and more than one definition in the
+   *  codebase shares that name — the caller count may be conflated across unrelated symbols, so
+   *  it must not drive tier escalation/de-escalation (enrich-only). */
+  ambiguous?: boolean;
 }
 
 /** A symbol whose documentation/spec drifted from the code, surfaced by pr_context. */
@@ -385,7 +391,9 @@ export interface Config {
   ai: AiConfig;
   testCommand?: string | null;
   ignore?: string[];
-  rules?: Record<string, false | { enabled?: boolean; tier?: Tier; blocking?: boolean; include?: string[]; exclude?: string[] }>;
+  /** Per-rule (or per-pack) override. `false` turns a rule off; `true` opts a default-off rule in,
+   *  the shorthand for `{ enabled: true }`. An object form additionally re-tiers or path-scopes. */
+  rules?: Record<string, boolean | { enabled?: boolean; tier?: Tier; blocking?: boolean; include?: string[]; exclude?: string[] }>;
   customPatterns?: CustomPattern[];
   deprecated?: DeprecatedEntry[];
   orangePatterns?: string[];
@@ -396,6 +404,10 @@ export interface Config {
   /** Down-tier non-exempt orange findings in test/fixture files (orange → yellow, non-blocking).
    *  Secrets, destructive schema, and graph-owned public-surface rules stay at full tier. Default true. */
   testScope?: boolean;
+  /** Per-language complexity thresholds. Merges with built-in defaults.
+   *  Keys: language names (python, go, java, etc.), or "_default" for fallback.
+   *  Values: partial ComplexityThresholds (any subset of maxCognitiveComplexity, maxNestingDepth, etc.). */
+  languageOverrides?: Record<string, Record<string, number | undefined> | undefined>;
 }
 
 // Minimal Babel-compatible AST node type
@@ -479,6 +491,8 @@ export interface FindingEmitArg {
     start: { line: number; column: number };
     end?: { line: number; column: number };
   };
+  /** Metadata a rule attaches for a later attach-pass to consume; never rendered to users. */
+  meta?: Record<string, unknown>;
 }
 
 export type EmitFn = (partial: FindingEmitArg) => void;

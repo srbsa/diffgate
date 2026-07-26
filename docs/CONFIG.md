@@ -40,9 +40,9 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
     "public-api-change": { "exclude": ["tools/**"] } //  - or path-scope it
   },
 
-  "graph": {                                 // optional cross-file blast radius (see docs/CODE-GRAPH.md)
+  "graph": {                                 // cross-file blast radius (see docs/CODE-GRAPH.md)
     "enabled": "auto",
-    "provider": "codegraph",
+    "provider": "builtin",                    // "builtin" (default, in-process, zero setup) | "codegraph" (opt-in external upgrade)
     "escalateThreshold": 1,
     "security": "auto",                       // Pro taint tracing (enrich-only)
     "securityDeescalate": false,
@@ -83,7 +83,7 @@ Place it at your repo root (`diffgate init` generates one). See [example.diffgat
 | `nosql-injection` | 🟠 | `$where`, `db.eval`, `Model.find(req.body)` passthrough (JS/TS) |
 | `prototype-pollution` | 🟠 | `Object.assign(existing, req.body)`, `_.merge` with request data (JS/TS) |
 | `deprecated-api` | 🟡 | configured via `deprecated[]`, offers a quick-fix |
-| `sql-injection-candidate` | 🟡 advisory | non-AST injection idioms (Ruby `#{}`, etc.); **never blocks alone** — escalates to blocking 🟠 only when CodeGraph confirms reachability from an untrusted entry point. JS/TS, Python, and PHP use their precise AST `sql-injection` rule instead (this is their fallback only when the grammar can't load). |
+| `sql-injection-candidate` | 🟡 advisory | non-AST injection idioms (Ruby `#{}`, etc.); **never blocks alone** — escalates to blocking 🟠 only when the code graph (builtin by default, no setup needed) confirms reachability from an untrusted entry point. JS/TS, Python, and PHP use their precise AST `sql-injection` rule instead (this is their fallback only when the grammar can't load). |
 | `raw-query` | 🟡 | `db.query()`, bare SQL keywords; escalates when reachable |
 | `network-call` | 🟡 | `fetch`, `axios`, `requests.*` |
 | `migration-file` | 🟡 | migration file names |

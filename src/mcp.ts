@@ -5,6 +5,7 @@ import {
   analyze,
   loadConfig,
   isGitRepo,
+  isGitIgnoredPath,
   getPreviousContent,
   computeChangedLines,
   getChangedLinesForFile,
@@ -20,6 +21,8 @@ import {
   recordLearning,
   getGraph,
   attachImpact,
+  attachStructuralImpact,
+  attachReinvention,
   attachSecurity,
   attachReachability,
   labelTrust,
@@ -537,6 +540,17 @@ export async function handleAnalyze(
   const absPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const { config } = loadConfig(cwd);
 
+  // A git-ignored file (a local .env, scratch scripts) is out of scope: the gate never sees it,
+  // and a secret there is local configuration, not a leak. Say so instead of returning findings.
+  if (isGitIgnoredPath(cwd, absPath)) {
+    const empty = analyze({ filePath: absPath, content: "", config });
+    return {
+      ...empty,
+      note: `Skipped: ${filePath} is git-ignored (untracked local file). DiffGate reviews what can reach a commit; this file cannot.`,
+      _diffgate: capabilityHint(config),
+    };
+  }
+
   let actualContent = content;
   if (actualContent == null) {
     actualContent = fs.readFileSync(absPath, "utf-8");
@@ -560,6 +574,16 @@ export async function handleAnalyze(
   // Cross-file blast radius + graph-aware security/reachability (no-ops without a code graph).
   const graph = opts.graph !== undefined ? opts.graph : getGraph(cwd, config);
   let [withImpact] = attachImpact([result], { cwd, config, graph, mode: "working" });
+  // Without this, a repo that opts into the "structural" pack (or single-caller-abstraction
+  // directly) would leak an unconfirmed "speculative abstraction" finding through this MCP path —
+  // reviewChanges() runs this same pass, but handleAnalyze builds its own pipeline and previously
+  // skipped it.
+  [withImpact] = attachStructuralImpact([withImpact], { cwd, config, graph });
+  // Same reasoning for `reinvented-helper`: its detector emits a candidate for every changed
+  // function and only this pass can tell a genuine duplicate from an ordinary new function. The
+  // agent loop is the surface where an unconfirmed candidate does the most damage — it would send
+  // the model off rewriting code that has no duplicate at all.
+  [withImpact] = attachReinvention([withImpact], { cwd, config });
   [withImpact] = attachSecurity([withImpact], { cwd, config, graph });
   [withImpact] = attachReachability([withImpact], { cwd, config, graph });
   [withImpact] = labelTrust([withImpact]);

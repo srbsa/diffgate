@@ -56,7 +56,7 @@ test("graph index runs the configured server and reports success", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dg-graphcli-"));
   try {
     const { bin, logPath } = writeFakeServer(tmp);
-    fs.writeFileSync(path.join(tmp, ".diffgate.json"), JSON.stringify({ graph: { enabled: "auto", command: bin } }));
+    fs.writeFileSync(path.join(tmp, ".diffgate.json"), JSON.stringify({ graph: { enabled: "auto", provider: "codegraph", command: bin } }));
     const { code, out } = runCli(tmp, ["graph", "index"]);
     assert.equal(code, 0);
     assert.match(out, /Indexed/);
@@ -67,10 +67,38 @@ test("graph index runs the configured server and reports success", () => {
   }
 });
 
+test("graph status under the builtin default does not claim an external binary was found", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dg-graphcli-"));
+  try {
+    // No .diffgate.json -> default config -> provider:"builtin".
+    const { out } = runCli(tmp, ["graph", "status"]);
+    assert.match(out, /provider\s+built-in/);
+    assert.doesNotMatch(out, /found on PATH/);
+    assert.doesNotMatch(out, /codegraph-server/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("graph index under the builtin default rebuilds in-process and never shells out to codegraph-server", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dg-graphcli-"));
+  try {
+    // A "codegraph-server" on PATH must be ignored entirely when provider is (the default) builtin.
+    const { bin, logPath } = writeFakeServer(tmp);
+    fs.writeFileSync(path.join(tmp, ".diffgate.json"), JSON.stringify({ graph: { command: bin } }));
+    const { code, out } = runCli(tmp, ["graph", "index"]);
+    assert.equal(code, 0);
+    assert.match(out, /Rebuilt/);
+    assert.ok(!fs.existsSync(logPath), "the external server must NOT be invoked under provider:builtin");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("graph index prints install help when the binary is missing", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dg-graphcli-"));
   try {
-    fs.writeFileSync(path.join(tmp, ".diffgate.json"), JSON.stringify({ graph: { command: "/no/such/codegraph-xyz" } }));
+    fs.writeFileSync(path.join(tmp, ".diffgate.json"), JSON.stringify({ graph: { provider: "codegraph", command: "/no/such/codegraph-xyz" } }));
     const { code, out } = runCli(tmp, ["graph", "index"]);
     assert.equal(code, 1);
     assert.match(out, /not found on PATH/);
@@ -87,7 +115,7 @@ test("check shows the graph adoption tip when unindexed and a public-surface cha
     runGit(tmp, "config", "user.email", "t@t.dev");
     runGit(tmp, "config", "user.name", "T");
     // graph enabled (auto) but pointed at a non-existent binary → unindexed.
-    fs.writeFileSync(path.join(tmp, ".diffgate.json"), JSON.stringify({ graph: { command: "/no/such/codegraph-xyz" } }));
+    fs.writeFileSync(path.join(tmp, ".diffgate.json"), JSON.stringify({ graph: { provider: "codegraph", command: "/no/such/codegraph-xyz" } }));
     const file = path.join(tmp, "api.js");
     fs.writeFileSync(file, "export function getThing(id){ return id; }\n");
     runGit(tmp, "add", "-A");

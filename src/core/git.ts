@@ -38,6 +38,37 @@ export function repoRoot(cwd: string): string | null {
   return out ? out.trim() : null;
 }
 
+// Untracked-and-ignored paths (`git ls-files -o -i --exclude-standard --directory`), cached with a
+// short TTL: the editor's live path asks per keystroke, and .gitignore edits are rare.
+const IGNORED_TTL_MS = 5000;
+const ignoredCache = new Map<string, { at: number; entries: string[] }>();
+
+function ignoredEntries(root: string): string[] {
+  const hit = ignoredCache.get(root);
+  if (hit && Date.now() - hit.at < IGNORED_TTL_MS) return hit.entries;
+  const out = tryGit(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], root);
+  const entries = out ? out.split("\0").filter(Boolean) : [];
+  ignoredCache.set(root, { at: Date.now(), entries });
+  return entries;
+}
+
+/**
+ * True when git ignores this path (untracked + matched by .gitignore) — e.g. a local `.env`.
+ * A secret in a git-ignored file is configuration living where it should, not a leak, so the
+ * walk/editor/agent surfaces skip these files just like the diff surfaces (which never see them).
+ * A tracked file is never git-ignored, so committing a `.env` still gates normally.
+ * Non-repo or git failure → false (fail open: we'd rather over-report than silently skip).
+ */
+export function isGitIgnoredPath(cwd: string, filePath: string): boolean {
+  const root = repoRoot(cwd);
+  if (!root) return false;
+  let abs = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+  abs = realp(abs);
+  const rel = path.relative(realp(root), abs).split(path.sep).join("/");
+  if (!rel || rel.startsWith("../")) return false;
+  return ignoredEntries(root).some((e) => (e.endsWith("/") ? rel.startsWith(e) : rel === e));
+}
+
 export function headSha(cwd: string): string | null {
   const out = tryGit(["rev-parse", "HEAD"], cwd);
   return out ? out.trim() : null;

@@ -114,3 +114,62 @@ test("isCommitish distinguishes a sha from a path", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// A rule that emits optimistically and depends on an attach-pass to confirm it must never surface
+// raw from the history path. reviewCommit deliberately skips the graph passes ("no-ops without a
+// graph"), which is true for genuine graph passes but was NOT true for these — before the fix,
+// `check <commit>` printed one unconfirmed "Possible reinvented helper" per changed function,
+// 30 of them on a single real commit.
+test("history: confirmation-required rules never leak unconfirmed candidates", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grg-leak-"));
+  try {
+    runGit(tmp, "init", "-q");
+    runGit(tmp, "config", "user.email", "t@t.dev");
+    runGit(tmp, "config", "user.name", "Test");
+    fs.writeFileSync(path.join(tmp, ".diffgate.json"), JSON.stringify({ rules: { structural: true } }));
+    runGit(tmp, "add", "-A");
+    runGit(tmp, "commit", "-q", "-m", "base");
+
+    // A multi-statement function with no duplicate anywhere: the detector half emits a candidate,
+    // and only the attach-pass can know there is nothing to match it against.
+    fs.writeFileSync(
+      path.join(tmp, "solo.js"),
+      [
+        "export function summarizeLedgerRows(rows) {",
+        "  let total = 0;",
+        "  for (const row of rows) {",
+        "    if (row.credit) {",
+        "      total += row.amount * 1.5;",
+        "    } else {",
+        "      total += row.amount;",
+        "    }",
+        "  }",
+        "  return total;",
+        "}",
+        "",
+      ].join("\n")
+    );
+    runGit(tmp, "add", "-A");
+    runGit(tmp, "commit", "-q", "-m", "add solo helper");
+
+    const res = reviewHistory(tmp, { count: 2 });
+    const findings = res.commits.flatMap((c) => (c.files || []).flatMap((f) => f.findings || []));
+
+    const leaked = findings.filter(
+      (f) => f.ruleId === "reinvented-helper" || f.ruleId === "single-caller-abstraction"
+    );
+    assert.equal(
+      leaked.length,
+      0,
+      `confirmation-required rules leaked from the history path: ${JSON.stringify(leaked.map((f) => f.message))}`
+    );
+
+    // Guard against the test passing because nothing was analyzed at all.
+    assert.ok(
+      res.commits.length >= 1,
+      "the fixture must actually produce reviewed commits, otherwise this test proves nothing"
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
