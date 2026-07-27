@@ -4,9 +4,11 @@ on:
   push:
     tags:
       - 'v[0-9]*'
+  workflow_dispatch:
 
 jobs:
   publish:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,12 +28,23 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  mcp-registry:
+    needs: [publish]
+    if: always() && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
       # Keep the MCP Registry listing in sync with the npm release. github-oidc auth
       # verifies the io.github.srbsa/diffgate namespace against this workflow's repo
       # identity on every publish — no PAT or one-time manual claim needed.
       - name: Sync MCP Registry
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
+          VERSION="${VERSION:-$(node -p "require('./package.json').version")}"
           jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp && mv server.tmp server.json
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
           ./mcp-publisher login github-oidc
