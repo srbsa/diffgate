@@ -139,3 +139,122 @@ test("structural: no false-block (yellow tier)", () => {
     assert.equal(f.blocking, false, "Structural rule should not be blocking");
   }
 });
+
+// ===========================================================================
+// single-caller-abstraction scope.
+//
+// The rule asks the call graph "how many call sites name this symbol?". That
+// question is only answerable where the language's construction syntax produces
+// such a call site. Where it does not, the graph returns a structural zero for
+// EVERY declaration, used or not, and the confirmation pass reads that zero as
+// proof — so the rule fired on every new class in the diff regardless of usage.
+// ===========================================================================
+
+test("single-caller-abstraction: scoped to languages whose construction resolves to a call", async () => {
+  const { STRUCTURAL_TSAST_RULES, STRUCTURAL_AST_RULES } = await import("../dist/core/rules/structural.js");
+
+  const tsRule = STRUCTURAL_TSAST_RULES.find((r) => r.id === "single-caller-abstraction");
+  assert.ok(tsRule, "tree-sitter half is registered");
+  assert.deepEqual(
+    [...tsRule.languages].sort(),
+    ["python"],
+    "Java/C#/PHP/Ruby/Kotlin build objects with `new Foo()` / `Foo.new`, which never produces a " +
+      "call site named Foo — a caller count there is a structural zero, not evidence"
+  );
+
+  const astRule = STRUCTURAL_AST_RULES.find((r) => r.id === "single-caller-abstraction");
+  assert.ok(astRule, "Babel half is registered");
+  assert.deepEqual([...astRule.languages].sort(), ["javascript", "jsx", "tsx", "typescript"]);
+});
+
+test("single-caller-abstraction: interfaces are excluded — they are never called", async () => {
+  const { STRUCTURAL_AST_RULES } = await import("../dist/core/rules/structural.js");
+  const rule = STRUCTURAL_AST_RULES.find((r) => r.id === "single-caller-abstraction");
+
+  const emitted = [];
+  const emit = (e) => emitted.push(e);
+  const ctx = { language: "typescript", filePath: "src/x.ts", changedLines: null };
+
+  rule.visit({ type: "TSInterfaceDeclaration", id: { name: "Shape" }, loc: { start: { line: 1, column: 0 }, end: { line: 3, column: 1 } } }, null, ctx, emit);
+  assert.deepEqual(emitted, [], "an interface's caller count is unconditionally zero");
+
+  rule.visit({ type: "ClassDeclaration", id: { name: "Shape" }, loc: { start: { line: 1, column: 0 }, end: { line: 3, column: 1 } } }, null, ctx, emit);
+  assert.equal(emitted.length, 1, "a class still emits — `new Shape()` is indexed as a call site");
+  assert.equal(emitted[0].symbol, "Shape");
+});
+
+// ===========================================================================
+// ts-over-generic: nesting can live in ANY type argument, not just the first.
+// ===========================================================================
+
+const tsGenericConfig = {
+  ...DEFAULT_CONFIG,
+  rules: { ...DEFAULT_CONFIG.rules, "ts-over-generic": { enabled: true } },
+};
+
+const overGenericHits = (content) =>
+  analyze({ filePath: "t.ts", content, previousContent: null, changedLines: null, config: tsGenericConfig })
+    .findings.filter((f) => f.ruleId === "ts-over-generic");
+
+test("ts-over-generic: deep nesting in the FIRST type argument fires", () => {
+  assert.equal(overGenericHits("type A = Promise<Array<Map<Set<string>>>>;").length, 1);
+});
+
+test("ts-over-generic: deep nesting in a LATER type argument also fires", () => {
+  // The regression: descent followed only `params[0]`, so this scored 1 and stayed silent —
+  // `Map<K, V>` puts the interesting half in the second argument, which is the common real shape.
+  const hits = overGenericHits("type B = Map<string, Promise<Array<Set<number>>>>;");
+  assert.equal(hits.length, 1, "nesting under the second type argument must be measured");
+  assert.match(hits[0].message, /4 levels/);
+});
+
+test("ts-over-generic: nesting inside a union member is measured", () => {
+  assert.equal(overGenericHits("type D = string | Promise<Array<Map<Set<number>>>>;").length, 1);
+});
+
+test("ts-over-generic: a shallow type alias stays quiet", () => {
+  assert.deepEqual(overGenericHits("type C = Map<string, number>;"), []);
+});
+
+// ===========================================================================
+// pass-through-wrapper: only a NAMED binding can be "inlined at the call site".
+// ===========================================================================
+
+const passThroughConfig = {
+  ...DEFAULT_CONFIG,
+  rules: { ...DEFAULT_CONFIG.rules, "pass-through-wrapper": { enabled: true } },
+};
+
+const passThroughHits = (content, filePath = "t.ts") =>
+  analyze({ filePath, content, previousContent: null, changedLines: null, config: passThroughConfig })
+    .findings.filter((f) => f.ruleId === "pass-through-wrapper");
+
+test("pass-through-wrapper: an inline callback argument is not a wrapper", () => {
+  // None of these have a call site to inline — the function IS the argument. And for the array
+  // callbacks the suggested rewrite is not behaviour-preserving: map/filter/forEach pass
+  // (element, index, array), which is why ["1","2","3"].map(parseInt) is [1, NaN, NaN].
+  assert.deepEqual(passThroughHits("const loaded = langs.filter((l) => ready(l));"), []);
+  assert.deepEqual(passThroughHits("const out = xs.map(x => parse(x));"), []);
+  assert.deepEqual(passThroughHits("xs.forEach(x => log(x));"), []);
+  assert.deepEqual(passThroughHits("setTimeout(() => flush(), 100);"), []);
+  assert.deepEqual(passThroughHits("const C = () => <button onClick={e => handle(e)} />;", "t.tsx"), []);
+});
+
+test("pass-through-wrapper: a named delegation still fires, whatever binds the name", () => {
+  for (const src of [
+    "const getUser = (id) => fetchUser(id);",
+    "function getUser(id) { return fetchUser(id); }",
+    "getUser = (id) => fetchUser(id);",
+    "const o = { getUser: (id) => fetchUser(id) };",
+  ]) {
+    const hits = passThroughHits(src);
+    assert.equal(hits.length, 1, `should fire: ${src}`);
+    assert.equal(hits[0].symbol, "getUser", `should name the symbol: ${src}`);
+    assert.match(hits[0].message, /getUser/);
+  }
+});
+
+test("pass-through-wrapper: a wrapper that reshapes arguments is doing real work", () => {
+  assert.deepEqual(passThroughHits("const f = (x) => ready(x, true);"), []);
+  assert.deepEqual(passThroughHits("const f = (a, b) => ready(b, a);"), []);
+});

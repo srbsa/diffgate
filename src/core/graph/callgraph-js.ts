@@ -7,6 +7,9 @@ import { walk, memberName } from "../parsers/javascript.js";
 import type { FnDef, CallSite } from "./callgraph.js";
 
 const FN_DEF_TYPES = new Set(["FunctionDeclaration", "ClassMethod", "ClassPrivateMethod", "ObjectMethod"]);
+/** Type declarations, tracked separately from functions so `impact()` can tell a genuinely
+ *  uncalled class from two same-named classes whose call sites got conflated by bare-name matching. */
+const TYPE_DECL_TYPES = new Set(["ClassDeclaration", "TSInterfaceDeclaration"]);
 
 function nodeLine(node: AstNode, which: "start" | "end"): number {
   const loc = (node as unknown as { loc?: { start: { line: number }; end: { line: number } } }).loc;
@@ -63,9 +66,10 @@ function calleeBareName(node: AstNode): string | null {
  * a node→name map built in the same pre-order traversal (parent is always visited before its
  * children, so the map entry is ready by the time we reach them).
  */
-export function extractJs(root: AstNode, file: string): { fns: FnDef[]; sites: CallSite[] } {
+export function extractJs(root: AstNode, file: string): { fns: FnDef[]; sites: CallSite[]; types: FnDef[] } {
   const fns: FnDef[] = [];
   const sites: CallSite[] = [];
+  const types: FnDef[] = [];
   const enclosing = new Map<AstNode, string>();
   enclosing.set(root, "<top-level>");
 
@@ -78,6 +82,13 @@ export function extractJs(root: AstNode, file: string): { fns: FnDef[]; sites: C
       fns.push({ name, qualName: name, file, startLine: nodeLine(node, "start"), endLine: nodeLine(node, "end"), language: "javascript" });
     }
 
+    if (TYPE_DECL_TYPES.has(node.type)) {
+      const typeName = (node as unknown as { id?: { name?: string } }).id?.name;
+      if (typeName) {
+        types.push({ name: typeName, qualName: typeName, file, startLine: nodeLine(node, "start"), endLine: nodeLine(node, "end"), language: "javascript" });
+      }
+    }
+
     if (node.type === "CallExpression" || node.type === "NewExpression") {
       const calleeName = calleeBareName(node);
       if (calleeName) {
@@ -86,5 +97,5 @@ export function extractJs(root: AstNode, file: string): { fns: FnDef[]; sites: C
     }
   });
 
-  return { fns, sites };
+  return { fns, sites, types };
 }

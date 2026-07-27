@@ -12,7 +12,7 @@
 import type { TsAstRule, AstRule, TsNode, AstNode, RuleContext, EmitFn } from "../types.js";
 import { resolveThresholds } from "../language-thresholds.js";
 import { analyzeComplexity, profileFor, type ComplexityProfile } from "../complexity.js";
-import { shapeFunctions } from "../fingerprint.js";
+import { shapeFunctions, extractBabelName, MIN_SHAPE_NODES, MIN_SHAPE_VARIETY } from "../fingerprint.js";
 import { isTestFile } from "../reinvention.js";
 
 // ===== Shared tree-sitter helpers =====
@@ -75,7 +75,10 @@ function countReferences(root: TsNode, name: string, declLine: number): number {
 /**
  * True when `call`'s arguments are exactly the enclosing function's parameters, in order and
  * untouched. That is the signal that the wrapper adds nothing: no defaults, no reshaping, no
- * literals, no extra work. A zero-parameter function delegating a zero-argument call counts too.
+ * literals, no extra work. Requires at least one forwarded parameter — a zero-parameter function
+ * delegating a zero-argument call (`() => doThing()`, `setTimeout(() => flush(), 100)`) has
+ * nothing to "forward unchanged" in the first place, and firing there flags the deferred/lazy-
+ * evaluation idiom as a value-free wrapper, which it isn't.
  */
 function forwardsParamsUnchanged(fn: TsNode, call: TsNode, profile: ComplexityProfile): boolean {
   const paramsNode = fn.childForFieldName(profile.paramsField);
@@ -84,6 +87,7 @@ function forwardsParamsUnchanged(fn: TsNode, call: TsNode, profile: ComplexityPr
   // let a genuinely zero-arg call falsely "prove" forwarding for a function we never actually checked.
   if (!paramsNode) return false;
   const params = namedChildren(paramsNode);
+  if (params.length === 0) return false;
   const paramNames = params.map((p) => {
     if (p.type === "identifier") return p.text;
     const id = p.childForFieldName("name");
@@ -100,9 +104,10 @@ function forwardsParamsUnchanged(fn: TsNode, call: TsNode, profile: ComplexityPr
   return args.every((a, i) => a.type === "identifier" && a.text === paramNames[i]);
 }
 
-/** Babel counterpart of {@link forwardsParamsUnchanged}. */
+/** Babel counterpart of {@link forwardsParamsUnchanged}. Same zero-parameter exclusion. */
 function babelForwardsParamsUnchanged(fn: AstNode, call: AstNode): boolean {
   const params = ((fn as { params?: AstNode[] }).params ?? []);
+  if (params.length === 0) return false;
   // Defaults, rest, and destructuring mean we cannot prove a clean forward.
   if (!params.every((p) => p.type === "Identifier")) return false;
   const args = ((call as { arguments?: AstNode[] }).arguments ?? []);
@@ -337,16 +342,24 @@ export const TsOverGenericAst: AstRule = {
     const typeAnnotation = (node as any).typeAnnotation;
     if (!typeAnnotation) return;
 
+    // Descends every type argument and union/intersection member, not just the first. `Foo<A,
+    // Bar<Baz<Qux>>>` nests three deep in its *second* argument; measuring only `params[0]` scored
+    // it 1 and the rule never fired on the shape it exists to catch.
     const countNesting = (n: any): number => {
       if (!n) return 0;
       const typeStr = n.type || "";
-      if (typeStr.includes("Type") && typeStr !== "Identifier" && typeStr !== "StringLiteral") {
-        return 1 + Math.max(
-          countNesting((n as any).typeParameters?.params?.[0]),
-          countNesting((n as any).types?.[0])
-        );
-      }
-      return 0;
+      if (!typeStr.includes("Type") || typeStr === "Identifier" || typeStr === "StringLiteral") return 0;
+      const children: any[] = [
+        ...((n as any).typeParameters?.params ?? []),
+        ...((n as any).typeArguments?.params ?? []),
+        ...((n as any).types ?? []),
+        ...((n as any).elementTypes ?? []),
+        (n as any).elementType,
+        (n as any).typeAnnotation,
+      ].filter(Boolean);
+      let deepest = 0;
+      for (const child of children) deepest = Math.max(deepest, countNesting(child));
+      return 1 + deepest;
     };
 
     const depth = countNesting(typeAnnotation);
@@ -481,7 +494,12 @@ export const GoPrematureInterfaceTsAst: TsAstRule = {
     const root = ctx.tsTree ? ctx.tsTree.rootNode : null;
     if (!root) return;
     const declRow = node.startPosition ? node.startPosition.row : -1;
-    if (countReferences(root, name, declRow) > 1) return; // genuinely consumed
+    // countReferences already excludes the declaration line itself, so a single remaining
+    // reference (e.g. one parameter of this type) is already a real consumer — the doc promises
+    // quiet "when a call site accepts it" (singular). `> 1` demanded a SECOND reference beyond
+    // the declaration before staying quiet, so an interface with exactly one genuine consumer
+    // still fired.
+    if (countReferences(root, name, declRow) >= 1) return; // genuinely consumed
 
     emit({
       loc: tsLoc(node),
@@ -545,8 +563,26 @@ export const PassThroughWrapperAst: AstRule = {
   tier: "yellow",
   blocking: false,
   languages: ["javascript", "typescript", "jsx", "tsx"],
-  visit: (node: AstNode, _parent: AstNode | null, ctx: any, emit: any) => {
+  visit: (node: AstNode, parent: AstNode | null, ctx: any, emit: any) => {
     if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type)) return;
+
+    // The finding's advice is "inline the call site" — which presupposes a named binding that HAS
+    // call sites. An anonymous function passed straight into another call has none: it is not an
+    // indirection someone introduced, it IS the argument. `xs.filter(l => ready(l))`,
+    // `onClick={e => handle(e)}`, `setTimeout(() => flush(), 100)` all matched the delegation shape
+    // and produced advice with nothing to act on.
+    //
+    // Worse, for array callbacks the suggested eta-reduction is not even behaviour-preserving:
+    // `map`/`filter`/`forEach` invoke their callback with (element, index, array), so
+    // `xs.map(x => parse(x))` and `xs.map(parse)` differ whenever the callee reads a second
+    // parameter — the textbook case being `["1","2","3"].map(parseInt)` returning [1, NaN, NaN]
+    // because the index arrives as parseInt's radix. Advising that rewrite would introduce a bug.
+    //
+    // `extractBabelName` is the engine's existing answer to "does this function have a name a
+    // caller could reference?" (declaration id, method key, or a const/assignment/property
+    // binding), so this reuses it rather than keeping a second definition of the same predicate.
+    const boundName = extractBabelName(node, parent);
+    if (!boundName) return;
 
     // Check if body is only a return statement calling a single function
     const body = (node as any).body;
@@ -572,8 +608,8 @@ export const PassThroughWrapperAst: AstRule = {
 
     emit({
       loc: node.loc,
-      symbol: (node as { id?: { name?: string } }).id?.name ?? null,
-      message: `⚡ Function only delegates to another call without transforming its arguments. Inline the call site unless the indirection is load-bearing.`,
+      symbol: boundName,
+      message: `⚡ Function ${boundName} only delegates to another call without transforming its arguments. Inline the call site unless the indirection is load-bearing.`,
     });
   },
 };
@@ -699,24 +735,26 @@ export const ReinventedHelperTsAst: TsAstRule = {
     const name = extractTsName(node, profile);
     if (!name) return;
 
-    for (const shape of shapes) {
-      // Skip shapes with empty hash or low statement count — they won't match.
-      if (!shape.shapeHash || shape.statementCount < 5) continue;
-      if (shape.startLine !== startLine) continue;
+    // `shapes` covers the whole file, so match this node's own span — startLine alone collides when
+    // two functions open on the same line (a nested arrow, a one-line lambda), and every colliding
+    // shape emitted its own finding at the same location.
+    const endLine = node.endPosition?.row != null ? node.endPosition.row + 1 : null;
+    const shape = shapes.find((s) => s.startLine === startLine && (endLine === null || s.endLine === endLine));
+    if (!shape || !shape.shapeHash) return;
+    if (shape.statementCount < MIN_SHAPE_NODES || shape.distinctTypes < MIN_SHAPE_VARIETY) return;
 
-      // Emit with metadata for attachReinvention to use.
-      emit({
-        loc: tsLoc(node),
-        symbol: name,
-        message: `⚡ Possible reinvented helper: ${name}`,
-        meta: {
-          shapeHash: shape.shapeHash,
-          arity: shape.arity,
-          statementCount: shape.statementCount,
-          name,
-        },
-      });
-    }
+    // Emit with metadata for attachReinvention to use.
+    emit({
+      loc: tsLoc(node),
+      symbol: name,
+      message: `⚡ Possible reinvented helper: ${name}`,
+      meta: {
+        shapeHash: shape.shapeHash,
+        arity: shape.arity,
+        statementCount: shape.statementCount,
+        name,
+      },
+    });
   },
 };
 
@@ -728,7 +766,7 @@ export const ReinventedHelperAst: AstRule = {
   blocking: false,
   enabledByDefault: false,
   languages: ["javascript", "typescript", "jsx", "tsx"],
-  visit: (node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) => {
+  visit: (node: AstNode, parent: AstNode | null, ctx: RuleContext, emit: EmitFn) => {
     if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type)) return;
 
     // Only emit when the function starts in changed lines (diff-scoped rule).
@@ -741,37 +779,58 @@ export const ReinventedHelperAst: AstRule = {
 
     // Get function shapes and emit for each one that survives gates.
     const shapes = shapeFunctions(ctx);
-    const name = (node as { id?: { name?: string } }).id?.name;
+    // extractBabelName also resolves the name of an anonymous function/arrow from its binding
+    // (`const foo = () => {}`, `foo = () => {}`) — a bare `node.id?.name` is "" for both, which
+    // made every arrow function unconditionally fail gate 4 (empty name → 0 token overlap).
+    const name = extractBabelName(node, parent);
     if (!name) return;
 
-    for (const shape of shapes) {
-      // Skip shapes with empty hash or low statement count — they won't match.
-      if (!shape.shapeHash || shape.statementCount < 5) continue;
-      if (shape.startLine !== nodeLoc.start.line) continue;
+    // See the tree-sitter twin: match the node's full span, not just its opening line, so two
+    // functions starting on the same line don't each emit a finding at the same location.
+    const shape = shapes.find((s) => s.startLine === nodeLoc.start.line && s.endLine === nodeLoc.end.line);
+    if (!shape || !shape.shapeHash) return;
+    if (shape.statementCount < MIN_SHAPE_NODES || shape.distinctTypes < MIN_SHAPE_VARIETY) return;
 
-      // Emit with metadata for attachReinvention to use.
-      emit({
-        loc: node.loc,
-        symbol: name,
-        message: `⚡ Possible reinvented helper: ${name}`,
-        meta: {
-          shapeHash: shape.shapeHash,
-          arity: shape.arity,
-          statementCount: shape.statementCount,
-          name,
-        },
-      });
-    }
+    // Emit with metadata for attachReinvention to use.
+    emit({
+      loc: node.loc,
+      symbol: name,
+      message: `⚡ Possible reinvented helper: ${name}`,
+      meta: {
+        shapeHash: shape.shapeHash,
+        arity: shape.arity,
+        statementCount: shape.statementCount,
+        name,
+      },
+    });
   },
 };
 
 /**
  * single-caller-abstraction (detector half).
  *
- * Emits optimistically for every new class/interface in the diff; `attachStructuralImpact` then
- * confirms or retracts it using the code graph's caller count. On its own this rule proves nothing,
- * which is why the attach-pass drops every finding it cannot positively confirm — including when no
- * graph is available at all.
+ * Emits optimistically for every new class in the diff; `attachStructuralImpact` then confirms or
+ * retracts it using the code graph's caller count. On its own this rule proves nothing, which is why
+ * the attach-pass drops every finding it cannot positively confirm — including when no graph is
+ * available at all.
+ *
+ * SCOPE — deliberately narrower than the languages this engine parses. The confirmation step asks
+ * the call graph "how many call sites name this symbol?", and that question is only answerable where
+ * the language's construction syntax actually produces such a call site:
+ *
+ *   - Python `Foo()`      → a `call` whose callee is the identifier `Foo`. Answerable.
+ *   - JS/TS `new Foo()`   → a `NewExpression`, indexed by callee name. Answerable (see the Ast twin).
+ *   - Java/C# `new Foo()` → `object_creation_expression`; no `method_invocation` named `Foo`.
+ *   - Ruby `Foo.new`      → a call named `new`, not `Foo`.
+ *   - PHP `new Foo()`     → `object_creation_expression`, same as Java.
+ *
+ * For the last three the graph returns a structural zero for every class, used or not, which the
+ * attach-pass then reads as proof and confirms — the rule fired on every new class in the diff
+ * regardless of usage. Interfaces are excluded in *all* languages for the same reason: an interface
+ * is implemented and referenced in type position, never called, so its caller count is always zero.
+ *
+ * Extending this list means teaching `callgraph.ts` to record instantiation and type-reference
+ * edges for that language first; until then, silence beats a confident wrong answer.
  */
 export const SingleCallerAbstractionTsAst: TsAstRule = {
   id: "single-caller-abstraction",
@@ -783,7 +842,7 @@ export const SingleCallerAbstractionTsAst: TsAstRule = {
   enabledByDefault: false,
   tier: "yellow",
   blocking: false,
-  languages: ["python", "go", "java", "kotlin", "ruby", "php", "csharp"],
+  languages: ["python"],
   visit: (node: TsNode, ctx: RuleContext, emit: EmitFn) => {
     const profile = profileFor(ctx.language);
     if (!profile || !profile.classTypes.has(node.type)) return;
@@ -809,7 +868,10 @@ export const SingleCallerAbstractionAst: AstRule = {
   blocking: false,
   languages: ["javascript", "typescript", "jsx", "tsx"],
   visit: (node: AstNode, _parent: AstNode | null, ctx: RuleContext, emit: EmitFn) => {
-    if (node.type !== "ClassDeclaration" && node.type !== "TSInterfaceDeclaration") return;
+    // Classes only. `new Foo()` is indexed as a call site named `Foo`, so a class gets a real count;
+    // an interface is never called, so its count is unconditionally zero and the attach-pass would
+    // confirm every single one. See the scope note on the tree-sitter twin above.
+    if (node.type !== "ClassDeclaration") return;
     const name = (node as { id?: { name?: string } }).id?.name;
     if (!name) return;
     emit({

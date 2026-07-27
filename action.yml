@@ -1,5 +1,5 @@
 name: DiffGate Review Gate
-description: Deterministic gate for AI-edited diffs — catches deleted guardrails, grades changed lines by impact, 0 false blocks.
+description: A deterministic guardrail for AI-edited code — grades only the changed lines by impact and fails the build on high-impact findings. 0 false blocks.
 author: srbsa
 branding:
   icon: shield

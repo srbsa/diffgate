@@ -140,8 +140,12 @@ export const LANGUAGE_THRESHOLDS: Record<string, Partial<ComplexityThresholds>> 
  * Merge order: DEFAULT_THRESHOLDS ← LANGUAGE_THRESHOLDS[lang] ← cfg.languageOverrides._default ← cfg.languageOverrides[lang].
  * Most specific wins.
  */
-export function resolveThresholds(language: string, config: Partial<Config>): ComplexityThresholds {
-  const lang = language.toLowerCase();
+/** csharp/c# is the one built-in pair with two spellings; LANGUAGE_THRESHOLDS ships both, so a
+ *  user's own `languageOverrides` key should resolve the same way regardless of which they typed. */
+const LANGUAGE_ALIASES: Record<string, string> = { "c#": "csharp" };
+
+export function resolveThresholds(language: string, config: Partial<Config> | undefined | null): ComplexityThresholds {
+  const lang = LANGUAGE_ALIASES[language.toLowerCase()] ?? language.toLowerCase();
   const resolved = { ...DEFAULT_THRESHOLDS };
 
   // Apply language-specific built-in defaults
@@ -150,13 +154,20 @@ export function resolveThresholds(language: string, config: Partial<Config>): Co
   }
 
   // Apply user config: _default overrides
-  if (config.languageOverrides?._default) {
+  if (config?.languageOverrides?._default) {
     Object.assign(resolved, config.languageOverrides._default);
   }
 
-  // Apply user config: language-specific overrides (most specific wins)
-  if (config.languageOverrides?.[lang]) {
-    Object.assign(resolved, config.languageOverrides[lang]);
+  // Apply user config: language-specific overrides (most specific wins). Config keys are matched
+  // case-insensitively and through the same alias table as the built-in defaults, so `"Python"` or
+  // `"C#"` in a user's .diffgate.json behaves the same as the lowercase/canonical spelling.
+  const overrides = config?.languageOverrides;
+  if (overrides) {
+    for (const key of Object.keys(overrides)) {
+      if (key === "_default") continue;
+      const normalizedKey = LANGUAGE_ALIASES[key.toLowerCase()] ?? key.toLowerCase();
+      if (normalizedKey === lang) Object.assign(resolved, overrides[key]);
+    }
   }
 
   return resolved;

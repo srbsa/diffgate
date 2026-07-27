@@ -1,7 +1,7 @@
 {
   "name": "diffgate-review",
   "displayName": "DiffGate — Review Gate for AI Code",
-  "description": "Catches the guardrails your coding agent deletes while editing — deterministic review of just the changed lines, inline in your editor (🟢 merge / 🟡 glance / 🟠 verify). 0 false blocks; the same verdict as the DiffGate CLI and MCP.",
+  "description": "A deterministic guardrail for AI-edited code, inline on the lines you actually changed (🟢 merge / 🟡 glance / 🟠 verify). 0 false blocks; the same verdict as the DiffGate CLI and MCP server.",
   "version": "0.7.3",
   "publisher": "srbsa",
   "license": "Apache-2.0",

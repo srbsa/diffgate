@@ -1,6 +1,6 @@
 - id: diffgate
   name: DiffGate
-  description: Deterministic gate for AI-edited diffs — reviews only staged lines, catches deleted guardrails, flags high-impact (orange) changes.
+  description: A deterministic guardrail for AI-edited code — reviews only the staged lines and blocks high-impact (orange) changes. 0 false blocks.
   # Runs the published npm package via npx rather than pre-commit's `language: node`
   # env (which builds the hook's own repo from source — diffgate's dist/ is gitignored
   # and built via CI, so that path has no build output to package).

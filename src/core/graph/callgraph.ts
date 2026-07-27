@@ -27,6 +27,11 @@ export interface CallSite {
 export interface CallGraph {
   /** All function definitions, keyed by bare name (may have multiple defs for overloads). */
   functions: Map<string, FnDef[]>;
+  /** Class/interface declarations, keyed by bare name. Deliberately separate from `functions`:
+   *  a class spans its whole body, so folding it in would let `resolveEnclosingFunction` return the
+   *  class instead of the method a line actually sits in. Used only to detect same-name collisions
+   *  when answering `impact()` for a type symbol. */
+  types: Map<string, FnDef[]>;
   /** Call sites keyed by callee bare name → list of call sites that call it. */
   callers: Map<string, CallSite[]>;
   /** Qualified function names that are framework entry points (detected by entry-points.ts). */
@@ -135,11 +140,40 @@ const CALL_GRAPH_PROFILES: Record<string, CallGraphProfile> = {
   }
 };
 
+/**
+ * Class/interface/enum declaration node types per language, verified against each grammar's
+ * `src/node-types.json` rather than guessed — a typo here fails silently as an empty index.
+ *
+ * Indexed for EVERY covered language, not just the ones whose instantiation syntax resolves to a
+ * call site. The two questions are separate: "how many callers does this symbol have" is only
+ * answerable where construction produces a named call (see `SingleCallerAbstractionTsAst`), but
+ * "does more than one declaration share this bare name" is answerable everywhere — and it is the
+ * question that keeps `impact()` from silently answering about a Java `OrderProcessor` with a
+ * Python `OrderProcessor`'s call sites.
+ */
+const TYPE_DECL_TYPES: Record<string, Set<string>> = {
+  python: new Set(["class_definition"]),
+  java: new Set(["class_declaration", "interface_declaration", "enum_declaration", "record_declaration", "annotation_type_declaration"]),
+  csharp: new Set(["class_declaration", "interface_declaration", "struct_declaration", "record_declaration", "enum_declaration"]),
+  kotlin: new Set(["class_declaration", "object_declaration"]),
+  ruby: new Set(["class", "module"]),
+  php: new Set(["class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"]),
+  go: new Set(["type_spec"])
+};
+
 /** True when this build's call graph can see definitions/call sites for `lang` at all — either via
  *  a tree-sitter profile or the JS/TS Babel path. False means "no data", not "no callers": callers
  *  must return null (unknown) rather than an empty/zero result for these. */
 export function isCallGraphLanguage(lang: string): boolean {
-  return lang in CALL_GRAPH_PROFILES || AST_LANGUAGES.has(lang);
+  // Babel path — bundled with the engine, always available.
+  if (AST_LANGUAGES.has(lang)) return true;
+  if (!(lang in CALL_GRAPH_PROFILES)) return false;
+  // Having a profile is not the same as having a grammar. `buildCallGraph` skips every file whose
+  // grammar failed to load (see the `treeSitterReady` guard in walkDir), so without this check a
+  // host that never initialised tree-sitter — the VS Code extension path, or any caller that
+  // forgot `initTreeSitter` — would report "no callers" for a language it never parsed a line of,
+  // turning a total absence of data into an authoritative zero.
+  return treeSitterReady(lang);
 }
 
 /** Extracts a qualified name for a function depending on its context. */
@@ -209,6 +243,34 @@ function extractFunctions(tree: TsTree, file: string, language: string, profile:
   return fns;
 }
 
+/** Walk a tree-sitter tree to extract class/interface declarations (see `TYPE_DECL_TYPES`). */
+function extractTypeDecls(tree: TsTree, file: string, language: string): FnDef[] {
+  const wanted = TYPE_DECL_TYPES[language];
+  if (!wanted) return [];
+  const types: FnDef[] = [];
+  const walk = (node: TsNode) => {
+    if (wanted.has(node.type)) {
+      const nameNode = node.childForFieldName("name");
+      if (nameNode) {
+        types.push({
+          name: nameNode.text,
+          qualName: nameNode.text,
+          file,
+          startLine: node.startPosition.row + 1,
+          endLine: node.endPosition.row + 1,
+          language
+        });
+      }
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child) walk(child);
+    }
+  };
+  if (tree.rootNode) walk(tree.rootNode);
+  return types;
+}
+
 /** Finds the qualified name of the closest enclosing function for a node. */
 function getEnclosingFunction(node: TsNode, language: string, profile: CallGraphProfile): string {
   let parent = node.parent;
@@ -267,6 +329,7 @@ export function buildCallGraph(cwd: string, opts?: {
 }): CallGraph {
   const graph: CallGraph = {
     functions: new Map(),
+    types: new Map(),
     callers: new Map(),
     entryPointNames: new Set(),
     partial: false
@@ -284,6 +347,14 @@ export function buildCallGraph(cwd: string, opts?: {
       const existing = graph.functions.get(fn.name) || [];
       existing.push(fn);
       graph.functions.set(fn.name, existing);
+    }
+  }
+
+  function addTypes(types: FnDef[]) {
+    for (const t of types) {
+      const existing = graph.types.get(t.name) || [];
+      existing.push(t);
+      graph.types.set(t.name, existing);
     }
   }
 
@@ -333,8 +404,9 @@ export function buildCallGraph(cwd: string, opts?: {
             // JS/TS isn't tree-sitter-parsed in this build — reuse the Babel AST instead.
             const content = fs.readFileSync(fullPath, "utf-8");
             const ast = parseJs(content, lang);
-            const { fns, sites } = extractJs(ast, fullPath);
+            const { fns, sites, types } = extractJs(ast, fullPath);
             addFns(fns);
+            addTypes(types);
             addSites(sites);
             if (opts?.entryPointDetector) {
               for (const ep of opts.entryPointDetector({ ast }, fullPath, lang)) {
@@ -359,6 +431,7 @@ export function buildCallGraph(cwd: string, opts?: {
           }
 
           addFns(extractFunctions(tree, fullPath, lang, profile));
+          addTypes(extractTypeDecls(tree, fullPath, lang));
           addSites(extractCallSites(tree, fullPath, lang, profile));
         } catch {
           // Skip unreadable or unparseable files

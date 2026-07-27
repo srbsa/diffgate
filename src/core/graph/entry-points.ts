@@ -294,8 +294,17 @@ function detectRuby(tree: TsTree, file: string): DetectedEntryPoint[] {
   for (const call of calls) {
     const methodNode = call.childForFieldName('method') || call.namedChild(0);
     if (methodNode && /^(get|post|put|delete|patch)$/.test(methodNode.text)) {
+      // A Sinatra route is a bare `get "/users" do … end`: no receiver, a string path, and a block.
+      // Without these three checks every `cache.get(k)`, `hash.delete(:k)` and `client.post(body)`
+      // in the repo registered as an untrusted HTTP entry point, and any sink on those lines was
+      // escalated to blocking on the strength of it.
+      if (call.childForFieldName('receiver')) continue;
+      const block = call.childForFieldName('block') || call.childForFieldName('do_block') ||
+        call.descendantsOfType('do_block')[0] || call.descendantsOfType('block')[0];
+      if (!block) continue;
       const strings = call.descendantsOfType('string');
-      const route = strings.length > 0 ? stringLiteralValue(strings[0]) || undefined : undefined;
+      if (strings.length === 0) continue;
+      const route = stringLiteralValue(strings[0]) || undefined;
       results.push({
         qualName: `sinatra_${methodNode.text}`,
         kind: 'http_handler',
@@ -450,8 +459,16 @@ function detectJsTs(_tree: TsTree, _file: string): DetectedEntryPoint[] {
 
 const HTTP_VERBS = new Set(["get", "post", "put", "patch", "delete", "head", "options", "all"]);
 /** Router-ish receivers for `x.get("/p", handler)`. Guards against `map.get(k)` / `cache.delete(k)`
- *  being read as routes — those take no function argument either, but the name check is cheaper. */
-const ROUTER_RECEIVERS = /^(app|router|server|api|fastify|express|http|https|_router)$/i;
+ *  being read as routes — those take no function argument either, but the name check is cheaper.
+ *
+ *  `http`/`https` are deliberately absent: `https.get(url, res => …)` is Node's HTTP *client*, not a
+ *  route registration, and it fits the shape exactly (string first arg, function second). Treating
+ *  it as an untrusted entry point escalated sinks inside ordinary outbound-request callbacks. */
+const ROUTER_RECEIVERS = /^(app|router|server|api|fastify|express|_router)$/i;
+/** Compound router names: `adminApp`, `v1Router`, `appServer`. The `app` prefix requires a following
+ *  capital or underscore so it stops matching `apple`, `approvals`, `appConfig`-style receivers that
+ *  merely start with the same three letters. */
+const ROUTER_RECEIVER_SHAPES = [/(?:router|app)$/i, /^\$?app[A-Z_]/];
 /** Next.js app-router segment handlers and similar named-export HTTP entry points. */
 const EXPORTED_HTTP_NAMES = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "handler", "middleware"]);
 const EVENT_REGISTRARS = new Set(["addEventListener", "on", "once", "subscribe", "addListener"]);
@@ -467,6 +484,11 @@ const FN_NODES = new Set(["FunctionExpression", "ArrowFunctionExpression", "Func
 function jsLine(node: AstNode | null | undefined, which: "start" | "end"): number {
   const loc = (node as unknown as { loc?: { start: { line: number }; end: { line: number } } } | undefined)?.loc;
   return loc ? loc[which].line : 0;
+}
+
+function jsCol(node: AstNode | null | undefined): number {
+  const loc = (node as unknown as { loc?: { start: { column: number } } } | undefined)?.loc;
+  return loc ? loc.start.column : 0;
 }
 
 function jsBodyRange(fn: AstNode): { startLine: number; endLine: number } | undefined {
@@ -491,8 +513,11 @@ export function detectJsEntryPoints(ast: AstNode, file: string): DetectedEntryPo
   const results: DetectedEntryPoint[] = [];
   const seen = new Set<string>();
 
-  const push = (ep: DetectedEntryPoint) => {
-    const key = `${ep.qualName}:${ep.line}:${ep.bodyRange?.startLine ?? ""}`;
+  const push = (ep: DetectedEntryPoint, col = 0) => {
+    // Column is part of the key: two registrations chained on one line — `app.get("/a", h);
+    // app.get("/b", h)` — share a qualName, a line, and (for a by-reference handler) an absent
+    // bodyRange, so a line-only key silently dropped the second route.
+    const key = `${ep.qualName}:${ep.line}:${col}:${ep.bodyRange?.startLine ?? ""}`;
     if (seen.has(key)) return;
     seen.add(key);
     results.push(ep);
@@ -500,22 +525,23 @@ export function detectJsEntryPoints(ast: AstNode, file: string): DetectedEntryPo
 
   /** Register the handler argument(s) of a route/listener call. */
   const pushHandlers = (
-    args: AstNode[], qualName: string, kind: DetectedEntryPoint["kind"], route: string | undefined, line: number
+    args: AstNode[], qualName: string, kind: DetectedEntryPoint["kind"], route: string | undefined,
+    line: number, col: number
   ) => {
     let found = false;
     for (const arg of args) {
       if (!arg || typeof arg.type !== "string") continue;
       if (FN_NODES.has(arg.type)) {
         // Inline closure — the body span is what reachability matches against.
-        push({ qualName, kind, route, file, line, bodyRange: jsBodyRange(arg) });
+        push({ qualName, kind, route, file, line, bodyRange: jsBodyRange(arg) }, col);
         found = true;
       } else if (arg.type === "Identifier") {
         // Named handler passed by reference: the call graph resolves it by name.
-        push({ qualName: (arg as unknown as { name: string }).name, kind, route, file, line });
+        push({ qualName: (arg as unknown as { name: string }).name, kind, route, file, line }, col);
         found = true;
       } else if (arg.type === "MemberExpression") {
         const bare = memberName(arg)?.split(".").pop();
-        if (bare) { push({ qualName: bare, kind, route, file, line }); found = true; }
+        if (bare) { push({ qualName: bare, kind, route, file, line }, col); found = true; }
       }
     }
     return found;
@@ -527,25 +553,26 @@ export function detectJsEntryPoints(ast: AstNode, file: string): DetectedEntryPo
       const callee = node.callee as AstNode | undefined;
       const args = ((node as unknown as { arguments?: AstNode[] }).arguments || []) as AstNode[];
       const line = jsLine(node, "start");
+      const col = jsCol(node);
 
       if (callee && callee.type === "MemberExpression" && !callee.computed) {
         const full = memberName(callee) || "";
         const prop = full.split(".").pop() || "";
         const receiver = full.split(".")[0] || "";
-        const isRouterish = ROUTER_RECEIVERS.test(receiver) || /router$/i.test(receiver) || /^\$?(app|route)/i.test(receiver);
+        const isRouterish = ROUTER_RECEIVERS.test(receiver) || ROUTER_RECEIVER_SHAPES.some((re) => re.test(receiver));
 
         if (HTTP_VERBS.has(prop.toLowerCase()) && isRouterish) {
           const route = stringArg(args[0]);
-          pushHandlers(args, `${full}@${line}`, "http_handler",
-            route ? `${prop.toUpperCase()} ${route}` : prop.toUpperCase(), line);
+          pushHandlers(args, `${full}@${line}:${col}`, "http_handler",
+            route ? `${prop.toUpperCase()} ${route}` : prop.toUpperCase(), line, col);
         } else if ((prop === "use" || prop === "route" || prop === "register") && isRouterish) {
-          pushHandlers(args, `${full}@${line}`, "http_handler", stringArg(args[0]) || undefined, line);
+          pushHandlers(args, `${full}@${line}:${col}`, "http_handler", stringArg(args[0]) || undefined, line, col);
         } else if (EVENT_REGISTRARS.has(prop)) {
           const evt = stringArg(args[0]);
           // DOM listeners are user input by definition; everything else must name a known
           // outside-the-process event.
           const untrusted = prop === "addEventListener" ? !!evt : !!evt && UNTRUSTED_EVENTS.has(evt.toLowerCase());
-          if (untrusted) pushHandlers(args, `${full}@${line}`, "event_handler", evt!, line);
+          if (untrusted) pushHandlers(args, `${full}@${line}:${col}`, "event_handler", evt!, line, col);
         }
       }
       return;

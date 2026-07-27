@@ -69,8 +69,31 @@ export interface FnShape {
   endLine: number;        // 1-based inclusive
   arity: number;          // declared parameter count
   statementCount: number; // node types collected from body
+  /** How many *distinct* node types the body contains. `statementCount` counts every collected
+   *  node including nested expressions, so three consecutive calls score 5-6 and clear a raw count
+   *  threshold while carrying almost no structure. Variety is what makes a shape identifying:
+   *  a body of one repeated node type is a coincidence, not a fingerprint. */
+  distinctTypes: number;
   shapeHash: string;      // "" if statementCount < 3, else sha1 hex (first 16 chars)
 }
+
+/**
+ * Minimum body size and shape variety for a function to be considered a possible reinvention.
+ *
+ * Calibrated on labelled bodies rather than picked: raising the node count alone does not work,
+ * because the discriminating axis is variety, not length. Measured (Python, node/distinct):
+ *
+ *   genuine  process_order 7/5 · resolve_thresholds 8/6 · parse_range 12/6
+ *   noise    three calls 6/3 · call+assign+return 5/3 · two-line delegate 4/3 · guard+return 3/2
+ *
+ * The two populations overlap almost completely on node count (7 vs 6 at the boundary) and separate
+ * on distinct types (5 vs 3). 6/4 keeps all three genuine bodies and rejects all four noise bodies
+ * with margin on each side; a variety floor of 5 would sit exactly on the canonical positive control
+ * and a floor of 3 lets the three-calls-in-a-row shape back in.
+ */
+export const MIN_SHAPE_NODES = 6;
+/** Minimum distinct node types alongside `MIN_SHAPE_NODES` — see `FnShape.distinctTypes`. */
+export const MIN_SHAPE_VARIETY = 4;
 
 /** Per-language node-type allowlist for normalized body shape extraction.
  *  Mirrors the LanguageProfile pattern from complexity.ts. */
@@ -123,10 +146,16 @@ const PYTHON_BODY_TYPES = new Set([
   "list", "dictionary", "set", "string", "f_string",
 ]);
 
+// "switch_statement" and "case_type_clause" are not real tree-sitter-go node types (Go's switch
+// splits into expression_switch_statement/type_switch_statement, and the type-switch arm is
+// "type_case"); verified against node_modules/tree-sitter-go/src/node-types.json. Also missing
+// short_var_declaration/assignment_statement, the two most common Go statements.
 const GO_BODY_TYPES = new Set([
   "expression_statement", "return_statement", "var_declaration",
-  "if_statement", "for_statement", "select_statement", "switch_statement",
-  "expression_case", "type_switch_statement", "case_type_clause",
+  "short_var_declaration", "assignment_statement",
+  "if_statement", "for_statement", "select_statement",
+  "expression_switch_statement", "type_switch_statement",
+  "expression_case", "type_case", "default_case", "communication_case",
   "break_statement", "continue_statement", "fallthrough_statement",
   "call_expression", "selector_expression", "binary_expression",
   "unary_expression", "field_declaration",
@@ -169,13 +198,16 @@ const CSHARP_BODY_TYPES = new Set([
   "array_creation_expression", "object_creation_expression",
 ]);
 
+// "do_statement" and "function_literal" are not real @tree-sitter-grammars/tree-sitter-kotlin node
+// types (verified against node_modules/@tree-sitter-grammars/tree-sitter-kotlin/src/node-types.json);
+// the real names are "do_while_statement" and "lambda_literal"/"anonymous_function".
 const KOTLIN_BODY_TYPES = new Set([
   "return_expression", "variable_declaration", "property_declaration",
   "if_expression", "when_expression", "when_entry", "for_statement",
-  "while_statement", "do_statement", "try_expression", "catch_block",
-  "finally_block", "throw_expression", "break_expression", "continue_expression",
-  "call_expression", "binary_expression", "postfix_expression",
-  "lambda_literal", "function_literal",
+  "while_statement", "do_while_statement", "try_expression", "catch_block",
+  "finally_block", "throw_expression",
+  "call_expression", "binary_expression",
+  "lambda_literal", "anonymous_function",
 ]);
 
 const LANGUAGE_PROFILES: Record<string, FingerprintProfile> = {
@@ -196,7 +228,7 @@ const LANGUAGE_PROFILES: Record<string, FingerprintProfile> = {
   },
   kotlin: {
     lang: "kotlin",
-    functionTypes: new Set(["function_declaration", "function_literal"]),
+    functionTypes: new Set(["function_declaration", "lambda_literal", "anonymous_function"]),
     bodyNodeTypes: KOTLIN_BODY_TYPES,
   },
   ruby: {
@@ -282,25 +314,25 @@ function extractBabelShapes(root: AstNode, lines: string[]): FnShape[] {
     ]);
     const shapes: FnShape[] = [];
 
-    const walk = (node: AstNode | null): void => {
+    const walk = (node: AstNode | null, parent: AstNode | null): void => {
       if (!node) return;
       if (babelFunctionTypes.has(node.type)) {
-        const shape = analyzeBabelFunction(node, lines);
+        const shape = analyzeBabelFunction(node, parent, lines);
         if (shape) shapes.push(shape);
       }
       for (const key in node) {
         const child = (node as any)[key];
         if (child && typeof child === "object") {
           if (Array.isArray(child)) {
-            for (const item of child) walk(item);
+            for (const item of child) walk(item, node);
           } else {
-            walk(child);
+            walk(child, node);
           }
         }
       }
     };
 
-    walk(root);
+    walk(root, null);
     return shapes;
   } catch {
     return [];
@@ -332,7 +364,7 @@ function analyzeTreeFunction(node: TsNode, profile: FingerprintProfile, lines: s
   if (!bodyNode) bodyNode = node;
 
   const arity = extractTreeArity(node);
-  const { shapeHash, statementCount } = computeBodyHash(bodyNode, "tree", profile.bodyNodeTypes, lines);
+  const { shapeHash, statementCount, distinctTypes } = computeBodyHash(bodyNode, "tree", profile.bodyNodeTypes, lines);
 
   return {
     name,
@@ -340,13 +372,14 @@ function analyzeTreeFunction(node: TsNode, profile: FingerprintProfile, lines: s
     endLine,
     arity,
     statementCount,
+    distinctTypes,
     shapeHash,
   };
 }
 
 /** Analyze a single Babel function node. */
-function analyzeBabelFunction(node: AstNode, lines: string[]): FnShape | null {
-  const name = extractBabelName(node) || "";
+function analyzeBabelFunction(node: AstNode, parent: AstNode | null, lines: string[]): FnShape | null {
+  const name = extractBabelName(node, parent) || "";
   const startLine = (node as any).loc?.start?.line ?? null;
   const endLine = (node as any).loc?.end?.line ?? null;
 
@@ -360,7 +393,7 @@ function analyzeBabelFunction(node: AstNode, lines: string[]): FnShape | null {
   // For others, body should be a BlockStatement.
   if (!bodyNode) bodyNode = node;
 
-  const { shapeHash, statementCount } = computeBodyHash(bodyNode, "babel", BABEL_BODY_TYPES, lines);
+  const { shapeHash, statementCount, distinctTypes } = computeBodyHash(bodyNode, "babel", BABEL_BODY_TYPES, lines);
 
   return {
     name,
@@ -368,6 +401,7 @@ function analyzeBabelFunction(node: AstNode, lines: string[]): FnShape | null {
     endLine,
     arity,
     statementCount,
+    distinctTypes,
     shapeHash,
   };
 }
@@ -387,10 +421,48 @@ function extractTreeName(node: TsNode): string | null {
   return null;
 }
 
-/** Extract function name from a Babel node. */
-function extractBabelName(node: AstNode): string | null {
+/**
+ * Extract a function's name from a Babel node.
+ *
+ * `node.id`/`node.name` only exists on a `FunctionDeclaration` or a named `FunctionExpression`.
+ * Everywhere else that carries a name puts it somewhere else in the tree: a class/object method's
+ * name is on its `key`, not the function node itself, and an arrow function or anonymous
+ * `function` expression has no name of its own at all — it inherits one from whatever it's bound
+ * to (`const foo = () => {}`, `foo = () => {}`, `{ foo: () => {} }`). Without checking the parent,
+ * every arrow function and every class/object method comes back `""`, which makes `nameTokens("")`
+ * empty and `tokenOverlap` always 0 — silently failing gate 4 for exactly the two most common
+ * function shapes in modern JS/TS.
+ */
+export function extractBabelName(node: AstNode, parent: AstNode | null = null): string | null {
   const n = node as any;
-  return n.id?.name ?? n.name ?? null;
+  if (n.id?.name) return n.id.name;
+  if (n.name && typeof n.name === "string") return n.name;
+
+  // Class/object method: the name is on the method's own `key`, not the function node.
+  if (n.key) {
+    if (n.key.type === "Identifier" && n.key.name) return n.key.name;
+    if ((n.key.type === "StringLiteral" || n.key.type === "Literal") && typeof n.key.value === "string") {
+      return n.key.value;
+    }
+  }
+
+  if (!parent) return null;
+  const p = parent as any;
+  // const foo = () => {}; let foo = function () {};
+  if (p.type === "VariableDeclarator" && p.init === node && p.id?.type === "Identifier") {
+    return p.id.name ?? null;
+  }
+  // foo = () => {};
+  if (p.type === "AssignmentExpression" && p.right === node && p.left?.type === "Identifier") {
+    return p.left.name ?? null;
+  }
+  // { foo: () => {} } — a plain object property whose value is a function (distinct from
+  // ObjectMethod, which already carries the name on its own `key` above).
+  if (p.type === "ObjectProperty" && p.value === node && p.key?.type === "Identifier") {
+    return p.key.name ?? null;
+  }
+
+  return null;
 }
 
 /** Extract parameter count from a tree-sitter function node. */
@@ -424,7 +496,7 @@ function computeBodyHash(
   kind: "tree" | "babel",
   bodyNodeTypes: Set<string>,
   lines: string[]
-): { shapeHash: string; statementCount: number } {
+): { shapeHash: string; statementCount: number; distinctTypes: number } {
   const typeSequence: string[] = [];
 
   const walk = (n: TsNode | AstNode | null): void => {
@@ -460,6 +532,7 @@ function computeBodyHash(
   walk(node);
 
   const statementCount = typeSequence.length;
+  const distinctTypes = new Set(typeSequence).size;
   let shapeHash = "";
 
   // Only hash if we have enough structure to be meaningful.
@@ -469,7 +542,7 @@ function computeBodyHash(
     shapeHash = hash.slice(0, 16);
   }
 
-  return { shapeHash, statementCount };
+  return { shapeHash, statementCount, distinctTypes };
 }
 
 // Type hint for tree-sitter tree structure (mirrors TsNode / TsTree from types.ts).

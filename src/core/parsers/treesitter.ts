@@ -50,8 +50,13 @@ export function treeSitterLanguages(): string[] {
   return Object.keys(GRAMMAR_PACKAGES);
 }
 
-// `undefined` = not initialized; a Promise = in flight / done. Parsers keyed by language name.
-let initPromise: Promise<void> | null = null;
+// `null` = not initialized; a Promise = in flight / done. The web-tree-sitter runtime is loaded
+// once; grammars are loaded per language and memoized individually, so a later call naming a
+// language the first call did not ask for still loads it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let runtimePromise: Promise<{ Parser: any; Language: any } | null> | null = null;
+/** Per-language grammar load, memoized (including failures — a broken grammar isn't retried). */
+const grammarPromises = new Map<string, Promise<void>>();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const parserCache = new Map<string, any>();
 // The loaded grammar `Language` per language (needed to compile queries), and the web-tree-sitter
@@ -83,38 +88,57 @@ function packageFile(pkg: string, file: string): string | null {
  * language uncached, so it falls back to regex. Never throws.
  */
 export async function initTreeSitter(langs: string[] = treeSitterLanguages()): Promise<void> {
-  if (initPromise) return initPromise;
-  initPromise = (async () => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mod: any = await import("web-tree-sitter");
-      const Parser = mod.Parser ?? mod.default?.Parser ?? mod.default;
-      const Language = mod.Language ?? mod.default?.Language;
-      QueryCtor = mod.Query ?? mod.default?.Query ?? null;
-      if (!Parser || !Language) return;
-      const runtimeWasm = packageFile("web-tree-sitter", "web-tree-sitter.wasm");
-      if (!runtimeWasm) return; // can't resolve node_modules (e.g. CJS bundle) → degrade to regex
-      await Parser.init({ locateFile: () => runtimeWasm });
-      for (const lang of langs) {
-        const entry = GRAMMAR_PACKAGES[lang];
-        if (!entry) continue;
-        try {
-          const wasm = packageFile(entry.pkg, entry.wasm ?? `${entry.pkg}.wasm`);
-          if (!wasm) continue;
-          const language = await Language.load(wasm);
-          const parser = new Parser();
-          parser.setLanguage(language);
-          parserCache.set(lang, parser);
-          languageCache.set(lang, language);
-        } catch {
-          /* this grammar is unavailable — language degrades to regex */
-        }
+  if (!runtimePromise) {
+    runtimePromise = (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mod: any = await import("web-tree-sitter");
+        const Parser = mod.Parser ?? mod.default?.Parser ?? mod.default;
+        const Language = mod.Language ?? mod.default?.Language;
+        QueryCtor = mod.Query ?? mod.default?.Query ?? null;
+        if (!Parser || !Language) return null;
+        const runtimeWasm = packageFile("web-tree-sitter", "web-tree-sitter.wasm");
+        if (!runtimeWasm) return null; // can't resolve node_modules (e.g. CJS bundle) → regex
+        await Parser.init({ locateFile: () => runtimeWasm });
+        return { Parser, Language };
+      } catch {
+        return null; // web-tree-sitter missing / failed to init — every language degrades to regex
       }
-    } catch {
-      /* web-tree-sitter not installed / failed to init — all languages degrade to regex */
-    }
-  })();
-  return initPromise;
+    })();
+  }
+  const rt = await runtimePromise;
+  if (!rt) return;
+
+  // Load each requested grammar independently rather than gating the whole call on one shared
+  // promise. The previous shape returned the first call's promise verbatim, so the FIRST language
+  // list won permanently: a host that warmed up with `initTreeSitter(["python"])` and later asked
+  // for Ruby got a resolved promise and no Ruby parser, silently and forever. Every downstream
+  // coverage check reads `treeSitterReady`, so that turned into "this language has no callers /
+  // no findings" rather than an error anyone could see.
+  await Promise.all(
+    langs.map((lang) => {
+      let pending = grammarPromises.get(lang);
+      if (!pending) {
+        pending = (async () => {
+          const entry = GRAMMAR_PACKAGES[lang];
+          if (!entry) return;
+          try {
+            const wasm = packageFile(entry.pkg, entry.wasm ?? `${entry.pkg}.wasm`);
+            if (!wasm) return;
+            const language = await rt.Language.load(wasm);
+            const parser = new rt.Parser();
+            parser.setLanguage(language);
+            parserCache.set(lang, parser);
+            languageCache.set(lang, language);
+          } catch {
+            /* this grammar is unavailable — language degrades to regex */
+          }
+        })();
+        grammarPromises.set(lang, pending);
+      }
+      return pending;
+    })
+  );
 }
 
 /** Whether a tree-sitter parser for `language` is loaded and ready (init has completed). */
@@ -162,7 +186,8 @@ export function parseTs(content: string, language: string): TsTree | null {
 
 /** Reset cached state so a test can re-exercise init. Not used in production. */
 export function _resetTreeSitter(): void {
-  initPromise = null;
+  runtimePromise = null;
+  grammarPromises.clear();
   parserCache.clear();
   languageCache.clear();
   queryCache.clear();

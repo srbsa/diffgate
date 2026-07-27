@@ -104,6 +104,10 @@ export function attachStructuralImpact(
       if (!impact) continue;
       // Justified: something already depends on it.
       if (impact.callerCount > SPECULATIVE_AT_OR_BELOW) continue;
+      // A truncated walk only ever reports a floor. At or below the threshold that floor is exactly
+      // where the answer would have changed our verdict, so it proves nothing — the callers we did
+      // not reach are the ones that would justify the abstraction.
+      if (impact.truncated) continue;
 
       let message = confirmedMessage(symbol, impact);
       if (impact.ambiguous) {
