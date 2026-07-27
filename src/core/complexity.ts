@@ -207,6 +207,27 @@ const FLAT_SIBLING_CLAUSE_TYPES = new Set(["elif_clause", "else_clause", "else_i
 // all. Ternaries get their own nesting-based increment via `decisionTypes`/`nestingTypes` instead.
 const TERNARY_TYPES = new Set(["ternary_expression", "conditional_expression", "conditional"]);
 
+// Switch-like constructs whose branch clauses ALSO ride on an "alternative" field, but which are
+// not else-chains. tree-sitter-python names every `case_clause` of a `match_statement` an
+// "alternative" (so does the block wrapping them), and tree-sitter-php does the same for a
+// `match_expression`'s arms. The generic `childForFieldName("alternative")` fallback below then
+// scored the first case as a flat +1 else-link on top of the construct's own decision point —
+// a `match` with two cases scored 2 where the equivalent `if` scored 1, and picked up a phantom
+// nesting level too. SonarSource charges a switch/match ONCE for the whole construct; individual
+// case arms are not `else if`s and never score on their own.
+const SWITCH_LIKE_TYPES = new Set(["match_statement", "match_expression", "switch_statement", "switch_expression"]);
+
+// The arm/clause node types those constructs hang off "alternative". Guarding the PARENT type is
+// not sufficient on its own: tree-sitter-python puts the case clauses inside a `block`, and that
+// block re-exposes the same "alternative" field, so the else-branch link reappeared one level down
+// where the parent-type check no longer applied. Rejecting the CHILD type catches both positions.
+const SWITCH_ARM_TYPES = new Set([
+  "case_clause",                                            // python
+  "match_conditional_expression", "match_default_expression", // php
+  "case_statement", "default_statement",                     // c-family switch bodies
+  "switch_section", "switch_label",                          // c#
+]);
+
 function elseBranches(node: TsNode | AstNode, kind: "tree" | "babel"): (TsNode | AstNode)[] {
   if (kind === "babel") {
     // Only IfStatement has a real else-chain. ConditionalExpression (the ternary) also has an
@@ -218,7 +239,7 @@ function elseBranches(node: TsNode | AstNode, kind: "tree" | "babel"): (TsNode |
   }
 
   const tsNode = node as TsNode;
-  if (TERNARY_TYPES.has(tsNode.type)) return [];
+  if (TERNARY_TYPES.has(tsNode.type) || SWITCH_LIKE_TYPES.has(tsNode.type)) return [];
 
   // The flat-sibling scan only applies to an actual if-chain ("if_statement" is the shared type
   // name Python and PHP both use). Python's for/while/try statements can ALSO carry an
@@ -236,7 +257,8 @@ function elseBranches(node: TsNode | AstNode, kind: "tree" | "babel"): (TsNode |
 
   if (tsNode.childForFieldName) {
     const alt = tsNode.childForFieldName("alternative");
-    if (alt) return [alt];
+    if (alt && !SWITCH_ARM_TYPES.has(alt.type)) return [alt];
+    if (alt) return [];
   }
 
   // Kotlin fallback: no field, no flat siblings — the chain link is the last named child when it
@@ -470,8 +492,10 @@ const PYTHON_PROFILE: ComplexityProfile = {
   // "with_statement" is not a SonarSource decision point (spec Appendix B1/B2 has no context-manager
   // entry) — it was inflating cognitive/nesting scores on ordinary Python (a context manager is not
   // a branch). "conditional_expression" is Python's ternary (`b if a else c`), previously unscored.
-  decisionTypes: new Set(["if_statement", "for_statement", "while_statement", "except_clause", "conditional_expression"]),
-  nestingTypes: new Set(["if_statement", "for_statement", "while_statement", "except_clause", "conditional_expression"]),
+  // "match_statement" is Python 3.10+ structural pattern matching — the same construct as `switch`,
+  // which every other switch-having language profile here scores once per statement, not per case.
+  decisionTypes: new Set(["if_statement", "for_statement", "while_statement", "except_clause", "conditional_expression", "match_statement"]),
+  nestingTypes: new Set(["if_statement", "for_statement", "while_statement", "except_clause", "conditional_expression", "match_statement"]),
   logicalOperatorTypes: new Set(["boolean_operator"]),
   logicalOperatorSymbols: new Set(["and", "or"]),
   statementTypes: new Set(["expression_statement", "return_statement", "assignment", "global_statement"]),
@@ -542,9 +566,10 @@ const PHP_PROFILE: ComplexityProfile = {
   classTypes: new Set(["class_declaration", "interface_declaration"]),
   fnNameField: "name",
   paramsField: "parameters",
-  // "conditional_expression" is PHP's ternary, previously unscored.
-  decisionTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression"]),
-  nestingTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression"]),
+  // "conditional_expression" is PHP's ternary, previously unscored. "match_expression" is PHP 8.0+
+  // match — scored once per expression like every other switch-having profile here scores `switch`.
+  decisionTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression", "match_expression"]),
+  nestingTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression", "match_expression"]),
   logicalOperatorTypes: new Set(["binary_expression"]),
   // "declaration" is not a real PHP grammar node type; `$x = 5;` is already an expression_statement.
   // global_declaration is the one statement-level declaration form that wasn't otherwise covered.
@@ -553,7 +578,10 @@ const PHP_PROFILE: ComplexityProfile = {
 
 const CSHARP_PROFILE: ComplexityProfile = {
   lang: "csharp",
-  functionTypes: new Set(["method_declaration"]),
+  // Constructors and local functions are both real named functions with their own "name"/
+  // "parameters"/"body" fields — omitting them left C# constructors and nested local functions
+  // invisible to complexity scoring.
+  functionTypes: new Set(["method_declaration", "constructor_declaration", "local_function_statement"]),
   classTypes: new Set(["class_declaration", "interface_declaration"]),
   fnNameField: "name",
   paramsField: "parameters",

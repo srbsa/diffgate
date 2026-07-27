@@ -43,7 +43,7 @@ shape and bail at the first sign the author had a reason.
 | `py-unnecessary-abc` | An `ABC` with no second implementor in the file | A second implementor exists; the base is not an ABC |
 | `go-premature-interface` | Interface with ≤2 methods that nothing in the file consumes | A call site accepts it; the interface is rich (>2 methods) |
 | `java-single-impl-interface` | Interface with exactly one implementing class in the file | Zero implementors (likely external) or two or more |
-| `ts-over-generic` | Type alias nests generics more than 3 deep | Shallower types |
+| `ts-over-generic` | Type alias nests **generic instantiation** more than 3 deep (`Map<string, Promise<Array<Set<number>>>>`) | Shallower types; array/tuple/union/intersection/function types, which are not parameterization and never add depth on their own |
 
 ### Indirection
 

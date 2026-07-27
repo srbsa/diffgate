@@ -37,6 +37,18 @@
   "engines": {
     "vscode": "^1.90.0"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Diff review runs read-only in Restricted Mode. AI-related settings (which can enable outbound calls) are ignored unless set at the User level, not from a workspace this repo could ship its own values for.",
+      "restrictedConfigurations": [
+        "diffgate.ai.enabled",
+        "diffgate.ai.provider",
+        "diffgate.ai.model",
+        "diffgate.ai.deepReview.model"
+      ]
+    }
+  },
   "categories": [
     "Linters",
     "Programming Languages",

@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { toSarif } from "./sarif.js";
 
@@ -559,16 +559,24 @@ async function cmdWatch(pos: string[], _flags: Record<string, string | true>): P
     } catch {
       return;
     }
-    const changedLines = git ? getChangedLinesForFile(cwd, fp, { mode: "working" }) : null;
-    const previousContent = git ? getPreviousContent(cwd, fp, { mode: "working" }) : null;
-    const res = analyze({ filePath: fp, content, previousContent, changedLines, config });
-    const t = new Date().toLocaleTimeString();
-    if (res.findings.length === 0) {
-      console.log(`${c.gray(t)} ${badge("green")} ${c.dim(path.relative(cwd, fp))} — clear`);
-      return;
+    // `watch` is meant to run for a whole session; a single pathological save (or any exception
+    // this event handler throws) used to be an unhandled rejection outside main()'s top-level
+    // try/catch — the async event fires later, detached from that call chain — which would kill the
+    // long-running process on Node's default unhandled-rejection behavior. Report and keep watching.
+    try {
+      const changedLines = git ? getChangedLinesForFile(cwd, fp, { mode: "working" }) : null;
+      const previousContent = git ? getPreviousContent(cwd, fp, { mode: "working" }) : null;
+      const res = analyze({ filePath: fp, content, previousContent, changedLines, config });
+      const t = new Date().toLocaleTimeString();
+      if (res.findings.length === 0) {
+        console.log(`${c.gray(t)} ${badge("green")} ${c.dim(path.relative(cwd, fp))} — clear`);
+        return;
+      }
+      console.log(`${c.gray(t)} ${path.relative(cwd, fp)}  ${summaryLine(res.counts)}`);
+      console.log(formatFile(res, cwd));
+    } catch (e) {
+      console.error(c.red(`watch: failed to analyze ${path.relative(cwd, fp)}: ${(e as Error).message}`));
     }
-    console.log(`${c.gray(t)} ${path.relative(cwd, fp)}  ${summaryLine(res.counts)}`);
-    console.log(formatFile(res, cwd));
   });
 
   watcher.on("error", (e: Error) => console.error(c.red(`watch error: ${e.message}`)));
@@ -1114,9 +1122,15 @@ fi
     }
     // Register the driver in .git/config (local, not global — no side effects outside this repo).
     // %A = ours (written back), %B = theirs. Base (%O) is not needed for a set-union merge.
+    // execFileSync passes argv straight to `git`, no shell in between — CLI_PATH lands in the
+    // config value as one literal string regardless of what characters it contains (a single quote
+    // in the install path, e.g. a real macOS home directory like /Users/o'brien/…, used to break
+    // out of the hand-quoted `execSync` shell string below and silently corrupt this call while
+    // .gitattributes had already been written, leaving every future merge referencing a driver that
+    // was never actually registered).
     const driverCmd = `sh -c 'if command -v diffgate >/dev/null 2>&1; then diffgate merge-driver "$1" "$2"; else node "${CLI_PATH}" merge-driver "$1" "$2"; fi' --`;
-    execSync(`git config merge.diffgate-learnings.name "DiffGate learnings merge driver"`, { cwd: root, stdio: "ignore" });
-    execSync(`git config 'merge.diffgate-learnings.driver' '${driverCmd} %A %B'`, { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "merge.diffgate-learnings.name", "DiffGate learnings merge driver"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "merge.diffgate-learnings.driver", `${driverCmd} %A %B`], { cwd: root, stdio: "ignore" });
     console.log(c.green(`✔ Registered learnings.json merge driver (auto-merges parallel verdicts)`));
   } catch {
     console.log(c.dim("  Tip: set up the merge driver manually — see README › Team adoption › Step 3."));

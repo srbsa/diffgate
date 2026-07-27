@@ -18,6 +18,9 @@ export function describeProvider(config: Partial<Config>): string {
 export function isAiAvailable(config: Partial<Config> | null | undefined): boolean {
   if (!config || !config.ai || !config.ai.enabled) return false;
   const p = resolveProvider(config);
+  // `provider: "custom"` with no trusted baseURL (see resolveProvider) resolves to null here —
+  // report unavailable instead of claiming ready and failing deep inside complete().
+  if (!p.baseURL) return false;
   if (p.local || !p.apiKeyEnv) return true;
   return !!process.env[p.apiKeyEnv];
 }
@@ -35,6 +38,11 @@ export interface CompleteCallOptions {
 
 export async function complete({ system, prompt, config, tier = "default", modelOverride, noThink, signal, fetchImpl }: CompleteCallOptions): Promise<CompleteResult> {
   const p = resolveProvider(config);
+  if (!p.baseURL) {
+    throw new Error(
+      `No AI endpoint configured for provider "${p.id}". A custom endpoint from a repo's .diffgate.json is only trusted when it's a loopback address — set $DIFFGATE_AI_BASE_URL yourself to use a non-local one.`
+    );
+  }
   const apiKey = p.apiKeyEnv ? process.env[p.apiKeyEnv] ?? null : null;
   if (!p.local && p.apiKeyEnv && !apiKey) {
     throw new Error(`No API key found in $${p.apiKeyEnv} for provider "${p.id}".`);

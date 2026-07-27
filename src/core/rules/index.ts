@@ -178,6 +178,7 @@ export function getRules(config: Partial<Config>, language: string): Rule[] {
           blocking: ovObj.blocking ?? rule.blocking,
           include: Array.isArray(ovObj.include) ? ovObj.include : rule.include,
           exclude: Array.isArray(ovObj.exclude) ? ovObj.exclude : rule.exclude,
+          tierPinned: ovObj.tier !== undefined || ovObj.blocking !== undefined,
         };
       }
     }
@@ -187,10 +188,15 @@ export function getRules(config: Partial<Config>, language: string): Rule[] {
 }
 
 function makeFinding(rule: Rule, fields: FindingEmitArg & { line: number }): Finding {
+  // A pinned rule's tier/blocking is the user's explicit policy — a dynamic per-finding adjustment
+  // (fields.tier/fields.blocking, e.g. emitMaybeSanitized's sanitizer down-tier) must not win over
+  // it. tierAdjusted is suppressed too in that case: it exists to say "this finding's severity was
+  // moved from the rule's baseline," which didn't actually happen when the pin held.
+  const pinned = !!rule.tierPinned;
   return {
     ruleId: rule.id,
-    tier: fields.tier || rule.tier,
-    blocking: fields.blocking ?? !!rule.blocking,
+    tier: pinned ? rule.tier : fields.tier || rule.tier,
+    blocking: pinned ? !!rule.blocking : fields.blocking ?? !!rule.blocking,
     title: rule.title,
     message: fields.message || (typeof rule.message === "string" ? rule.message : ""),
     line: fields.line,
@@ -200,7 +206,7 @@ function makeFinding(rule: Rule, fields: FindingEmitArg & { line: number }): Fin
     code: fields.code || "",
     fix: fields.fix || null,
     symbol: fields.symbol ?? null,
-    tierAdjusted: fields.tierAdjusted,
+    tierAdjusted: pinned ? undefined : fields.tierAdjusted,
     meta: fields.meta,
   };
 }

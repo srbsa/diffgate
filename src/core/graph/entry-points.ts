@@ -42,6 +42,9 @@ function enclosingClassName(node: TsNode): string | null {
   return null;
 }
 
+/** Go grammar node types for an actual string literal (interpreted `"..."` or raw `` `...` ``). */
+const GO_STRING_LITERAL_TYPES = new Set(["interpreted_string_literal", "raw_string_literal"]);
+
 function stringLiteralValue(node: TsNode | null | undefined): string | null {
   if (!node) return null;
   const text = node.text;
@@ -114,13 +117,23 @@ function detectGo(tree: TsTree, file: string): DetectedEntryPoint[] {
     const funcNode = call.childForFieldName('function');
     if (funcNode && funcNode.type === 'selector_expression') {
       const fieldNode = funcNode.childForFieldName('field');
-      if (fieldNode && /^(HandleFunc|Handle|GET|POST|PUT|DELETE|PATCH|Any|Group)$/.test(fieldNode.text)) {
+      // TitleCase verbs (Get/Post/Put/Delete/Patch) cover Fiber, chi, and gorilla/mux, whose route
+      // methods use Go's normal exported-identifier casing rather than Gin/Echo's all-caps form.
+      const isTitleCaseVerb = fieldNode ? /^(Get|Post|Put|Delete|Patch)$/.test(fieldNode.text) : false;
+      if (fieldNode && /^(HandleFunc|Handle|GET|POST|PUT|DELETE|PATCH|Get|Post|Put|Delete|Patch|Any|Group)$/.test(fieldNode.text)) {
         const args = call.childForFieldName('arguments');
         if (args && args.namedChildCount >= 2) {
           const routeNode = args.namedChild(0);
           const handlerNode = args.namedChild(args.namedChildCount - 1);
-          
+
           if (routeNode && handlerNode) {
+            // `Get`/`Post`/`Delete`/etc collide with ordinary Go method names — cache.Get(key, ok),
+            // repo.Delete(id) — that don't take a route path. The all-caps Gin/Echo verbs and
+            // HandleFunc/Handle/Any/Group have no such collision risk, so only the TitleCase set
+            // requires its first argument to actually be a string literal route. `stringLiteralValue`
+            // itself is too permissive for this check — it falls back to returning any node's bare
+            // text (so `cache.Get(key, ok)` would see `route: "key"` and look like a match).
+            if (isTitleCaseVerb && !GO_STRING_LITERAL_TYPES.has(routeNode.type)) continue;
             const route = stringLiteralValue(routeNode) || undefined;
             let qualName = 'anonymous_handler';
             const isNamed = handlerNode.type === 'identifier' || handlerNode.type === 'selector_expression';
@@ -171,7 +184,12 @@ function detectJava(tree: TsTree, file: string): DetectedEntryPoint[] {
   
   const methods = root.descendantsOfType('method_declaration');
   for (const method of methods) {
-    const modifiers = method.childForFieldName('modifiers');
+    // "modifiers" (which carries the method's annotations) is not a named field of
+    // method_declaration in tree-sitter-java's grammar — annotation/marker_annotation/modifiers/
+    // throws are all unordered children instead (verified against node-types.json). A field lookup
+    // was always undefined, so every Java method was skipped and this detector never matched
+    // anything, Spring included, regardless of which annotations it checked for.
+    const modifiers = method.namedChildren.find((c: TsNode) => c.type === 'modifiers');
     if (!modifiers) continue;
     
     let isEntry = false;
@@ -184,7 +202,10 @@ function detectJava(tree: TsTree, file: string): DetectedEntryPoint[] {
       const nameNode = ann.childForFieldName('name');
       const name = nameNode ? nameNode.text : ann.text.replace(/^@/, '').split('(')[0];
       
-      if (/^(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping|Path)$/.test(name)) {
+      if (/^(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping|Path|GET|POST|PUT|DELETE|PATCH)$/.test(name)) {
+        // GET/POST/PUT/DELETE/PATCH are the JAX-RS verb annotations (Jersey/RESTEasy/Quarkus) —
+        // marker annotations with no route of their own; the route (if any) comes from a sibling
+        // @Path on the same method, matched separately in this same loop.
         isEntry = true;
         const strings = ann.descendantsOfType('string_literal');
         if (strings.length > 0) route = stringLiteralValue(strings[0]) || undefined;
@@ -513,14 +534,38 @@ export function detectJsEntryPoints(ast: AstNode, file: string): DetectedEntryPo
   const results: DetectedEntryPoint[] = [];
   const seen = new Set<string>();
 
-  const push = (ep: DetectedEntryPoint, col = 0) => {
+  const push = (ep: DetectedEntryPoint, col = 0, argIndex = 0) => {
     // Column is part of the key: two registrations chained on one line — `app.get("/a", h);
     // app.get("/b", h)` — share a qualName, a line, and (for a by-reference handler) an absent
-    // bodyRange, so a line-only key silently dropped the second route.
-    const key = `${ep.qualName}:${ep.line}:${col}:${ep.bodyRange?.startLine ?? ""}`;
+    // bodyRange, so a line-only key silently dropped the second route. Arg index is also part of
+    // the key: multiple inline handlers on one call — `app.get("/p", mw, handler)` — share
+    // qualName, line, col, and (when both start on the same source line) bodyRange.startLine too,
+    // so without the index the second handler silently collapsed into the first.
+    const key = `${ep.qualName}:${ep.line}:${col}:${argIndex}:${ep.bodyRange?.startLine ?? ""}`;
     if (seen.has(key)) return;
     seen.add(key);
     results.push(ep);
+  };
+
+  /** Register a single handler argument (closure, named reference, or member expression). */
+  const pushHandler = (
+    arg: AstNode, argIndex: number, qualName: string, kind: DetectedEntryPoint["kind"],
+    route: string | undefined, line: number, col: number
+  ): boolean => {
+    if (!arg || typeof arg.type !== "string") return false;
+    if (FN_NODES.has(arg.type)) {
+      // Inline closure — the body span is what reachability matches against.
+      push({ qualName, kind, route, file, line, bodyRange: jsBodyRange(arg) }, col, argIndex);
+      return true;
+    } else if (arg.type === "Identifier") {
+      // Named handler passed by reference: the call graph resolves it by name.
+      push({ qualName: (arg as unknown as { name: string }).name, kind, route, file, line }, col, argIndex);
+      return true;
+    } else if (arg.type === "MemberExpression") {
+      const bare = memberName(arg)?.split(".").pop();
+      if (bare) { push({ qualName: bare, kind, route, file, line }, col, argIndex); return true; }
+    }
+    return false;
   };
 
   /** Register the handler argument(s) of a route/listener call. */
@@ -529,21 +574,19 @@ export function detectJsEntryPoints(ast: AstNode, file: string): DetectedEntryPo
     line: number, col: number
   ) => {
     let found = false;
-    for (const arg of args) {
-      if (!arg || typeof arg.type !== "string") continue;
-      if (FN_NODES.has(arg.type)) {
-        // Inline closure — the body span is what reachability matches against.
-        push({ qualName, kind, route, file, line, bodyRange: jsBodyRange(arg) }, col);
-        found = true;
-      } else if (arg.type === "Identifier") {
-        // Named handler passed by reference: the call graph resolves it by name.
-        push({ qualName: (arg as unknown as { name: string }).name, kind, route, file, line }, col);
-        found = true;
-      } else if (arg.type === "MemberExpression") {
-        const bare = memberName(arg)?.split(".").pop();
-        if (bare) { push({ qualName: bare, kind, route, file, line }, col); found = true; }
+    args.forEach((arg, argIndex) => {
+      if (!arg || typeof arg.type !== "string") return;
+      if (arg.type === "ArrayExpression") {
+        // `app.get('/p', [mw1, mw2], handler)` — a middleware array argument. Each element is its
+        // own handler; without descending into it, every element was silently ignored.
+        const elements = ((arg as unknown as { elements?: AstNode[] }).elements || []) as AstNode[];
+        elements.forEach((el, elIndex) => {
+          if (el && pushHandler(el, argIndex * 1000 + elIndex, qualName, kind, route, line, col)) found = true;
+        });
+        return;
       }
-    }
+      if (pushHandler(arg, argIndex, qualName, kind, route, line, col)) found = true;
+    });
     return found;
   };
 

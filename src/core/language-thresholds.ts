@@ -21,11 +21,12 @@ export const DEFAULT_THRESHOLDS: ComplexityThresholds = {
   maxDiffChurnRatio: 15,
 };
 
-/** Per-language thresholds (research §3 table).
+/** Per-language thresholds (research §3 table), for the languages this build actually parses —
+ *  see `GRAMMAR_PACKAGES` in parsers/treesitter.ts plus JS/TS/JSX/TSX via Babel.
  *
  * Rationale: Python/Go idioms enforce flat flow; brace languages tolerate deeper nesting.
- * Python comprehensions compress logic; Java/Rust error handling adds lines without cognitive load.
- * Options-struct pattern is idiomatic in Go/Rust at 4+ params; Java constructors accept more.
+ * Python comprehensions compress logic; Java error handling adds lines without cognitive load.
+ * Options-struct pattern is idiomatic in Go at 4+ params; Java constructors accept more.
  */
 export const LANGUAGE_THRESHOLDS: Record<string, Partial<ComplexityThresholds>> = {
   python: {
@@ -36,11 +37,12 @@ export const LANGUAGE_THRESHOLDS: Record<string, Partial<ComplexityThresholds>> 
     maxClassLines: 200,
   },
   go: {
+    // No maxClassLines: Go has no classes (GO_PROFILE.classTypes is empty in complexity.ts), so a
+    // class-line threshold here can never be evaluated against anything.
     maxCognitiveComplexity: 10,
     maxNestingDepth: 3,
     maxFunctionLines: 35,
     maxParameters: 4,
-    maxClassLines: 400,
   },
   typescript: {
     maxCognitiveComplexity: 12,
@@ -98,13 +100,6 @@ export const LANGUAGE_THRESHOLDS: Record<string, Partial<ComplexityThresholds>> 
     maxParameters: 5,
     maxClassLines: 400,
   },
-  rust: {
-    maxCognitiveComplexity: 15,
-    maxNestingDepth: 4,
-    maxFunctionLines: 50,
-    maxParameters: 5,
-    maxClassLines: 400,
-  },
   ruby: {
     maxCognitiveComplexity: 12,
     maxNestingDepth: 4,
@@ -118,20 +113,6 @@ export const LANGUAGE_THRESHOLDS: Record<string, Partial<ComplexityThresholds>> 
     maxFunctionLines: 40,
     maxParameters: 5,
     maxClassLines: 300,
-  },
-  cpp: {
-    maxCognitiveComplexity: 20,
-    maxNestingDepth: 5,
-    maxFunctionLines: 60,
-    maxParameters: 6,
-    maxClassLines: 600,
-  },
-  "c++": {
-    maxCognitiveComplexity: 20,
-    maxNestingDepth: 5,
-    maxFunctionLines: 60,
-    maxParameters: 6,
-    maxClassLines: 600,
   },
 };
 

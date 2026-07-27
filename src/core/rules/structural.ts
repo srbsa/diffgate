@@ -20,7 +20,8 @@ import { isTestFile } from "../reinvention.js";
 /** Call-expression node types across the tree-sitter grammars we support. */
 const CALL_NODE_TYPES = new Set([
   "call",                  // python, ruby
-  "call_expression",       // go, c#, kotlin
+  "call_expression",       // go, kotlin
+  "invocation_expression", // c#
   "method_invocation",     // java
   "function_call_expression", // php
   "scoped_call_expression",
@@ -101,7 +102,13 @@ function forwardsParamsUnchanged(fn: TsNode, call: TsNode, profile: ComplexityPr
   const argsNode = call.childForFieldName("arguments") ?? call.childForFieldName("argument_list");
   const args = argsNode ? namedChildren(argsNode) : [];
   if (args.length !== paramNames.length) return false;
-  return args.every((a, i) => a.type === "identifier" && a.text === paramNames[i]);
+  return args.every((a, i) => {
+    // C# wraps each call argument in its own "argument" node (`argument_list -> argument ->
+    // identifier`), unlike every other grammar here where the identifier sits directly under the
+    // arguments list — unwrap it before the identifier check, or every C# call fails to match.
+    const actual = a.type === "argument" ? a.namedChild(0) ?? a : a;
+    return actual.type === "identifier" && actual.text === paramNames[i];
+  });
 }
 
 /** Babel counterpart of {@link forwardsParamsUnchanged}. Same zero-parameter exclusion. */
@@ -342,24 +349,49 @@ export const TsOverGenericAst: AstRule = {
     const typeAnnotation = (node as any).typeAnnotation;
     if (!typeAnnotation) return;
 
+    // Only a type *reference with its own type arguments* (`Foo<...>`) is a level of generic
+    // nesting — every other node here is a shape combinator that must be recursed through, not
+    // counted. Verified against real @babel/parser TS output before writing this (see the fix
+    // history): `TSArrayType`/`TSTupleType`/`TSUnionType`/`TSIntersectionType`/`TSFunctionType`/
+    // `TSParenthesizedType` all satisfied the old `.type.includes("Type")` substring check and each
+    // added a spurious +1 — `string[][][][]` (zero generics) scored 4, `(A|B|C|D)[]` (a shallow
+    // union in an array, zero generics) scored 4, a curried function type scored 5.
+    //
     // Descends every type argument and union/intersection member, not just the first. `Foo<A,
     // Bar<Baz<Qux>>>` nests three deep in its *second* argument; measuring only `params[0]` scored
     // it 1 and the rule never fired on the shape it exists to catch.
     const countNesting = (n: any): number => {
       if (!n) return 0;
       const typeStr = n.type || "";
-      if (!typeStr.includes("Type") || typeStr === "Identifier" || typeStr === "StringLiteral") return 0;
-      const children: any[] = [
+
+      // Transparent wrappers: recurse into the structural child(ren) without adding a level. None
+      // of these represent parameterization on their own — `T[]`, `[A, B]`, `A | B`, and a function
+      // type's own return type all just carry a nested type, they aren't an instance of one.
+      if (typeStr === "TSTypeAnnotation" || typeStr === "TSParenthesizedType") {
+        return countNesting((n as any).typeAnnotation);
+      }
+      if (typeStr === "TSArrayType") return countNesting((n as any).elementType);
+      if (typeStr === "TSFunctionType" || typeStr === "TSConstructorType") {
+        return countNesting((n as any).typeAnnotation); // return type only; parameters aren't nesting
+      }
+      if (typeStr === "TSUnionType" || typeStr === "TSIntersectionType") {
+        const members: any[] = (n as any).types ?? [];
+        return members.reduce((max, m) => Math.max(max, countNesting(m)), 0);
+      }
+      if (typeStr === "TSTupleType") {
+        const els: any[] = (n as any).elementTypes ?? [];
+        return els.reduce((max, m) => Math.max(max, countNesting(m)), 0);
+      }
+
+      // Everything else (primitives, bare identifiers, mapped/conditional/indexed-access types, …)
+      // only counts if it's a type reference that's itself parameterized.
+      if (typeStr !== "TSTypeReference") return 0;
+      const typeArgs: any[] = [
         ...((n as any).typeParameters?.params ?? []),
         ...((n as any).typeArguments?.params ?? []),
-        ...((n as any).types ?? []),
-        ...((n as any).elementTypes ?? []),
-        (n as any).elementType,
-        (n as any).typeAnnotation,
-      ].filter(Boolean);
-      let deepest = 0;
-      for (const child of children) deepest = Math.max(deepest, countNesting(child));
-      return 1 + deepest;
+      ];
+      if (typeArgs.length === 0) return 0;
+      return 1 + typeArgs.reduce((max, arg) => Math.max(max, countNesting(arg)), 0);
     };
 
     const depth = countNesting(typeAnnotation);
@@ -564,7 +596,7 @@ export const PassThroughWrapperAst: AstRule = {
   blocking: false,
   languages: ["javascript", "typescript", "jsx", "tsx"],
   visit: (node: AstNode, parent: AstNode | null, ctx: any, emit: any) => {
-    if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type)) return;
+    if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression", "ClassMethod", "ObjectMethod", "ClassPrivateMethod"].includes(node.type)) return;
 
     // The finding's advice is "inline the call site" — which presupposes a named binding that HAS
     // call sites. An anonymous function passed straight into another call has none: it is not an
@@ -698,6 +730,41 @@ export const DiffChurnRatioAst: AstRule = {
   },
 };
 
+/** diff-churn-ratio (tree-sitter twin): same metric, computed off `astStatements` from the
+ *  per-language complexity profile instead of Babel — see `DiffChurnRatioAst` for the rationale. */
+export const DiffChurnRatioTsAst: TsAstRule = {
+  id: "diff-churn-ratio",
+  type: "tsast",
+  title: "Diff has high churn-to-logic ratio (verbose boilerplate)",
+  tier: "yellow",
+  blocking: false,
+  languages: ["python", "go", "java", "kotlin", "ruby", "php", "csharp"],
+  visit: (node: TsNode, ctx: RuleContext, emit: EmitFn) => {
+    // File-level rule: compute the ratio once, at the root (the only node with no parent).
+    if (node.parent) return;
+
+    const changed = ctx.changedLines;
+    const changedCount = changed ? changed.size : ctx.lines.length;
+    if (changedCount <= 20) return; // a small diff can't be "sprawl"
+
+    const complexities = analyzeComplexity(ctx);
+    const totalStatements = complexities.reduce((sum, fn) => sum + fn.metrics.astStatements, 0);
+    if (totalStatements <= 0) return;
+
+    const thresholds = resolveThresholds(ctx.language, ctx.config);
+    const maxChurnRatio = thresholds.maxDiffChurnRatio ?? 15;
+    const ratio = changedCount / totalStatements;
+    if (ratio <= maxChurnRatio) return;
+
+    const anchor = changed && changed.size > 0 ? Math.min(...changed) : 1;
+
+    emit({
+      loc: { start: { line: anchor, column: 0 }, end: { line: anchor, column: 0 } },
+      message: `⚡ Diff spans ${changedCount} lines for ${totalStatements} logic statement${totalStatements === 1 ? "" : "s"} (ratio ${ratio.toFixed(1)}, threshold ${maxChurnRatio}). Check for boilerplate or redundant error handling.`,
+    });
+  },
+};
+
 /**
  * reinvented-helper (detector half).
  *
@@ -767,7 +834,7 @@ export const ReinventedHelperAst: AstRule = {
   enabledByDefault: false,
   languages: ["javascript", "typescript", "jsx", "tsx"],
   visit: (node: AstNode, parent: AstNode | null, ctx: RuleContext, emit: EmitFn) => {
-    if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type)) return;
+    if (!["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression", "ClassMethod", "ObjectMethod", "ClassPrivateMethod"].includes(node.type)) return;
 
     // Only emit when the function starts in changed lines (diff-scoped rule).
     // See the tree-sitter twin: a null `changedLines` is "whole file in scope", not "skip".
@@ -896,6 +963,7 @@ export const STRUCTURAL_TSAST_RULES: TsAstRule[] = [
   JavaSingleImplInterfaceTsAst,
   // Phase 3
   PassThroughWrapperTsAst,
+  DiffChurnRatioTsAst,
   ReinventedHelperTsAst,
   SingleCallerAbstractionTsAst,
 ];

@@ -243,12 +243,14 @@ const LANGUAGE_PROFILES: Record<string, FingerprintProfile> = {
   },
   csharp: {
     lang: "csharp",
-    functionTypes: new Set(["method_declaration"]),
+    // Constructors and local functions are as duplicable as ordinary methods but were invisible to
+    // both the fingerprint index and the reinvention detector — only "method_declaration" was here.
+    functionTypes: new Set(["method_declaration", "constructor_declaration", "local_function_statement"]),
     bodyNodeTypes: CSHARP_BODY_TYPES,
   },
   "c#": {
     lang: "csharp",
-    functionTypes: new Set(["method_declaration"]),
+    functionTypes: new Set(["method_declaration", "constructor_declaration", "local_function_statement"]),
     bodyNodeTypes: CSHARP_BODY_TYPES,
   },
 };
@@ -311,6 +313,7 @@ function extractBabelShapes(root: AstNode, lines: string[]): FnShape[] {
     const babelFunctionTypes = new Set([
       "FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression",
       "ClassMethod", "MethodDefinition", "ObjectMethod", // class and object methods
+      "ClassPrivateMethod", // `#foo() {}` — a distinct Babel node type, not a ClassMethod
     ]);
     const shapes: FnShape[] = [];
 
@@ -444,6 +447,9 @@ export function extractBabelName(node: AstNode, parent: AstNode | null = null): 
     if ((n.key.type === "StringLiteral" || n.key.type === "Literal") && typeof n.key.value === "string") {
       return n.key.value;
     }
+    // #foo() { ... } — a class private method's key is a PrivateName wrapping an Identifier,
+    // not an Identifier itself, so the check above missed it and the method fell through to null.
+    if (n.key.type === "PrivateName" && n.key.id?.name) return n.key.id.name;
   }
 
   if (!parent) return null;
@@ -455,6 +461,14 @@ export function extractBabelName(node: AstNode, parent: AstNode | null = null): 
   // foo = () => {};
   if (p.type === "AssignmentExpression" && p.right === node && p.left?.type === "Identifier") {
     return p.left.name ?? null;
+  }
+  // this.foo = () => {}; obj.foo = () => {} — the binding is a member expression, not a bare
+  // identifier. `p.left.type` is `MemberExpression`, so the check above missed these entirely.
+  if (
+    p.type === "AssignmentExpression" && p.right === node &&
+    p.left?.type === "MemberExpression" && !p.left.computed && p.left.property?.type === "Identifier"
+  ) {
+    return p.left.property.name ?? null;
   }
   // { foo: () => {} } — a plain object property whose value is a function (distinct from
   // ObjectMethod, which already carries the name on its own `key` above).

@@ -156,7 +156,20 @@ The deterministic engine always runs offline. When `ai.enabled` is true it adds 
 | `openrouter` | `OPENROUTER_API_KEY` | model as `vendor/model` |
 | `groq` / `together` | `GROQ_API_KEY` / `TOGETHER_API_KEY` | fast hosted OSS models |
 | `lmstudio` / `ollama` | *(none)* | **local models, no key needed** |
-| `custom` | your `apiKeyEnv` | any OpenAI-compatible server + `baseURL` |
+| `custom` | one of the key envs above | any OpenAI-compatible server + `baseURL` (see below) |
+
+**Trust boundary on `baseURL` / `apiKeyEnv`.** `.diffgate.json` is repo-tracked, so these two fields
+are deliberately *not* trusted from it at face value — an untrusted repo could otherwise redirect
+your AI calls, carrying whatever secret `apiKeyEnv` names, to a host of its choosing. `apiKeyEnv`
+from config is only honored if it's one of the key-env-var names in the table above; `baseURL` from
+config is only honored if it's a loopback address (`localhost`/`127.0.0.1`/etc — the shared "point
+everyone at my local ollama/lmstudio" case). To use a non-local custom endpoint, set it yourself via
+environment variables instead of committing it:
+
+```bash
+export DIFFGATE_AI_BASE_URL="https://llm-gateway.internal.example.com/v1"
+export DIFFGATE_AI_API_KEY_ENV="MY_GATEWAY_KEY"   # optional: which env var holds the key
+```
 
 **Multi-model routing by complexity.** `model` can be a per-tier map so cheap edits use a small model and high-impact ones use a strong one:
 

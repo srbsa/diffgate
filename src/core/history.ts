@@ -1,7 +1,7 @@
 import { analyze } from "./analyzer.js";
 import { loadConfig, isIgnored } from "./config.js";
 import { listCommits, getCommitChangedFiles, getBlobAtRef, repoRoot } from "./git.js";
-import { overallTier, tierCounts } from "./tiers.js";
+import { overallTier, tierCounts, recomputeResult } from "./tiers.js";
 import { loadMergedLearnings, applyLearnings } from "./learnings.js";
 import { CONFIRMATION_REQUIRED_RULES } from "./structural-impact.js";
 import type { AnalyzeResult, Commit, CommitReview, Config, HistorySelection } from "./types.js";
@@ -43,16 +43,7 @@ export function reviewCommit(
       learnings
     );
     const kept = analyzed.findings.filter((f) => !CONFIRMATION_REQUIRED_RULES.has(f.ruleId));
-    const result =
-      kept.length === analyzed.findings.length
-        ? analyzed
-        : {
-            ...analyzed,
-            findings: kept,
-            tier: overallTier(kept),
-            counts: tierCounts(kept),
-            blocking: kept.some((f) => f.blocking),
-          };
+    const result = kept.length === analyzed.findings.length ? analyzed : recomputeResult(analyzed, kept);
     if (result.findings.length > 0) files.push(result);
   }
   const allFindings = files.flatMap((f) => f.findings);

@@ -540,6 +540,15 @@ interface RuleBase {
    */
   include?: string[];
   exclude?: string[];
+  /**
+   * Set only on the effective rule built from a `rules` override (never on a built-in rule
+   * definition) when the user explicitly pinned `tier` and/or `blocking` in config. `makeFinding`
+   * checks this so a rule's own dynamic per-finding tier adjustment (e.g. `emitMaybeSanitized`
+   * down-tiering a taint finding it found a recognized sanitizer for) can't silently override an
+   * explicit user policy — the override is what the user asked for; a rule's own heuristic for one
+   * specific finding should not be able to un-ask it.
+   */
+  tierPinned?: boolean;
 }
 
 export interface PatternRule extends RuleBase {

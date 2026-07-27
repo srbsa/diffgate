@@ -532,6 +532,37 @@ export function readResource(
   throw new RpcError(-32002, `Resource not found: ${uri}`, { uri });
 }
 
+// `diffgate_analyze`'s `filePath` accepts an absolute path (an agent's own working state usually is
+// one), but nothing downstream ever checked it actually lands inside the repo the tool call claims
+// to be scoping to. A path like `/etc/passwd` or `../../../.ssh/id_rsa` was read straight off disk,
+// and any line matching a secret-shaped pattern got echoed back verbatim in a finding's `code` field
+// — turning a read-only "analyze a file" tool into an arbitrary-file-read-and-leak primitive. Resolve
+// symlinks before comparing so a same-repo path that's secretly a symlink out of the repo doesn't
+// pass; a target that doesn't exist yet (an agent describing a new file via `content`) falls back to
+// a plain normalized-path comparison since there's nothing on disk yet to resolve.
+// Resolve symlinks in `p` even when `p` itself doesn't exist yet (a new file described only via
+// `content`) by walking up to the nearest existing ancestor, realpath-ing that, and rejoining the
+// rest. Both sides of the containment check must go through this the same way — realpath-ing only
+// whichever of {root, target} happens to already exist on disk compares a resolved path against an
+// unresolved one, which is exactly wrong on a filesystem with symlinked ancestors (e.g. macOS's
+// `/var` → `/private/var`, which is where OS temp dirs live).
+function realpathBestEffort(p: string): string {
+  if (fs.existsSync(p)) {
+    try { return fs.realpathSync(p); } catch { return p; }
+  }
+  const parent = path.dirname(p);
+  if (parent === p) return p; // reached the filesystem root without finding anything real
+  return path.join(realpathBestEffort(parent), path.basename(p));
+}
+
+function ensureWithinRepo(absPath: string, root: string): void {
+  const rootReal = realpathBestEffort(path.resolve(root));
+  const targetReal = realpathBestEffort(path.resolve(absPath));
+  const rel = path.relative(rootReal, targetReal);
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return;
+  throw new Error(`filePath "${absPath}" is outside the repo (${rootReal}). diffgate_analyze only analyzes files within the repo passed as cwd.`);
+}
+
 export async function handleAnalyze(
   { filePath, content, cwd: cwdArg }: { filePath: string; content?: string; cwd?: string },
   opts: { graph?: Parameters<typeof attachImpact>[1]["graph"] } = {}
@@ -539,6 +570,7 @@ export async function handleAnalyze(
   const cwd = cwdArg || process.cwd();
   await initTreeSitter(); // ensure non-JS AST grammars (Python) are loaded before analysis
   const absPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
+  ensureWithinRepo(absPath, repoRoot(cwd) || cwd);
   const { config } = loadConfig(cwd);
 
   // A git-ignored file (a local .env, scratch scripts) is out of scope: the gate never sees it,
@@ -744,6 +776,13 @@ const DISPATCH: Record<string, (args: Record<string, unknown>, opts?: unknown) =
 // be driven directly in tests (no subprocess, no stream timing) and reused by any transport. `send`
 // is the writer; it is called once per request (notifications — id == null — get no reply).
 export async function dispatchMessage(msg: unknown, send: (obj: unknown) => void): Promise<void> {
+    // A JSON-RPC message is always an object; `null` and other primitives are syntactically valid
+    // JSON but not valid messages. Destructuring `null` throws (TypeError), and since the caller
+    // (`runMcpServer`) fires this via `void dispatchMessage(...)` with no `.catch`, an unhandled
+    // rejection here used to crash the whole server on a single malformed line over stdio. There's
+    // no `id` to reply to on a shape this broken, so drop it — same as any other message we can't
+    // correlate a response to.
+    if (typeof msg !== "object" || msg === null) return;
     const { id, method, params } = msg as { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown>; protocolVersion?: unknown } };
 
     if (method === "initialize") {
