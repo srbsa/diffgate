@@ -87,7 +87,10 @@ export class BuiltinGraphProvider implements GraphProvider {
     // A truncated walk can't distinguish "no callers" from "didn't get that far".
     if (callers.length === 0 && graph.partial) return null;
     const related = this.relatedTests(query) || [];
-    const defs = graph.functions.get(query.symbol) || [];
+    // Type declarations count toward ambiguity too — `single-caller-abstraction` asks about classes
+    // and interfaces, and two same-named classes in different files share one bare-name bucket of
+    // call sites exactly the way two same-named functions do.
+    const defs = [...(graph.functions.get(query.symbol) || []), ...(graph.types.get(query.symbol) || [])];
 
     const callerRefs: ImpactRef[] = callers.map((c) => ({
       file: c.file,
@@ -103,7 +106,12 @@ export class BuiltinGraphProvider implements GraphProvider {
       reachable: null,
       reviewers: [],
       testGaps: related.length === 0 ? [{ symbol: query.symbol }] : [],
-      truncated: false,
+      // A partial walk stopped before it ran out of repo, so every count it produces is a floor,
+      // not a total. The `callers.length === 0` guard above only catches the case where the walk
+      // found nothing at all; a walk that found one caller and then hit its budget was reported as
+      // an exact "1" — which is precisely the value `single-caller-abstraction` treats as proof.
+      // Consumers render this as "N+" and drop conclusions that depend on the count being complete.
+      truncated: graph.partial,
       // Bare-name matching only: >1 definition sharing this name means the caller list above may
       // belong to any of them, not necessarily the one at query.file:query.line.
       ambiguous: defs.length > 1

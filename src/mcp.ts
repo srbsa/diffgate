@@ -9,6 +9,7 @@ import {
   getPreviousContent,
   computeChangedLines,
   getChangedLinesForFile,
+  getChangedFiles,
   reviewChanges,
   initTreeSitter,
   explainFinding,
@@ -583,7 +584,18 @@ export async function handleAnalyze(
   // function and only this pass can tell a genuine duplicate from an ordinary new function. The
   // agent loop is the surface where an unconfirmed candidate does the most damage — it would send
   // the model off rewriting code that has no duplicate at all.
-  [withImpact] = attachReinvention([withImpact], { cwd, config });
+  // The changed-file set has to come from git here, not from the array: this path analyses exactly
+  // one file, so `attachReinvention`'s own derivation of "changed in this run" would be a set of
+  // one and its same-diff exclusion gate could never fire. An agent that writes a helper and its
+  // near-duplicate in the same edit would then be told the file it just wrote is a reinvention of
+  // the other file it just wrote.
+  let changedInRun: string[] = [];
+  try {
+    if (isGitRepo(cwd)) changedInRun = [...getChangedFiles(cwd, { mode: "working" }).keys()];
+  } catch {
+    /* best-effort; falls back to the single-file set */
+  }
+  [withImpact] = attachReinvention([withImpact], { cwd, config, changedFiles: changedInRun });
   [withImpact] = attachSecurity([withImpact], { cwd, config, graph });
   [withImpact] = attachReachability([withImpact], { cwd, config, graph });
   [withImpact] = labelTrust([withImpact]);

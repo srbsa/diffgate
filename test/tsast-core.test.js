@@ -37,3 +37,27 @@ test("compiled queries are memoized (same object for the same lang+source)", asy
   if (!treeSitterReady("python")) return t.skip("tree-sitter python grammar unavailable");
   assert.strictEqual(compileTsQuery("python", PY_SINK), compileTsQuery("python", PY_SINK));
 });
+
+// ===========================================================================
+// Incremental grammar init.
+//
+// `initTreeSitter` used to return the first call's promise verbatim, so the
+// first language list won permanently. A host that warmed up with one subset
+// and later needed another language got a resolved promise and no parser —
+// which every coverage check downstream reads as "this language has nothing in
+// it", not as an error.
+// ===========================================================================
+
+test("initTreeSitter loads a language requested by a LATER call", async () => {
+  const { initTreeSitter, treeSitterReady, parseTs } = await import("../dist/core/parsers/treesitter.js");
+
+  await initTreeSitter(["python"]);
+  assert.equal(treeSitterReady("python"), true, "first call loads what it asked for");
+
+  await initTreeSitter(["ruby"]);
+  assert.equal(treeSitterReady("ruby"), true, "a second call must load a language the first skipped");
+  assert.equal(treeSitterReady("python"), true, "and must not evict what was already loaded");
+
+  const tree = parseTs(`def x\n  1\nend\n`, "ruby");
+  assert.ok(tree && tree.rootNode, "the late-loaded grammar actually parses");
+});

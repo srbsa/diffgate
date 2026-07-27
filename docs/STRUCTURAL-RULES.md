@@ -53,23 +53,40 @@ shape and bail at the first sign the author had a reason.
 | `diff-churn-ratio` | Many changed lines for very few net AST statements |
 
 `pass-through-wrapper` deliberately does **not** fire when the call reshapes arguments, injects a
-default, validates first, or reorders parameters. Those wrappers are doing work.
+default, validates first, or reorders parameters. Those wrappers are doing work. It also requires a
+**named** binding — a declaration, a method key, or a `const`/assignment/property target — because
+the fix it suggests ("inline the call site") only makes sense where a call site exists. An anonymous
+function passed straight into another call (`xs.filter(l => ready(l))`, `setTimeout(() => flush(),
+100)`, a JSX `onClick`) *is* the argument, not an indirection someone introduced, so it's excluded
+regardless of shape.
 
 ### Graph-backed
 
 | Rule | Fires when |
 |---|---|
-| `single-caller-abstraction` | A new class or interface has ≤1 caller **across the repository** |
+| `single-caller-abstraction` | A new class has ≤1 caller **across the repository** |
 
 This is the one rule a file-local linter cannot write, and the only one here that proves rather than
-estimates. It runs in two passes: a detector emits a candidate for every new abstraction, then
+estimates. It runs in two passes: a detector emits a candidate for every new class, then
 [`attachStructuralImpact`](../src/core/structural-impact.ts) asks the code graph for the real caller
 count and confirms or retracts.
 
+**Scoped to Python and JS/TS only, and to classes, not interfaces.** The question this rule asks —
+"how many call sites name this symbol?" — is only answerable where construction syntax produces one:
+Python's `Foo()` and JS/TS's `new Foo()` are both calls whose callee is the class name. Java's `new
+Foo()`, C#'s `new Foo()`, PHP's `new Foo()`, and Ruby's `Foo.new` do not resolve to a call site named
+`Foo` in this engine's call graph, so every class in those languages would score a structural zero —
+used or not — and the rule would fire on all of them regardless of usage. Interfaces are excluded
+everywhere for the same reason: an interface is implemented and referenced in type position, never
+called, so its count is unconditionally zero. Extending coverage means teaching the call graph to
+record instantiation and type-reference edges for that language first.
+
 **An unknown is never treated as a zero.** No graph, no coverage for that language, a walk that hit
 its budget, a provider that threw — every one of those drops the finding rather than reporting
-"0 callers". Crying wolf on an incomplete graph is the one failure mode that would make this rule
-worthless, so it is inert by default:
+"0 callers". A **truncated** walk is treated the same way even when it reports a caller count at or
+below the confirmation threshold: a partial walk only ever reports a floor, and the callers it didn't
+reach are exactly the ones that would justify the abstraction. Crying wolf on an incomplete graph is
+the one failure mode that would make this rule worthless, so it is inert by default:
 
 ```jsonc
 { "rules": { "single-caller-abstraction": { "enabled": true } } }
@@ -97,7 +114,10 @@ with different names and constants hash identically.
 hash and keeps a finding only when **all** of these hold:
 
 - identical, non-empty shape hash, and identical parameter count
-- at least 5 shape nodes — smaller bodies are too generic to be evidence of anything
+- at least 6 shape nodes **and** at least 4 distinct node types — calibrated against labelled bodies,
+  not picked: node count alone doesn't separate a real fingerprint from a repeated shape like three
+  calls in a row (`log(a); init(a); return flush(a);` scores 6 nodes but only 3 distinct types).
+  Variety is the axis that discriminates; length isn't.
 - name-token overlap (Jaccard) ≥ 0.25
 - the match is in a different file, is not a test file, and is not itself part of this diff
   (a function moved between two files is a move, not a reinvention)

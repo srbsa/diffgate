@@ -2,7 +2,7 @@
   "name": "diffgate-review",
   "version": "0.8.0",
   "mcpName": "io.github.srbsa/diffgate",
-  "description": "Catches the guardrails your coding agent deletes while editing — a deterministic code review gate on just the changed lines, before any review bot. Grades each line green/yellow/orange by impact in milliseconds; 0 false blocks. In your coding agent (MCP), editor, CLI, and CI.",
+  "description": "A deterministic guardrail your coding agent runs on itself — reviews only the changed lines and returns structured findings before the code reaches disk. Zero LLM tokens, 0 false blocks on a public corpus. Same engine and same verdict in your agent (MCP), editor, pre-commit hook, and CI.",
   "type": "module",
   "repository": {
     "type": "git",

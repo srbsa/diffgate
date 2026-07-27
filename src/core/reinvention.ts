@@ -17,13 +17,16 @@
 import fs from "fs";
 import path from "path";
 import type { AnalyzeResult, Config, Finding } from "./types.js";
-import { shapeFunctions, nameTokens, tokenOverlap, type FnShape } from "./fingerprint.js";
+import {
+  shapeFunctions, nameTokens, tokenOverlap, MIN_SHAPE_NODES, MIN_SHAPE_VARIETY, type FnShape
+} from "./fingerprint.js";
 import { detectLanguage, AST_LANGUAGES } from "./parsers/index.js";
 import { parseTs, treeSitterReady } from "./parsers/treesitter.js";
 import { parseJs } from "./parsers/javascript.js";
 import { isIgnored, IGNORE_DIR_NAMES } from "./config.js";
 import { isGitIgnoredPath } from "./git.js";
 import { recomputeResult } from "./tiers.js";
+import { isTestPath } from "./testscope.js";
 
 /** Languages supported by tree-sitter in the call graph. */
 const TREE_SITTER_LANGUAGES = new Set(["python", "go", "java", "kotlin", "ruby", "php", "csharp", "c#"]);
@@ -140,30 +143,32 @@ function buildShapeIndex(
 
   walkDir(cwd);
 
-  // Cache the result.
+  // Drop entries that have aged out rather than letting the map grow per-cwd forever (a
+  // long-lived MCP server can be pointed at many repos over a session). Mirrors the builtin graph
+  // provider's own cache sweep in graph/builtin.ts.
+  for (const [key, entry] of shapeIndexCache) {
+    if (Date.now() - entry.builtAt >= SHAPE_INDEX_CACHE_TTL_MS) shapeIndexCache.delete(key);
+  }
   shapeIndexCache.set(cwd, { index, builtAt: Date.now() });
 
   return index;
 }
 
-/**
- * Is a file path a test file? Check each path component, not the whole path.
- *
- * Exported because the `reinvented-helper` detector must apply the identical test — a substring
- * match on the full path treats any directory merely containing "test" (a `.test-tmp-` fixture dir,
- * `src/test-utils/`) as a test file, and a detector that skips files the attach pass would have
- * accepted is a silent recall hole rather than a visible failure.
- */
-export function isTestFile(filePath: string): boolean {
-  const normalizedPath = filePath.replace(/\\/g, "/");
-  // Check if any path component is a test-related directory.
-  const pathParts = normalizedPath.split("/");
-  for (const part of pathParts) {
-    if (/^(__tests__|test|spec)$|\.test\.|\.spec\./.test(part)) {
-      return true;
-    }
+// Test-file detection lives in testscope.ts's `isTestPath` (also used to de-escalate security
+// findings), re-exported here under its prior name so structural.ts's detector half stays on the
+// identical test. `isTestPath` covers conventions this feature's own copy previously missed: bare
+// `tests/` directories, Go's `_test.go`, pytest's `test_*.py`, and `FooTest.java` / `FooTests.cs`.
+export const isTestFile = isTestPath;
+
+/** Resolve a path to its real location for identity comparison. Falls back to `path.resolve` when
+ *  the file no longer exists (a deleted file still appears in a diff) — that still normalises
+ *  separators and relative segments, it just cannot follow a symlink. */
+function canonicalPath(p: string): string {
+  try {
+    return fs.realpathSync(path.resolve(p));
+  } catch {
+    return path.resolve(p);
   }
-  return false;
 }
 
 /**
@@ -176,7 +181,18 @@ export function isTestFile(filePath: string): boolean {
  */
 export function attachReinvention(
   files: AnalyzeResult[],
-  opts: { cwd: string; config: Partial<Config> }
+  opts: {
+    cwd: string;
+    config: Partial<Config>;
+    /** Every file changed in this run, when the caller knows more than `files` shows.
+     *
+     *  Gate 7 exists to stop a function and its freshly-created "duplicate" from flagging each other
+     *  when an agent writes both in the same edit. It derives that set from `files`, which works for
+     *  the CLI (whole diff) but is structurally inert on the MCP path, where `files` is always a
+     *  single-element array — so the same repo state produced different verdicts depending on which
+     *  surface asked. Callers that analyse one file at a time pass the real set here. */
+    changedFiles?: Iterable<string>;
+  }
 ): AnalyzeResult[] {
   // Short-circuit: if there are no reinvented-helper findings, don't scan the repo.
   const hasReinvention = files.some((f) => f.findings.some((finding) => finding.ruleId === "reinvented-helper"));
@@ -185,8 +201,14 @@ export function attachReinvention(
   // Build the shape index (or read from cache).
   const shapeIndex = buildShapeIndex(opts.cwd, opts.config);
 
-  // Collect all changed files in this run.
-  const changedFiles = new Set(files.map((f) => f.filePath));
+  // Collect all changed files in this run, canonicalised so gates 5 and 7 compare like with like.
+  // The shape index stores paths built from `cwd`; a caller whose `cwd` reaches the repo through a
+  // symlink (macOS `/tmp` → `/private/tmp` is the everyday case) produced index paths that could
+  // never string-equal a finding's `filePath`, so both exclusion gates failed open — the headline
+  // symptom being a finding that reported a function as a duplicate of itself.
+  const changedFiles = new Set(
+    [...files.map((f) => f.filePath), ...(opts.changedFiles || [])].map(canonicalPath)
+  );
 
   // Process each file, filtering its reinvention findings.
   const result: AnalyzeResult[] = [];
@@ -229,8 +251,12 @@ export function attachReinvention(
         // Gate 2: arity must be equal.
         if (candidate.arity !== arity) continue;
 
-        // Gate 3: statementCount >= 5.
-        if (candidate.statementCount < 5) continue;
+        // Gate 3: the body carries enough structure to be identifying, not just long enough.
+        // `statementCount` counts nested expression nodes too, so the old bare `>= 5` admitted
+        // bodies of roughly three lines; requiring variety as well is what separates a shared
+        // fingerprint from two functions that happen to make a few calls in a row.
+        if (candidate.statementCount < MIN_SHAPE_NODES) continue;
+        if (candidate.distinctTypes < MIN_SHAPE_VARIETY) continue;
 
         // Gate 4: the names must be lexically related.
         //
@@ -245,13 +271,13 @@ export function attachReinvention(
         if (overlap < NAME_OVERLAP_FLOOR) continue;
 
         // Gate 5: match is NOT in the same file as the finding.
-        if (candidate.file === file.filePath) continue;
+        if (canonicalPath(candidate.file) === canonicalPath(file.filePath)) continue;
 
         // Gate 6: match's file is NOT a test file.
         if (isTestFile(candidate.file)) continue;
 
         // Gate 7: match's file is NOT one of the changed files in this run.
-        if (changedFiles.has(candidate.file)) continue;
+        if (changedFiles.has(canonicalPath(candidate.file))) continue;
 
         // This candidate survived all gates. Pick the best one (lowest file path, then lowest startLine).
         if (!bestMatch || candidate.file < bestMatch.file || (candidate.file === bestMatch.file && candidate.startLine < bestMatch.startLine)) {

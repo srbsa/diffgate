@@ -305,7 +305,7 @@ test("shapeFunctions: extract line ranges", () => {
   assert(fn.name === "test", "Function name should be 'test'");
 });
 
-test("shapeFunctions: anonymous function", () => {
+test("shapeFunctions: anonymous function bound to a variable inherits that name", () => {
   const code = `const fn = function(x) { return x * 2; };`;
 
   const ast = parseJs(code);
@@ -315,10 +315,28 @@ test("shapeFunctions: anonymous function", () => {
     lines: code.split("\n"),
   });
 
-  // Should find the anonymous function expression
+  // The function itself has no `.id` (Babel calls it anonymous), but `const fn = function(){}`
+  // gives it a real name via its VariableDeclarator — bug fixed in extractBabelName, which
+  // previously returned "" here and made every such function unmatchable by reinvented-helper's
+  // name-overlap gate (an empty name always scores 0 token overlap against any candidate).
   assert(shapes.length >= 1, "Should find anonymous function");
   const fn = shapes[0];
-  assert.equal(fn.name, "", "Anonymous function should have empty name");
+  assert.equal(fn.name, "fn", "Function expression should inherit its variable declarator's name");
+});
+
+test("shapeFunctions: truly unbound anonymous function has empty name", () => {
+  const code = `[1, 2, 3].forEach(function (x) { console.log(x); });`;
+
+  const ast = parseJs(code);
+  const shapes = shapeFunctions({
+    language: "javascript",
+    ast,
+    lines: code.split("\n"),
+  });
+
+  assert(shapes.length >= 1, "Should find the anonymous callback");
+  const fn = shapes[0];
+  assert.equal(fn.name, "", "A function passed as a bare call argument has no name to inherit");
 });
 
 test("shapeFunctions: arrow function", () => {

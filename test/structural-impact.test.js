@@ -135,3 +135,26 @@ test("repeated symbol+line in one file is cached, not re-queried", () => {
 test("STRUCTURAL_IMPACT_RULES is the contract the detector must match", () => {
   assert.ok(STRUCTURAL_IMPACT_RULES.has(RULE));
 });
+
+// ---------------------------------------------------------------------------
+// Truncated walk: a count from an incomplete graph is a floor, not a total.
+// ---------------------------------------------------------------------------
+
+test("truncated walk with 0 callers → dropped (unknown is never a zero)", () => {
+  const out = run([file([finding()])], fakeGraph(() => impact({ callerCount: 0, truncated: true })));
+  assert.deepEqual(ids(out), []);
+});
+
+test("truncated walk with 1 caller → dropped (the callers we did not reach are the ones that matter)", () => {
+  // The regression: the provider's own guard only covered callerCount === 0, but the rule's
+  // confirmation threshold is <= 1, so a budget-truncated walk that happened to find exactly one
+  // caller was reported as an exact count and confirmed the finding.
+  const out = run([file([finding()])], fakeGraph(() => impact({ callerCount: 1, truncated: true })));
+  assert.deepEqual(ids(out), []);
+});
+
+test("a complete walk with 1 caller is still confirmed — truncation is the discriminator, not the count", () => {
+  const out = run([file([finding()])], fakeGraph(() => impact({ callerCount: 1, truncated: false })));
+  assert.equal(out[0].findings.length, 1);
+  assert.match(out[0].findings[0].message, /1 call site/);
+});

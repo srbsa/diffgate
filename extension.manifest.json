@@ -3,7 +3,7 @@
   "name": "diffgate",
   "display_name": "DiffGate",
   "version": "0.4.2",
-  "description": "Deterministic gate for AI-edited diffs. Reviews only the changed lines, catches deleted guardrails and high-impact changes (secrets, schema drops, injection sinks, public-API drift) while safe edits fly through.",
+  "description": "A deterministic guardrail for AI-edited code, inline in your editor. Reviews only the changed lines and flags high-impact edits (secrets, schema drops, injection sinks, public-API drift) while safe edits fly through.",
   "author": {
     "name": "DiffGate",
     "url": "https://github.com/srbsa/diffgate"

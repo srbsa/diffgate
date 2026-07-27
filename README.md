@@ -7,11 +7,20 @@
 [![License](https://img.shields.io/github/license/srbsa/diffgate)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/srbsa/diffgate?style=social)](https://github.com/srbsa/diffgate)
 
-**Coding agents don't write textbook vulnerabilities anymore — they delete your guardrails while editing.**
+**A deterministic guardrail your coding agent runs on itself — before the code reaches your disk.**
 
-We measured it across local and frontier models: **0%** classic OWASP bugs (SQL injection, XSS, hardcoded secrets) in code written from scratch. But the same frontier model that wrote flawless greenfield code reintroduced security footguns in **13% of edits** — an unguarded recursive merge (prototype pollution), a bare `cors()` (any origin), a path built from request data with no containment check. And editing existing code is most of what an agent does. [The measurement →](docs/MEASUREMENT.md)
+Every other check fires too late. A review bot needs a PR. A pre-commit hook runs after the agent has finished and moved on. DiffGate is an **agent hook**: your agent calls it over MCP, gets back structured findings in milliseconds for **zero LLM tokens**, and fixes the problem while it still has the context — then the *same engine, same verdict* runs in your editor, your pre-commit hook, and CI. Not a model grading its own homework: the same input always produces the same answer.
 
-DiffGate is the deterministic tripwire for exactly that residue — a review pass that runs **before any review bot sees a PR**, at the keystroke and the commit, where fixing is cheapest. It grades **only the lines that changed** (🟢 merge · 🟡 glance · 🟠 verify) in milliseconds, runs your tests only when a change earns it, and blocks only when it's earned: **0 false blocks** on a public, versioned corpus ([BENCHMARK.md](BENCHMARK.md)). Not a model grading its own homework — the same verdict inside your coding agent (MCP), your editor, your pre-commit hook, and your CI.
+It stays quiet by construction. It grades **only the lines that changed** (🟢 merge · 🟡 glance · 🟠 verify), runs your tests only when a change earns it, and blocks only when it's earned — **0 false blocks** on a public, versioned corpus you can rerun yourself with `diffgate bench` ([BENCHMARK.md](BENCHMARK.md)). Everyone claims low noise; this one ships the corpus.
+
+<details>
+<summary><b>Why this catches things a scanner doesn't</b> — we measured what agents actually get wrong</summary>
+
+Across local and frontier models: **0%** classic OWASP bugs (SQL injection, XSS, hardcoded secrets) in code written from scratch. But the same frontier model that wrote flawless greenfield code reintroduced security footguns in **13% of edits** — an unguarded recursive merge (prototype pollution), a bare `cors()` (any origin), a path built from request data with no containment check. Editing existing code is most of what an agent does, and the residue lives in the diff, not in the textbook. Rerun it yourself with `diffgate marginal`. [The measurement →](docs/MEASUREMENT.md)
+
+The same shift shows up in third-party maintainability data: [GitClear's 2026 analysis](https://www.gitclear.com/the_ai_code_quality_maintainability_gap) finds block duplication up **81%** since 2023 (40.3 → 73.0 per million changed lines) and cross-file function connectivity down **35%** — agents reinvent code rather than reuse it. That's what the `reinvented-helper` rule is for ([docs/STRUCTURAL-RULES.md](docs/STRUCTURAL-RULES.md)).
+
+</details>
 
 ![DiffGate demo: diffgate check on a real repo, mostly green with one orange finding and its reason](https://raw.githubusercontent.com/srbsa/diffgate/main/assets/diffgate.gif)
 
@@ -23,9 +32,17 @@ DiffGate is the deterministic tripwire for exactly that residue — a review pas
 
 ---
 
-## Why a tripwire, not another review bot
+## Why an agent hook, not another review bot
 
-Review bots comment after the PR exists; linters and scanners flag everything they see. Neither guarantees the risky line gets discussed: [we scanned 350 merged AI-assisted PRs](docs/posts/the-pr-was-reviewed-the-risky-line-wasnt.md) — of the 109 with flagged AI-attributed changes, only 3 drew public discussion from any human besides the author. DiffGate sits earlier — with the agent and the human writing the code — and **decides what deserves your attention, your tests, or a block**, staying quiet otherwise. That's the whole product:
+Every check in the pipeline fires after the code exists, and each one is later than the last:
+
+| | Fires when | Problem |
+|---|---|---|
+| Review bot (CodeRabbit, Greptile) | a PR exists | the code is finished, defended, and someone is waiting on it |
+| Pre-commit hook | you're done and committing | the agent has moved on; you're re-loading context to fix it |
+| **DiffGate over MCP** | **the agent is still writing** | it fixes its own output before the code lands |
+
+Being early is not the only thing that matters, though — it has to be *quiet*, or the agent learns to ignore it. Review bots comment after the PR exists; linters and scanners flag everything they see. Neither guarantees the risky line gets discussed: [we scanned 350 merged AI-assisted PRs](docs/posts/the-pr-was-reviewed-the-risky-line-wasnt.md) — of the 109 with flagged AI-attributed changes, only **3** drew public discussion from any human besides the author. DiffGate **decides what deserves your attention, your tests, or a block**, and stays quiet otherwise. That's the whole product:
 
 - **Diff-scoped.** Findings report only on the lines that changed, against the committed baseline — no whole-file noise, no re-litigating code you didn't touch.
 - **Tiered triage, not a flat list.** Three tiers route attention: green merges, yellow is a glance, orange is gated.

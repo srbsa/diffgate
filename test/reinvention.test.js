@@ -12,7 +12,7 @@ import { attachReinvention } from "../dist/core/reinvention.js";
 import { analyze } from "../dist/core/index.js";
 import { initTreeSitter, parseTs } from "../dist/core/parsers/treesitter.js";
 import { parseJs } from "../dist/core/parsers/javascript.js";
-import { shapeFunctions } from "../dist/core/fingerprint.js";
+import { shapeFunctions, MIN_SHAPE_NODES, MIN_SHAPE_VARIETY } from "../dist/core/fingerprint.js";
 import { detectLanguage } from "../dist/core/parsers/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -475,23 +475,27 @@ test("g: No reinvented-helper finding present → attachReinvention returns inpu
 test("h: A surviving finding still has tier 'yellow' and blocking false", async () => {
   const tmpDir = mkTempDir();
   try {
-    // File 1: original function
+    // File 1: original function. The body needs real control flow, not a straight-line arithmetic
+    // chain — MIN_SHAPE_VARIETY rejects low-variety shapes as too weak to be a fingerprint, and this
+    // test is about tier preservation, not about where that floor sits.
     const file1Content = `def processUserData(x):
-    a = x
-    b = a + 1
-    c = b * 2
-    d = c - 1
-    return d
+    total = 0
+    for item in x:
+        total += item
+    if total > 100:
+        return False
+    return True
 `;
     fs.writeFileSync(path.join(tmpDir, "base.py"), file1Content);
 
     // File 2: new function with similar name pattern - shares "process" and "user"
     const file2Content = `def processUserList(x):
-    a = x
-    b = a + 1
-    c = b * 2
-    d = c - 1
-    return d
+    total = 0
+    for item in x:
+        total += item
+    if total > 100:
+        return False
+    return True
 `;
     fs.writeFileSync(path.join(tmpDir, "new_base.py"), file2Content);
 
@@ -533,13 +537,16 @@ test("h: A surviving finding still has tier 'yellow' and blocking false", async 
 test("picks the best match when multiple candidates exist (lowest file path, then lowest line)", async () => {
   const tmpDir = mkTempDir();
   try {
-    // Create three files with similar functions
+    // Create three files with similar functions. Control flow rather than a straight-line
+    // arithmetic chain: this test is about best-match ordering, so the body has to clear
+    // MIN_SHAPE_VARIETY for there to be any candidates to order.
     const funcContent = `def similar(x):
-    a = x
-    b = a + 1
-    c = b * 2
-    d = c - 1
-    return d
+    total = 0
+    for item in x:
+        total += item
+    if total > 100:
+        return False
+    return True
 `;
 
     // File A: first candidate
@@ -738,6 +745,150 @@ test("e2e: detector + attach pass confirm a real duplicate and report a repo-rel
     );
     assert.equal(hit.tier, "yellow");
     assert.equal(hit.blocking, false);
+  } finally {
+    rmTempDir(tmpDir);
+  }
+});
+
+// ============================================================================
+// Shape-strength floor: MIN_SHAPE_NODES / MIN_SHAPE_VARIETY
+// ============================================================================
+
+test("a low-variety body is NOT treated as a fingerprint even when duplicated verbatim", async () => {
+  const tmpDir = mkTempDir();
+  try {
+    // A straight-line arithmetic chain: 8 collected nodes but only 3 distinct types. Long enough to
+    // clear a raw node-count floor, too repetitive to identify anything. Two functions can land on
+    // this shape without one being a rewrite of the other.
+    const original = `def processUserData(x):
+    a = x
+    b = a + 1
+    c = b * 2
+    d = c - 1
+    return d
+`;
+    const duplicate = `def processUserList(x):
+    a = x
+    b = a + 1
+    c = b * 2
+    d = c - 1
+    return d
+`;
+    fs.writeFileSync(path.join(tmpDir, "base.py"), original);
+    fs.writeFileSync(path.join(tmpDir, "new_base.py"), duplicate);
+
+    const shapeData = getShapeHashForCode(duplicate, "python");
+    assert.ok(shapeData, "Should be able to compute shape");
+
+    const files = [
+      file(path.join(tmpDir, "new_base.py"), [
+        finding({
+          line: 1,
+          symbol: "processUserList",
+          message: "⚡ Possible reinvented helper: processUserList",
+          meta: {
+            shapeHash: shapeData.shapeHash,
+            arity: shapeData.arity,
+            statementCount: shapeData.statementCount,
+            name: "processUserList",
+          },
+        }),
+      ]),
+    ];
+
+    const result = attachReinvention(files, { cwd: tmpDir, config: {} });
+    assert.equal(result[0].findings.length, 0, "Low-variety shape must not confirm a reinvention");
+  } finally {
+    rmTempDir(tmpDir);
+  }
+});
+
+test("shape variety is what separates the control from the noise shape", async () => {
+  const measure = (code) => {
+    const shapes = shapeFunctions({ language: "python", tsTree: parseTs(code, "python"), lines: code.split("\n") });
+    return shapes[0];
+  };
+  // The canonical positive control this rule exists to catch.
+  const control = measure(`def process_order(items, cost):
+    total = 0
+    for item in items:
+        total += item
+    if total > 100:
+        return False
+    return True
+`);
+  // Three calls in a row — the shape that produced a false match before the variety floor.
+  const noise = measure(`def setup(a):
+    log(a)
+    init(a)
+    return flush(a)
+`);
+
+  assert.ok(control.statementCount >= MIN_SHAPE_NODES, "control clears the node floor");
+  assert.ok(control.distinctTypes >= MIN_SHAPE_VARIETY, "control clears the variety floor");
+  assert.ok(
+    noise.distinctTypes < MIN_SHAPE_VARIETY,
+    "noise shape is rejected on variety, not on length"
+  );
+  // The point of the calibration: node count alone does NOT separate them.
+  assert.ok(
+    Math.abs(control.statementCount - noise.statementCount) <= 2,
+    "node counts overlap, so a count-only floor cannot do this job"
+  );
+});
+
+test("changedFiles lets a single-file caller apply the same-diff exclusion gate", async () => {
+  const tmpDir = mkTempDir();
+  try {
+    const body = `def resolve_thresholds(cfg, base):
+    out = dict(base)
+    for k, v in cfg.items():
+        if v is None:
+            continue
+        out[k] = v
+    return out
+`;
+    const twin = `def resolve_limits(cfg, base):
+    out = dict(base)
+    for k, v in cfg.items():
+        if v is None:
+            continue
+        out[k] = v
+    return out
+`;
+    fs.writeFileSync(path.join(tmpDir, "thresholds.py"), body);
+    fs.writeFileSync(path.join(tmpDir, "limits.py"), twin);
+
+    const shapeData = getShapeHashForCode(twin, "python");
+    assert.ok(shapeData, "Should be able to compute shape");
+
+    const mkFiles = () => [
+      file(path.join(tmpDir, "limits.py"), [
+        finding({
+          line: 1,
+          symbol: "resolve_limits",
+          message: "⚡ Possible reinvented helper: resolve_limits",
+          meta: {
+            shapeHash: shapeData.shapeHash,
+            arity: shapeData.arity,
+            statementCount: shapeData.statementCount,
+            name: "resolve_limits",
+          },
+        }),
+      ]),
+    ];
+
+    // Single-file caller with no changedFiles: the twin looks like pre-existing repo code.
+    const withoutSet = attachReinvention(mkFiles(), { cwd: tmpDir, config: {} });
+    assert.equal(withoutSet[0].findings.length, 1, "match confirms when the twin is not in the diff");
+
+    // Same call, but the caller reports that both files were written in this run.
+    const withSet = attachReinvention(mkFiles(), {
+      cwd: tmpDir,
+      config: {},
+      changedFiles: [path.join(tmpDir, "thresholds.py"), path.join(tmpDir, "limits.py")],
+    });
+    assert.equal(withSet[0].findings.length, 0, "gate 7 drops a match written in the same diff");
   } finally {
     rmTempDir(tmpDir);
   }

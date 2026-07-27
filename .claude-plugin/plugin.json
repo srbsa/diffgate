@@ -1,7 +1,7 @@
 {
   "name": "diffgate",
   "displayName": "DiffGate",
-  "description": "Catches the guardrails your coding agent deletes while editing — deterministic review gate on just the changed lines, before any review bot. Grades each line green/yellow/orange by impact; 0 false blocks.",
+  "description": "A deterministic guardrail your coding agent runs on itself — structured findings on just the changed lines, before the code reaches disk. Zero LLM tokens, 0 false blocks.",
   "version": "0.8.0",
   "author": {
     "name": "srbsa",

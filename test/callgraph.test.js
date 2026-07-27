@@ -223,3 +223,71 @@ def outer():
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ===========================================================================
+// Entry-point precision. A false entry point is not a cosmetic problem: it is
+// what escalates a sink to blocking, so every one of these shapes previously
+// created a route where the program has none.
+// ===========================================================================
+
+test("JS: http/https client calls are not HTTP entry points", async () => {
+  const { detectJsEntryPoints } = await import("../dist/core/graph/entry-points.js");
+  const { parseJs } = await import("../dist/core/parsers/javascript.js");
+  const src = `
+https.get("https://api.example.com/x", res => { sink(res); });
+http.get(options, res => { sink(res); });
+`;
+  const eps = detectJsEntryPoints(parseJs(src, "javascript"), "client.js");
+  assert.deepEqual(eps, [], "an outbound request callback is not an untrusted entry point");
+});
+
+test("JS: a genuine router still registers, including a bare `api` receiver", async () => {
+  const { detectJsEntryPoints } = await import("../dist/core/graph/entry-points.js");
+  const { parseJs } = await import("../dist/core/parsers/javascript.js");
+  const src = `
+const api = express.Router();
+api.get("/users", (req, res) => { sink(req); });
+adminApp.post("/x", handler);
+`;
+  const eps = detectJsEntryPoints(parseJs(src, "javascript"), "routes.js");
+  const routes = eps.map((e) => e.route).sort();
+  assert.deepEqual(routes, ["GET /users", "POST /x"]);
+});
+
+test("JS: receivers that merely start with 'app' are not routers", async () => {
+  const { detectJsEntryPoints } = await import("../dist/core/graph/entry-points.js");
+  const { parseJs } = await import("../dist/core/parsers/javascript.js");
+  const src = `
+appleClient.get(url, cb);
+approvals.get(id, cb);
+appConfig.get("key");
+`;
+  assert.deepEqual(detectJsEntryPoints(parseJs(src, "javascript"), "misc.js"), []);
+});
+
+test("JS: two route registrations on one line both survive the dedupe key", async () => {
+  const { detectJsEntryPoints } = await import("../dist/core/graph/entry-points.js");
+  const { parseJs } = await import("../dist/core/parsers/javascript.js");
+  const src = `app.get("/a", h); app.get("/b", h);`;
+  const eps = detectJsEntryPoints(parseJs(src, "javascript"), "routes.js");
+  assert.equal(eps.length, 2, "a line-only dedupe key silently dropped the second route");
+  assert.deepEqual(eps.map((e) => e.route).sort(), ["GET /a", "GET /b"]);
+});
+
+test("Ruby: a Sinatra route needs no receiver, a path, and a block", async () => {
+  await initTreeSitter(["ruby"]);
+  const { parseTs } = await import("../dist/core/parsers/treesitter.js");
+  const src = `
+get "/users" do
+  sink(params)
+end
+
+cache.get(key)
+hash.delete(:k)
+client.post(body)
+get(thing)
+`;
+  const eps = detectEntryPoints(parseTs(src, "ruby"), "app.rb", "ruby");
+  assert.equal(eps.length, 1, "only the real route is an entry point");
+  assert.equal(eps[0].route, "/users");
+});

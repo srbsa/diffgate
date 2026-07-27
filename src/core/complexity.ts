@@ -198,19 +198,41 @@ function extractLineRange(node: TsNode | AstNode, kind: "tree" | "babel"): { sta
  */
 const FLAT_SIBLING_CLAUSE_TYPES = new Set(["elif_clause", "else_clause", "else_if_clause"]);
 
+// Ternary/conditional-expression node types. Several grammars reuse the SAME "alternative" field
+// name (or the same flat-sibling shape) for a ternary's false-branch as they do for an if's else —
+// tree-sitter-java's ternary_expression, tree-sitter-c-sharp's conditional_expression, and
+// tree-sitter-ruby's conditional all expose "alternative". Without this exclusion, a bare ternary
+// (not even a decisionType in most of these profiles) had its false branch scored as a flat +1
+// else-chain link — an accidental score for a construct the profile never intended to charge at
+// all. Ternaries get their own nesting-based increment via `decisionTypes`/`nestingTypes` instead.
+const TERNARY_TYPES = new Set(["ternary_expression", "conditional_expression", "conditional"]);
+
 function elseBranches(node: TsNode | AstNode, kind: "tree" | "babel"): (TsNode | AstNode)[] {
   if (kind === "babel") {
+    // Only IfStatement has a real else-chain. ConditionalExpression (the ternary) also has an
+    // `.alternate`, but scoring it here double-charges: the ternary already scores via
+    // decisionTypes, and its false branch is not an "else" link.
+    if ((node as AstNode).type !== "IfStatement") return [];
     const alt = (node as any).alternate;
     return alt ? [alt] : [];
   }
 
   const tsNode = node as TsNode;
-  const siblings: TsNode[] = [];
-  for (let i = 0; i < tsNode.namedChildCount; i++) {
-    const c = tsNode.namedChild(i);
-    if (c && FLAT_SIBLING_CLAUSE_TYPES.has(c.type)) siblings.push(c);
+  if (TERNARY_TYPES.has(tsNode.type)) return [];
+
+  // The flat-sibling scan only applies to an actual if-chain ("if_statement" is the shared type
+  // name Python and PHP both use). Python's for/while/try statements can ALSO carry an
+  // "else_clause" child (for-else, while-else, try-else are real, unrelated constructs), and
+  // without this guard the generic child scan below treated that else_clause as an if-chain link
+  // too — scoring a for/while/try's else as though it were an elif.
+  if (tsNode.type === "if_statement") {
+    const siblings: TsNode[] = [];
+    for (let i = 0; i < tsNode.namedChildCount; i++) {
+      const c = tsNode.namedChild(i);
+      if (c && FLAT_SIBLING_CLAUSE_TYPES.has(c.type)) siblings.push(c);
+    }
+    if (siblings.length > 0) return siblings;
   }
-  if (siblings.length > 0) return siblings;
 
   if (tsNode.childForFieldName) {
     const alt = tsNode.childForFieldName("alternative");
@@ -321,8 +343,11 @@ export function cognitiveComplexity(node: TsNode | AstNode, profile: ComplexityP
     const isNesting = profile.nestingTypes.has(t);
     // A node's TRUE body is one level deeper than the node itself, whether or not the node was
     // itself reached via an else-branch — only the else-branch link itself is exempt from adding
-    // depth, not what's inside it.
-    const bodyDepth = isNesting ? depth + 1 : depth;
+    // depth, not what's inside it. An else-branch node (a bare BlockStatement/else_clause) is
+    // never itself in nestingTypes, so without the `isElseBranch` term here its body silently
+    // stayed at the SAME depth as the if it belongs to instead of one level deeper — an `else { }`
+    // body scored shallower than the matching `if { }` body for the identical code.
+    const bodyDepth = isNesting || isElseBranch ? depth + 1 : depth;
 
     for (const child of children(n, kind)) {
       const childIsElse = branches.some((b) => sameNode(b, child, kind));
@@ -349,7 +374,8 @@ export function nestingDepth(node: TsNode | AstNode, profile: ComplexityProfile,
     const t = nodeType(n, kind);
     const branches = elseBranches(n, kind);
     const isNesting = profile.nestingTypes.has(t);
-    const bodyDepth = isNesting ? depth + 1 : depth;
+    // Same else-branch-body correction as cognitiveComplexity — see the comment there.
+    const bodyDepth = isNesting || isElseBranch ? depth + 1 : depth;
 
     for (const child of children(n, kind)) {
       const childIsElse = branches.some((b) => sameNode(b, child, kind));
@@ -423,12 +449,14 @@ const BABEL_PROFILE: ComplexityProfile = {
   classTypes: new Set(["ClassDeclaration"]),
   fnNameField: null,
   paramsField: "params",
-  decisionTypes: new Set(["IfStatement", "ForStatement", "WhileStatement", "SwitchStatement", "CatchClause", "ConditionalExpression"]),
+  // ForOfStatement/ForInStatement/DoWhileStatement were missing — the dominant modern JS/TS loop
+  // idioms (`for (const x of xs)`, `for...in`, `do...while`) scored 0 cognitive complexity.
+  decisionTypes: new Set(["IfStatement", "ForStatement", "ForOfStatement", "ForInStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement", "CatchClause", "ConditionalExpression"]),
   // BlockStatement is deliberately NOT a nesting type. It is the `{ }` of every function and every
   // branch, so counting it made a flat one-liner report depth 1 and inflated both nesting and
   // cognitive score ~2x against the tree-sitter languages — which silently made the per-language
   // thresholds incomparable between the two backends.
-  nestingTypes: new Set(["IfStatement", "ForStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement", "CatchClause", "ConditionalExpression"]),
+  nestingTypes: new Set(["IfStatement", "ForStatement", "ForOfStatement", "ForInStatement", "WhileStatement", "DoWhileStatement", "SwitchStatement", "CatchClause", "ConditionalExpression"]),
   logicalOperatorTypes: new Set(["LogicalExpression"]),
   statementTypes: new Set(["ExpressionStatement", "ReturnStatement", "VariableDeclaration", "BlockStatement"]),
 };
@@ -439,8 +467,11 @@ const PYTHON_PROFILE: ComplexityProfile = {
   classTypes: new Set(["class_definition"]),
   fnNameField: "name",
   paramsField: "parameters",
-  decisionTypes: new Set(["if_statement", "for_statement", "while_statement", "except_clause", "with_statement"]),
-  nestingTypes: new Set(["if_statement", "for_statement", "while_statement", "except_clause", "with_statement"]),
+  // "with_statement" is not a SonarSource decision point (spec Appendix B1/B2 has no context-manager
+  // entry) — it was inflating cognitive/nesting scores on ordinary Python (a context manager is not
+  // a branch). "conditional_expression" is Python's ternary (`b if a else c`), previously unscored.
+  decisionTypes: new Set(["if_statement", "for_statement", "while_statement", "except_clause", "conditional_expression"]),
+  nestingTypes: new Set(["if_statement", "for_statement", "while_statement", "except_clause", "conditional_expression"]),
   logicalOperatorTypes: new Set(["boolean_operator"]),
   logicalOperatorSymbols: new Set(["and", "or"]),
   statementTypes: new Set(["expression_statement", "return_statement", "assignment", "global_statement"]),
@@ -455,7 +486,9 @@ const GO_PROFILE: ComplexityProfile = {
   decisionTypes: new Set(["if_statement", "for_statement", "select_statement", "type_switch_statement", "expression_switch_statement"]),
   nestingTypes: new Set(["if_statement", "for_statement", "select_statement", "type_switch_statement", "expression_switch_statement"]),
   logicalOperatorTypes: new Set(["binary_expression"]), // catch-all node type; filtered to &&/|| by logicalOperatorSymbols
-  statementTypes: new Set(["expression_statement", "return_statement", "assignment", "var_declaration"]),
+  // "assignment" is not a real Go grammar node type (it's "assignment_statement"); short variable
+  // declarations (`x := y`) are the most common Go statement and need their own type.
+  statementTypes: new Set(["expression_statement", "return_statement", "assignment_statement", "short_var_declaration", "var_declaration"]),
 };
 
 const JAVA_PROFILE: ComplexityProfile = {
@@ -464,21 +497,28 @@ const JAVA_PROFILE: ComplexityProfile = {
   classTypes: new Set(["class_declaration", "interface_declaration"]),
   fnNameField: "name",
   paramsField: "parameters",
-  decisionTypes: new Set(["if_statement", "for_statement", "enhanced_for_statement", "while_statement", "do_statement", "switch_statement", "catch_clause"]),
-  nestingTypes: new Set(["if_statement", "for_statement", "enhanced_for_statement", "while_statement", "do_statement", "switch_statement", "catch_clause"]),
+  // "switch_statement" is not a real tree-sitter-java node type — Java models both statement- and
+  // expression-form switch as "switch_expression", so every Java switch scored 0. "ternary_expression"
+  // (Java's ternary) was also unscored.
+  decisionTypes: new Set(["if_statement", "for_statement", "enhanced_for_statement", "while_statement", "do_statement", "switch_expression", "catch_clause", "ternary_expression"]),
+  nestingTypes: new Set(["if_statement", "for_statement", "enhanced_for_statement", "while_statement", "do_statement", "switch_expression", "catch_clause", "ternary_expression"]),
   logicalOperatorTypes: new Set(["binary_expression"]),
   statementTypes: new Set(["expression_statement", "return_statement", "variable_declaration", "local_variable_declaration"]),
 };
 
 const KOTLIN_PROFILE: ComplexityProfile = {
   lang: "kotlin",
-  functionTypes: new Set(["function_declaration", "function_literal"]),
+  // "function_literal" is not a real @tree-sitter-grammars/tree-sitter-kotlin node type — the real
+  // names are "lambda_literal" and "anonymous_function". Without them every Kotlin lambda was
+  // invisible to this and every other rule built on analyzeComplexity/shapeFunctions.
+  functionTypes: new Set(["function_declaration", "lambda_literal", "anonymous_function"]),
   classTypes: new Set(["class_declaration"]),
   fnNameField: "name",
   // No field exposes the parameter list on function_declaration; used as a type-based fallback.
   paramsField: "function_value_parameters",
-  decisionTypes: new Set(["if_expression", "for_statement", "while_statement", "catch_block", "when_expression"]),
-  nestingTypes: new Set(["if_expression", "for_statement", "while_statement", "catch_block", "when_expression"]),
+  // "do_while_statement" (Kotlin's do/while) was missing and scored 0.
+  decisionTypes: new Set(["if_expression", "for_statement", "while_statement", "do_while_statement", "catch_block", "when_expression"]),
+  nestingTypes: new Set(["if_expression", "for_statement", "while_statement", "do_while_statement", "catch_block", "when_expression"]),
   logicalOperatorTypes: new Set(["binary_expression"]),
   statementTypes: new Set(["expression_statement", "return_statement", "property_declaration"]),
 };
@@ -489,8 +529,9 @@ const RUBY_PROFILE: ComplexityProfile = {
   classTypes: new Set(["class", "module"]),
   fnNameField: "name",
   paramsField: "parameters",
-  decisionTypes: new Set(["if", "unless", "for", "while", "until", "case", "rescue"]),
-  nestingTypes: new Set(["if", "unless", "for", "while", "until", "case", "rescue"]),
+  // "conditional" is Ruby's ternary (`a ? b : c`), previously unscored.
+  decisionTypes: new Set(["if", "unless", "for", "while", "until", "case", "rescue", "conditional"]),
+  nestingTypes: new Set(["if", "unless", "for", "while", "until", "case", "rescue", "conditional"]),
   logicalOperatorTypes: new Set(["binary"]),
   statementTypes: new Set(["call", "return", "assignment"]),
 };
@@ -501,10 +542,13 @@ const PHP_PROFILE: ComplexityProfile = {
   classTypes: new Set(["class_declaration", "interface_declaration"]),
   fnNameField: "name",
   paramsField: "parameters",
-  decisionTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause"]),
-  nestingTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause"]),
+  // "conditional_expression" is PHP's ternary, previously unscored.
+  decisionTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression"]),
+  nestingTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression"]),
   logicalOperatorTypes: new Set(["binary_expression"]),
-  statementTypes: new Set(["expression_statement", "return_statement", "declaration"]),
+  // "declaration" is not a real PHP grammar node type; `$x = 5;` is already an expression_statement.
+  // global_declaration is the one statement-level declaration form that wasn't otherwise covered.
+  statementTypes: new Set(["expression_statement", "return_statement", "global_declaration"]),
 };
 
 const CSHARP_PROFILE: ComplexityProfile = {
@@ -513,10 +557,13 @@ const CSHARP_PROFILE: ComplexityProfile = {
   classTypes: new Set(["class_declaration", "interface_declaration"]),
   fnNameField: "name",
   paramsField: "parameters",
-  decisionTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause"]),
-  nestingTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause"]),
+  // "conditional_expression" is C#'s ternary, previously unscored.
+  decisionTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression"]),
+  nestingTypes: new Set(["if_statement", "for_statement", "foreach_statement", "while_statement", "do_statement", "switch_statement", "catch_clause", "conditional_expression"]),
   logicalOperatorTypes: new Set(["binary_expression"]),
-  statementTypes: new Set(["expression_statement", "return_statement", "local_variable_declaration"]),
+  // "local_variable_declaration" is not a real C# grammar node type; the statement wrapper is
+  // "local_declaration_statement" (it contains a "variable_declaration" child).
+  statementTypes: new Set(["expression_statement", "return_statement", "local_declaration_statement"]),
 };
 
 const LANGUAGE_PROFILES: Record<string, ComplexityProfile> = {
